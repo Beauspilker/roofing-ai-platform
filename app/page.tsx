@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 export default function Home() {
   return (
     <main className="min-h-screen bg-black text-white flex flex-col items-center justify-center px-6">
@@ -12,9 +14,20 @@ export default function Home() {
         24/7.
       </p>
 
-      <button className="mt-10 rounded-xl bg-blue-600 px-8 py-4 text-lg font-semibold hover:bg-blue-700 transition">
-        Book a Demo
-      </button>
+      <div className="mt-10 flex flex-col items-center gap-4 sm:flex-row">
+        <Link
+          href="/signup"
+          className="rounded-xl bg-blue-600 px-8 py-4 text-lg font-semibold transition hover:bg-blue-700"
+        >
+          Get started
+        </Link>
+        <Link
+          href="/login"
+          className="rounded-xl border border-gray-800 px-8 py-4 text-lg font-semibold text-gray-300 transition hover:border-gray-700 hover:text-white"
+        >
+          Sign in
+        </Link>
+      </div>
     </main>
   );
 }

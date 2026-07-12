@@ -56,16 +56,24 @@ export default async function DashboardPage() {
         <LeadStatsCards stats={stats} />
 
         <section className="space-y-4">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <h2 className="text-xl font-semibold">Lead list</h2>
               <p className="text-sm text-gray-400">
                 Recent customer inquiries for your company
               </p>
             </div>
-            <p className="text-sm text-gray-500">
-              {leads.length} total lead{leads.length === 1 ? "" : "s"}
-            </p>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+              <p className="text-sm text-gray-500">
+                {leads.length} total lead{leads.length === 1 ? "" : "s"}
+              </p>
+              <Link
+                href="/dashboard/leads/new"
+                className="rounded-xl bg-blue-600 px-5 py-3 text-center text-sm font-semibold transition hover:bg-blue-700"
+              >
+                Add Lead
+              </Link>
+            </div>
           </div>
 
           {leads.length === 0 ? (

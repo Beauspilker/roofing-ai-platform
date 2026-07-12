@@ -60,6 +60,77 @@ const STATUS_LABELS: Record<string, string> = {
   archived: "Archived",
 };
 
+export const LEAD_SOURCES = [
+  "ai_phone",
+  "website",
+  "referral",
+  "manual",
+  "other",
+] as const;
+
+export const LEAD_STATUSES = [
+  "new",
+  "contacted",
+  "appointment_scheduled",
+  "estimate_sent",
+  "won",
+  "lost",
+  "archived",
+] as const;
+
+export const LEAD_PROJECT_TYPES = [
+  "repair",
+  "replacement",
+  "inspection",
+  "storm_damage",
+  "other",
+] as const;
+
+export const LEAD_PRIORITIES: LeadPriority[] = ["high", "medium", "low"];
+
+export type LeadSource = (typeof LEAD_SOURCES)[number];
+export type LeadStatus = (typeof LEAD_STATUSES)[number];
+export type LeadProjectType = (typeof LEAD_PROJECT_TYPES)[number];
+
+export type CreateLeadInput = {
+  full_name: string;
+  phone?: string;
+  email?: string;
+  address_line_1?: string;
+  city?: string;
+  state?: string;
+  postal_code?: string;
+  source: LeadSource;
+  status: LeadStatus;
+  project_type?: LeadProjectType;
+  description?: string;
+  insurance_claim: boolean;
+};
+
+export function getLeadPriorityLabel(priority: LeadPriority): string {
+  return priority.charAt(0).toUpperCase() + priority.slice(1);
+}
+
+export function isLeadSource(value: string): value is LeadSource {
+  return LEAD_SOURCES.includes(value as LeadSource);
+}
+
+export function isLeadStatus(value: string): value is LeadStatus {
+  return LEAD_STATUSES.includes(value as LeadStatus);
+}
+
+export function isLeadProjectType(value: string): value is LeadProjectType {
+  return LEAD_PROJECT_TYPES.includes(value as LeadProjectType);
+}
+
+export function getProjectTypeLabel(projectType: string): string {
+  return PROJECT_TYPE_LABELS[projectType] ?? projectType;
+}
+
+export function getSourceLabel(source: string): string {
+  return SOURCE_LABELS[source] ?? source;
+}
+
 export function isActiveLead(lead: Lead): boolean {
   return !INACTIVE_STATUSES.has(lead.status);
 }

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { ActivityTimelineSection } from "@/components/leads/ActivityTimelineSection";
+import { CustomerPhotosSection } from "@/components/leads/CustomerPhotosSection";
 import { LeadArchiveControls } from "@/components/leads/LeadArchiveControls";
 import { LeadDetailsView } from "@/components/leads/LeadDetailsView";
 import { LeadRestoredBanner } from "@/components/leads/LeadRestoredBanner";
@@ -10,6 +11,7 @@ import { getActivityByLeadId } from "@/lib/activity";
 import { getCompanyByUserId } from "@/lib/companies";
 import { getLeadByIdForCompany } from "@/lib/leads";
 import { getNotesByLeadId } from "@/lib/notes";
+import { getCustomerPhotosWithSignedUrls } from "@/lib/photos";
 import { createClient } from "@/lib/supabase/server";
 
 type LeadDetailsPageProps = {
@@ -43,6 +45,11 @@ export default async function LeadDetailsPage({
   }
 
   const notes = await getNotesByLeadId(supabase, lead.id, company.id);
+  const photos = await getCustomerPhotosWithSignedUrls(
+    supabase,
+    lead.id,
+    company.id,
+  );
   const activities = await getActivityByLeadId(supabase, lead.id, company.id);
 
   return (
@@ -88,6 +95,11 @@ export default async function LeadDetailsPage({
           </p>
           <div className="mt-6">
             <LeadDetailsView lead={lead} />
+            <CustomerPhotosSection
+              leadId={lead.id}
+              photos={photos}
+              canUpload
+            />
             <LeadNotesSection leadId={lead.id} notes={notes} />
             <ActivityTimelineSection activities={activities} />
           </div>

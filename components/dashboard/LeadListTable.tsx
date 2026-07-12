@@ -1,6 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import { ArchivedBadge } from "@/components/leads/ArchivedBadge";
 import type { Lead } from "@/lib/leads";
 import {
   deriveLeadPriority,
@@ -8,6 +9,7 @@ import {
   formatLeadCallType,
   formatLeadCreatedAt,
   formatLeadStatus,
+  isArchivedLead,
 } from "@/lib/leads";
 
 type LeadListTableProps = {
@@ -81,7 +83,10 @@ function LeadRow({ lead }: { lead: Lead }) {
       className="cursor-pointer text-sm text-gray-300 transition hover:bg-gray-900/60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-600"
     >
       <td className="px-4 py-4 font-medium text-white sm:px-6">
-        {lead.full_name}
+        <div className="flex flex-wrap items-center gap-2">
+          <span>{lead.full_name}</span>
+          {isArchivedLead(lead) ? <ArchivedBadge /> : null}
+        </div>
       </td>
       <td className="px-4 py-4 sm:px-6">{formatLeadAddress(lead)}</td>
       <td className="px-4 py-4 sm:px-6">{formatLeadCallType(lead)}</td>

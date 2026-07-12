@@ -9,11 +9,14 @@ import {
   getLeadPriorityLabel,
   getProjectTypeLabel,
   getSourceLabel,
+  isArchivedLead,
+  isDashboardActiveLead,
   LEAD_PRIORITIES,
   LEAD_PROJECT_TYPES,
   LEAD_SOURCES,
   LEAD_STATUSES,
   type Lead,
+  type LeadArchiveView,
   type LeadFilterValues,
   type LeadPriority,
   type LeadProjectType,
@@ -36,12 +39,25 @@ export function LeadListPanel({ leads }: LeadListPanelProps) {
     [leads, filters],
   );
 
+  const visiblePoolCount = useMemo(() => {
+    if (filters.archiveView === "all") {
+      return leads.length;
+    }
+
+    if (filters.archiveView === "archived") {
+      return leads.filter(isArchivedLead).length;
+    }
+
+    return leads.filter(isDashboardActiveLead).length;
+  }, [filters.archiveView, leads]);
+
   const hasActiveFilters =
     filters.search.trim().length > 0 ||
     filters.status !== "all" ||
     filters.priority !== "all" ||
     filters.projectType !== "all" ||
-    filters.source !== "all";
+    filters.source !== "all" ||
+    filters.archiveView !== "active";
 
   function updateFilter<K extends keyof LeadFilterValues>(
     key: K,
@@ -64,6 +80,22 @@ export function LeadListPanel({ leads }: LeadListPanelProps) {
           placeholder="Search by name, phone, email, city, or address..."
           className={`${inputClassName} mt-2`}
         />
+
+        <div className="mt-4">
+          <FilterSelect
+            id="filter-archive-view"
+            label="Show"
+            value={filters.archiveView}
+            onChange={(value) =>
+              updateFilter("archiveView", value as LeadArchiveView)
+            }
+            options={[
+              { value: "active", label: "Active leads" },
+              { value: "archived", label: "Archived leads" },
+              { value: "all", label: "All leads" },
+            ]}
+          />
+        </div>
 
         <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <FilterSelect
@@ -128,8 +160,8 @@ export function LeadListPanel({ leads }: LeadListPanelProps) {
         </div>
 
         <p className="mt-4 text-sm text-gray-500">
-          Showing {filteredLeads.length} of {leads.length} lead
-          {leads.length === 1 ? "" : "s"}
+          Showing {filteredLeads.length} of {visiblePoolCount} lead
+          {visiblePoolCount === 1 ? "" : "s"}
           {hasActiveFilters ? " matching your search and filters" : ""}
         </p>
       </div>

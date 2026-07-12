@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { ActivityTimelineSection } from "@/components/leads/ActivityTimelineSection";
+import { LeadArchiveControls } from "@/components/leads/LeadArchiveControls";
 import { LeadDetailsView } from "@/components/leads/LeadDetailsView";
+import { LeadRestoredBanner } from "@/components/leads/LeadRestoredBanner";
 import { LeadSaveSuccessBanner } from "@/components/leads/LeadSaveSuccessBanner";
 import { LeadNotesSection } from "@/components/leads/LeadNotesSection";
 import { getActivityByLeadId } from "@/lib/activity";
@@ -12,7 +14,7 @@ import { createClient } from "@/lib/supabase/server";
 
 type LeadDetailsPageProps = {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ saved?: string }>;
+  searchParams: Promise<{ saved?: string; restored?: string; error?: string }>;
 };
 
 export default async function LeadDetailsPage({
@@ -20,7 +22,7 @@ export default async function LeadDetailsPage({
   searchParams,
 }: LeadDetailsPageProps) {
   const { id } = await params;
-  const { saved } = await searchParams;
+  const { saved, restored, error } = await searchParams;
   const supabase = await createClient();
   const {
     data: { user },
@@ -46,7 +48,7 @@ export default async function LeadDetailsPage({
   return (
     <main className="min-h-screen bg-black px-4 py-8 text-white sm:px-6 lg:px-8">
       <div className="mx-auto w-full max-w-4xl">
-        <div className="flex flex-col gap-3 sm:flex-row">
+        <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
           <Link
             href="/dashboard"
             className="inline-flex rounded-xl border border-gray-800 px-5 py-3 text-sm font-semibold text-gray-300 transition hover:border-gray-700 hover:text-white"
@@ -59,11 +61,24 @@ export default async function LeadDetailsPage({
           >
             Edit Lead
           </Link>
+          <LeadArchiveControls lead={lead} />
         </div>
 
         {saved === "1" ? (
           <div className="mt-6">
             <LeadSaveSuccessBanner />
+          </div>
+        ) : null}
+
+        {restored === "1" ? (
+          <div className="mt-6">
+            <LeadRestoredBanner />
+          </div>
+        ) : null}
+
+        {error ? (
+          <div className="mt-6 rounded-xl border border-red-900/50 bg-red-950/50 px-4 py-3 text-sm text-red-300">
+            {decodeURIComponent(error)}
           </div>
         ) : null}
 

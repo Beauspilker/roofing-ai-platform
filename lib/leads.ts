@@ -19,6 +19,7 @@ export type Lead = {
   estimate_amount: number | null;
   estimate_sent_at: string | null;
   last_contacted_at: string | null;
+  archived_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -160,6 +161,14 @@ export function isActiveLead(lead: Lead): boolean {
   return !INACTIVE_STATUSES.has(lead.status);
 }
 
+export function isArchivedLead(lead: Lead): boolean {
+  return lead.archived_at !== null || lead.status === "archived";
+}
+
+export function isDashboardActiveLead(lead: Lead): boolean {
+  return !isArchivedLead(lead);
+}
+
 export function deriveLeadPriority(lead: Lead): LeadPriority {
   if (
     lead.insurance_claim ||
@@ -178,12 +187,15 @@ export function deriveLeadPriority(lead: Lead): LeadPriority {
   return "low";
 }
 
+export type LeadArchiveView = "active" | "archived" | "all";
+
 export type LeadFilterValues = {
   search: string;
   status: LeadStatus | "all";
   priority: LeadPriority | "all";
   projectType: LeadProjectType | "all";
   source: LeadSource | "all";
+  archiveView: LeadArchiveView;
 };
 
 export const DEFAULT_LEAD_FILTERS: LeadFilterValues = {
@@ -192,7 +204,20 @@ export const DEFAULT_LEAD_FILTERS: LeadFilterValues = {
   priority: "all",
   projectType: "all",
   source: "all",
+  archiveView: "active",
 };
+
+function matchesArchiveView(lead: Lead, archiveView: LeadArchiveView): boolean {
+  if (archiveView === "all") {
+    return true;
+  }
+
+  if (archiveView === "archived") {
+    return isArchivedLead(lead);
+  }
+
+  return !isArchivedLead(lead);
+}
 
 function leadMatchesSearch(lead: Lead, search: string): boolean {
   const query = search.trim().toLowerCase();
@@ -219,6 +244,10 @@ export function filterLeads(
   filters: LeadFilterValues,
 ): Lead[] {
   return leads.filter((lead) => {
+    if (!matchesArchiveView(lead, filters.archiveView)) {
+      return false;
+    }
+
     if (!leadMatchesSearch(lead, filters.search)) {
       return false;
     }
@@ -414,12 +443,14 @@ export function formatSupabaseError(error: {
 }
 
 export function computeLeadDashboardStats(leads: Lead[]): LeadDashboardStats {
-  const activeLeads = leads.filter(isActiveLead);
+  const dashboardLeads = leads.filter(isDashboardActiveLead);
+  const activeLeads = dashboardLeads.filter(isActiveLead);
   const now = new Date();
 
   return {
     totalActiveLeads: activeLeads.length,
-    newLeadsToday: leads.filter((lead) => isNewLeadToday(lead, now)).length,
+    newLeadsToday: dashboardLeads.filter((lead) => isNewLeadToday(lead, now))
+      .length,
     highPriorityLeads: activeLeads.filter(
       (lead) => deriveLeadPriority(lead) === "high",
     ).length,

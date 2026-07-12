@@ -1,3 +1,4 @@
+import { ArchivedBadge } from "@/components/leads/ArchivedBadge";
 import type { Lead } from "@/lib/leads";
 import {
   deriveLeadPriority,
@@ -9,6 +10,7 @@ import {
   getLeadPriorityLabel,
   getProjectTypeLabel,
   getSourceLabel,
+  isArchivedLead,
 } from "@/lib/leads";
 
 type LeadDetailsViewProps = {
@@ -51,6 +53,7 @@ function DetailField({
 
 export function LeadDetailsView({ lead }: LeadDetailsViewProps) {
   const priority = deriveLeadPriority(lead);
+  const archived = isArchivedLead(lead);
 
   return (
     <div className="space-y-8">
@@ -63,6 +66,7 @@ export function LeadDetailsView({ lead }: LeadDetailsViewProps) {
         </div>
 
         <div className="flex flex-wrap gap-2">
+          {archived ? <ArchivedBadge /> : null}
           <span
             className={`inline-flex rounded-full border px-3 py-1 text-xs font-medium ${statusStyles[lead.status] ?? "border-gray-700 bg-gray-900 text-gray-300"}`}
           >

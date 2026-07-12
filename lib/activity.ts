@@ -126,3 +126,34 @@ export async function createActivity(
         : {},
   };
 }
+
+export async function getArchivedPreviousStatus(
+  supabase: SupabaseClient,
+  leadId: string,
+  companyId: string,
+): Promise<string | null> {
+  const { data, error } = await supabase
+    .from("activity_history")
+    .select("metadata")
+    .eq("lead_id", leadId)
+    .eq("company_id", companyId)
+    .eq("summary", "Lead archived")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  if (
+    data?.metadata &&
+    typeof data.metadata === "object" &&
+    "previous_status" in data.metadata &&
+    typeof data.metadata.previous_status === "string"
+  ) {
+    return data.metadata.previous_status;
+  }
+
+  return null;
+}

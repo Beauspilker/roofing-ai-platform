@@ -6,6 +6,7 @@ type LeadFormFieldProps = {
   required?: boolean;
   autoComplete?: string;
   placeholder?: string;
+  defaultValue?: string;
 };
 
 export function LeadFormField({
@@ -16,6 +17,7 @@ export function LeadFormField({
   required = false,
   autoComplete,
   placeholder,
+  defaultValue = "",
 }: LeadFormFieldProps) {
   return (
     <div>
@@ -32,6 +34,7 @@ export function LeadFormField({
         required={required}
         autoComplete={autoComplete}
         placeholder={placeholder}
+        defaultValue={defaultValue}
         className="mt-2 w-full rounded-xl border border-gray-800 bg-black px-4 py-3 text-white outline-none transition placeholder:text-gray-500 focus:border-blue-600"
       />
     </div>
@@ -88,6 +91,7 @@ type LeadFormTextareaProps = {
   label: string;
   name?: string;
   rows?: number;
+  defaultValue?: string;
 };
 
 export function LeadFormTextarea({
@@ -95,6 +99,7 @@ export function LeadFormTextarea({
   label,
   name,
   rows = 4,
+  defaultValue = "",
 }: LeadFormTextareaProps) {
   return (
     <div>
@@ -106,6 +111,7 @@ export function LeadFormTextarea({
         id={id}
         name={name ?? id}
         rows={rows}
+        defaultValue={defaultValue}
         className="mt-2 w-full rounded-xl border border-gray-800 bg-black px-4 py-3 text-white outline-none transition placeholder:text-gray-500 focus:border-blue-600"
       />
     </div>

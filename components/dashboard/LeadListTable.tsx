@@ -1,3 +1,6 @@
+"use client";
+
+import { useRouter } from "next/navigation";
 import type { Lead } from "@/lib/leads";
 import {
   deriveLeadPriority,
@@ -53,6 +56,48 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
+function LeadRow({ lead }: { lead: Lead }) {
+  const router = useRouter();
+  const href = `/dashboard/leads/${lead.id}`;
+
+  function openLead() {
+    router.push(href);
+  }
+
+  function handleKeyDown(event: React.KeyboardEvent<HTMLTableRowElement>) {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      openLead();
+    }
+  }
+
+  return (
+    <tr
+      role="link"
+      tabIndex={0}
+      aria-label={`View lead for ${lead.full_name}`}
+      onClick={openLead}
+      onKeyDown={handleKeyDown}
+      className="cursor-pointer text-sm text-gray-300 transition hover:bg-gray-900/60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-600"
+    >
+      <td className="px-4 py-4 font-medium text-white sm:px-6">
+        {lead.full_name}
+      </td>
+      <td className="px-4 py-4 sm:px-6">{formatLeadAddress(lead)}</td>
+      <td className="px-4 py-4 sm:px-6">{formatLeadCallType(lead)}</td>
+      <td className="px-4 py-4 sm:px-6">
+        <StatusBadge status={lead.status} />
+      </td>
+      <td className="px-4 py-4 sm:px-6">
+        <PriorityBadge lead={lead} />
+      </td>
+      <td className="px-4 py-4 text-gray-400 sm:px-6">
+        {formatLeadCreatedAt(lead.created_at)}
+      </td>
+    </tr>
+  );
+}
+
 export function LeadListTable({ leads }: LeadListTableProps) {
   return (
     <div className="overflow-hidden rounded-xl border border-gray-800 bg-gray-950">
@@ -70,26 +115,7 @@ export function LeadListTable({ leads }: LeadListTableProps) {
           </thead>
           <tbody className="divide-y divide-gray-800">
             {leads.map((lead) => (
-              <tr key={lead.id} className="text-sm text-gray-300">
-                <td className="px-4 py-4 font-medium text-white sm:px-6">
-                  {lead.full_name}
-                </td>
-                <td className="px-4 py-4 sm:px-6">
-                  {formatLeadAddress(lead)}
-                </td>
-                <td className="px-4 py-4 sm:px-6">
-                  {formatLeadCallType(lead)}
-                </td>
-                <td className="px-4 py-4 sm:px-6">
-                  <StatusBadge status={lead.status} />
-                </td>
-                <td className="px-4 py-4 sm:px-6">
-                  <PriorityBadge lead={lead} />
-                </td>
-                <td className="px-4 py-4 text-gray-400 sm:px-6">
-                  {formatLeadCreatedAt(lead.created_at)}
-                </td>
-              </tr>
+              <LeadRow key={lead.id} lead={lead} />
             ))}
           </tbody>
         </table>

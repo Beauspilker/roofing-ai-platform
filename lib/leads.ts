@@ -107,6 +107,31 @@ export type CreateLeadInput = {
   insurance_claim: boolean;
 };
 
+export type UpdateLeadInput = CreateLeadInput & {
+  appointment_at?: string | null;
+};
+
+export type LeadFormValues = {
+  full_name: string;
+  phone: string;
+  email: string;
+  address_line_1: string;
+  city: string;
+  state: string;
+  postal_code: string;
+  source: LeadSource;
+  status: LeadStatus;
+  project_type: string;
+  description: string;
+  insurance_claim: boolean;
+  appointment_at: string;
+  priority: LeadPriority;
+};
+
+export type LeadFormState = {
+  error: string | null;
+};
+
 export function getLeadPriorityLabel(priority: LeadPriority): string {
   return priority.charAt(0).toUpperCase() + priority.slice(1);
 }
@@ -196,6 +221,127 @@ export function formatLeadCreatedAt(createdAt: string): string {
   }).format(new Date(createdAt));
 }
 
+export function formatLeadAppointmentAt(appointmentAt: string): string {
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(appointmentAt));
+}
+
+export function formatLeadFieldValue(value: string | null | undefined): string {
+  if (!value || value.trim().length === 0) {
+    return "—";
+  }
+
+  return value;
+}
+
+export function formatInsuranceClaim(value: boolean): string {
+  return value ? "Yes" : "No";
+}
+
+export function formatDateTimeLocalValue(iso: string | null): string {
+  if (!iso) {
+    return "";
+  }
+
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+
+  const pad = (value: number) => String(value).padStart(2, "0");
+
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+export function getLeadFormValues(lead: Lead): LeadFormValues {
+  return {
+    full_name: lead.full_name,
+    phone: lead.phone ?? "",
+    email: lead.email ?? "",
+    address_line_1: lead.address_line_1 ?? "",
+    city: lead.city ?? "",
+    state: lead.state ?? "",
+    postal_code: lead.postal_code ?? "",
+    source: lead.source as LeadSource,
+    status: lead.status as LeadStatus,
+    project_type: lead.project_type ?? "",
+    description: lead.description ?? "",
+    insurance_claim: lead.insurance_claim,
+    appointment_at: formatDateTimeLocalValue(lead.appointment_at),
+    priority: deriveLeadPriority(lead),
+  };
+}
+
+export function parseLeadFormInput(
+  formData: FormData,
+): UpdateLeadInput | { error: string } {
+  const fullName = formData.get("full_name")?.toString().trim() ?? "";
+  const source = formData.get("source")?.toString() ?? "manual";
+  const status = formData.get("status")?.toString() ?? "new";
+  const projectType = formData.get("project_type")?.toString().trim() ?? "";
+  const insuranceClaim = formData.get("insurance_claim") === "on";
+  const appointmentRaw = formData.get("appointment_at")?.toString().trim() ?? "";
+
+  if (!fullName) {
+    return { error: "Full name is required." };
+  }
+
+  if (!isLeadSource(source)) {
+    return { error: "Please select a valid source." };
+  }
+
+  if (!isLeadStatus(status)) {
+    return { error: "Please select a valid status." };
+  }
+
+  if (projectType && !isLeadProjectType(projectType)) {
+    return { error: "Please select a valid project type." };
+  }
+
+  let appointmentAt: string | null = null;
+  if (appointmentRaw) {
+    const parsedAppointment = new Date(appointmentRaw);
+    if (Number.isNaN(parsedAppointment.getTime())) {
+      return { error: "Please enter a valid appointment date." };
+    }
+    appointmentAt = parsedAppointment.toISOString();
+  }
+
+  const validatedProjectType = projectType
+    ? (projectType as LeadProjectType)
+    : undefined;
+
+  return {
+    full_name: fullName,
+    phone: formData.get("phone")?.toString().trim() || undefined,
+    email: formData.get("email")?.toString().trim() || undefined,
+    address_line_1:
+      formData.get("address_line_1")?.toString().trim() || undefined,
+    city: formData.get("city")?.toString().trim() || undefined,
+    state: formData.get("state")?.toString().trim() || undefined,
+    postal_code: formData.get("postal_code")?.toString().trim() || undefined,
+    source,
+    status,
+    project_type: validatedProjectType,
+    description: formData.get("description")?.toString().trim() || undefined,
+    insurance_claim: insuranceClaim,
+    appointment_at: appointmentAt,
+  };
+}
+
+export function formatSupabaseError(error: {
+  message: string;
+  details?: string | null;
+  hint?: string | null;
+}): string {
+  return `${error.message}${error.details ? ` (${error.details})` : ""}${error.hint ? ` Hint: ${error.hint}` : ""}`;
+}
+
 export function computeLeadDashboardStats(leads: Lead[]): LeadDashboardStats {
   const activeLeads = leads.filter(isActiveLead);
   const now = new Date();
@@ -225,4 +371,23 @@ export async function getLeadsForCompany(
   }
 
   return data ?? [];
+}
+
+export async function getLeadByIdForCompany(
+  supabase: SupabaseClient,
+  leadId: string,
+  companyId: string,
+): Promise<Lead | null> {
+  const { data, error } = await supabase
+    .from("leads")
+    .select("*")
+    .eq("id", leadId)
+    .eq("company_id", companyId)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  return data;
 }

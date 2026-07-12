@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { createActivity } from "@/lib/activity";
 import { getCompanyByUserId } from "@/lib/companies";
 import { formatSupabaseError, getLeadByIdForCompany } from "@/lib/leads";
 import { createNote } from "@/lib/notes";
@@ -46,6 +47,14 @@ export async function addLeadNote(
       leadId,
       companyId: company.id,
       note,
+    });
+
+    await createActivity(supabase, {
+      companyId: company.id,
+      leadId,
+      activityType: "note_added",
+      summary: "Note added",
+      actorUserId: user.id,
     });
   } catch (error) {
     if (error instanceof Error && error.message === "Note cannot be empty.") {

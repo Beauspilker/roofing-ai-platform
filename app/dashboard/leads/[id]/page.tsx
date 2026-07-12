@@ -1,8 +1,10 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
+import { ActivityTimelineSection } from "@/components/leads/ActivityTimelineSection";
 import { LeadDetailsView } from "@/components/leads/LeadDetailsView";
 import { LeadSaveSuccessBanner } from "@/components/leads/LeadSaveSuccessBanner";
 import { LeadNotesSection } from "@/components/leads/LeadNotesSection";
+import { getActivityByLeadId } from "@/lib/activity";
 import { getCompanyByUserId } from "@/lib/companies";
 import { getLeadByIdForCompany } from "@/lib/leads";
 import { getNotesByLeadId } from "@/lib/notes";
@@ -39,6 +41,7 @@ export default async function LeadDetailsPage({
   }
 
   const notes = await getNotesByLeadId(supabase, lead.id, company.id);
+  const activities = await getActivityByLeadId(supabase, lead.id, company.id);
 
   return (
     <main className="min-h-screen bg-black px-4 py-8 text-white sm:px-6 lg:px-8">
@@ -71,6 +74,7 @@ export default async function LeadDetailsPage({
           <div className="mt-6">
             <LeadDetailsView lead={lead} />
             <LeadNotesSection leadId={lead.id} notes={notes} />
+            <ActivityTimelineSection activities={activities} />
           </div>
         </div>
       </div>

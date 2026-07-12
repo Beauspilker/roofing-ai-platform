@@ -1,6 +1,7 @@
 "use server";
 
 import { redirect } from "next/navigation";
+import { createActivity } from "@/lib/activity";
 import { getCompanyByUserId } from "@/lib/companies";
 import {
   formatSupabaseError,
@@ -68,6 +69,39 @@ export async function updateLead(
 
   if (error) {
     return { error: formatSupabaseError(error) };
+  }
+
+  try {
+    await createActivity(supabase, {
+      companyId: company.id,
+      leadId,
+      activityType: "status_changed",
+      summary: "Lead information updated",
+      actorUserId: user.id,
+      metadata: {
+        previous_status: existingLead.status,
+        updated_status: parsed.status,
+      },
+    });
+  } catch (activityError) {
+    if (
+      typeof activityError === "object" &&
+      activityError !== null &&
+      "message" in activityError &&
+      typeof activityError.message === "string"
+    ) {
+      return {
+        error: formatSupabaseError(
+          activityError as {
+            message: string;
+            details?: string | null;
+            hint?: string | null;
+          },
+        ),
+      };
+    }
+
+    return { error: "Lead was updated but activity could not be recorded." };
   }
 
   redirect(`/dashboard/leads/${leadId}?saved=1`);

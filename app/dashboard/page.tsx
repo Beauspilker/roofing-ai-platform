@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { LeadListEmptyState } from "@/components/dashboard/LeadListEmptyState";
-import { LeadListTable } from "@/components/dashboard/LeadListTable";
+import { LeadListPanel } from "@/components/dashboard/LeadListPanel";
 import { LeadStatsCards } from "@/components/dashboard/LeadStatsCards";
 import { SignOutButton } from "@/components/auth/SignOutButton";
 import { getCompanyByUserId } from "@/lib/companies";
@@ -79,7 +79,7 @@ export default async function DashboardPage() {
           {leads.length === 0 ? (
             <LeadListEmptyState />
           ) : (
-            <LeadListTable leads={leads} />
+            <LeadListPanel leads={leads} />
           )}
         </section>
       </div>

@@ -178,6 +178,77 @@ export function deriveLeadPriority(lead: Lead): LeadPriority {
   return "low";
 }
 
+export type LeadFilterValues = {
+  search: string;
+  status: LeadStatus | "all";
+  priority: LeadPriority | "all";
+  projectType: LeadProjectType | "all";
+  source: LeadSource | "all";
+};
+
+export const DEFAULT_LEAD_FILTERS: LeadFilterValues = {
+  search: "",
+  status: "all",
+  priority: "all",
+  projectType: "all",
+  source: "all",
+};
+
+function leadMatchesSearch(lead: Lead, search: string): boolean {
+  const query = search.trim().toLowerCase();
+
+  if (!query) {
+    return true;
+  }
+
+  const searchableFields = [
+    lead.full_name,
+    lead.phone,
+    lead.email,
+    lead.city,
+    lead.address_line_1,
+  ];
+
+  return searchableFields.some((field) =>
+    field?.toLowerCase().includes(query),
+  );
+}
+
+export function filterLeads(
+  leads: Lead[],
+  filters: LeadFilterValues,
+): Lead[] {
+  return leads.filter((lead) => {
+    if (!leadMatchesSearch(lead, filters.search)) {
+      return false;
+    }
+
+    if (filters.status !== "all" && lead.status !== filters.status) {
+      return false;
+    }
+
+    if (
+      filters.priority !== "all" &&
+      deriveLeadPriority(lead) !== filters.priority
+    ) {
+      return false;
+    }
+
+    if (
+      filters.projectType !== "all" &&
+      lead.project_type !== filters.projectType
+    ) {
+      return false;
+    }
+
+    if (filters.source !== "all" && lead.source !== filters.source) {
+      return false;
+    }
+
+    return true;
+  });
+}
+
 export function isLeadAwaitingContact(lead: Lead): boolean {
   return lead.status === "new" && lead.last_contacted_at === null;
 }

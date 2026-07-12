@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { SignOutButton } from "@/components/auth/SignOutButton";
+import { getCompanyByUserId } from "@/lib/companies";
 import { createClient } from "@/lib/supabase/server";
 
 export default async function DashboardPage() {
@@ -13,16 +14,24 @@ export default async function DashboardPage() {
     redirect("/login");
   }
 
+  const company = await getCompanyByUserId(supabase, user.id);
+  if (!company) {
+    redirect("/onboarding");
+  }
+
   return (
     <main className="min-h-screen bg-black text-white flex flex-col items-center justify-center px-6">
       <div className="w-full max-w-2xl text-center">
         <p className="text-sm uppercase tracking-[0.2em] text-blue-400">
           Dashboard
         </p>
-        <h1 className="mt-4 text-5xl font-bold">You&apos;re signed in</h1>
+        <h1 className="mt-4 text-5xl font-bold">{company.company_name}</h1>
         <p className="mt-6 text-xl text-gray-400">
-          Signed in as{" "}
-          <span className="text-white">{user.email ?? "your account"}</span>
+          Welcome back,{" "}
+          <span className="text-white">{company.owner_name}</span>
+        </p>
+        <p className="mt-2 text-sm text-gray-500">
+          Signed in as {user.email ?? "your account"}
         </p>
 
         <div className="mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row">

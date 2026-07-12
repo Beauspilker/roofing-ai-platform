@@ -2,8 +2,10 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { LeadDetailsView } from "@/components/leads/LeadDetailsView";
 import { LeadSaveSuccessBanner } from "@/components/leads/LeadSaveSuccessBanner";
+import { LeadNotesSection } from "@/components/leads/LeadNotesSection";
 import { getCompanyByUserId } from "@/lib/companies";
 import { getLeadByIdForCompany } from "@/lib/leads";
+import { getNotesByLeadId } from "@/lib/notes";
 import { createClient } from "@/lib/supabase/server";
 
 type LeadDetailsPageProps = {
@@ -36,6 +38,8 @@ export default async function LeadDetailsPage({
     notFound();
   }
 
+  const notes = await getNotesByLeadId(supabase, lead.id, company.id);
+
   return (
     <main className="min-h-screen bg-black px-4 py-8 text-white sm:px-6 lg:px-8">
       <div className="mx-auto w-full max-w-4xl">
@@ -66,6 +70,7 @@ export default async function LeadDetailsPage({
           </p>
           <div className="mt-6">
             <LeadDetailsView lead={lead} />
+            <LeadNotesSection leadId={lead.id} notes={notes} />
           </div>
         </div>
       </div>

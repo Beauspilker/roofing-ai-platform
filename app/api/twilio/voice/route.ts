@@ -1,12 +1,11 @@
 import { NextResponse } from "next/server";
 import twilio from "twilio";
-
-const GREETING =
-  "Thank you for calling. This is the Roofing AI assistant. We are currently setting up our AI receptionist.";
+import { generateVoiceResponse } from "@/lib/ai/voice";
 
 export async function POST() {
+  const message = await generateVoiceResponse();
   const twiml = new twilio.twiml.VoiceResponse();
-  twiml.say(GREETING);
+  twiml.say(message);
 
   return new NextResponse(twiml.toString(), {
     status: 200,

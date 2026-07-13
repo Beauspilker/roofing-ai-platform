@@ -25,3 +25,28 @@ export async function generateVoiceResponse(): Promise<string> {
 
   return FALLBACK_GREETING;
 }
+
+const FALLBACK_CONVERSATION =
+  "I'm sorry, I'm having trouble right now. Could you tell me a bit more about your roof?";
+
+const CONVERSATION_INSTRUCTIONS =
+  "You are a friendly roofing receptionist for Beau's Roofing on a live phone call. Reply in one or two short spoken sentences. Ask only one question at a time. Help with roof leaks, damage, repairs, and inspections. No quotes, labels, or bullet points.";
+
+export async function generateConversationResponse(
+  userMessage: string,
+): Promise<string> {
+  try {
+    const response = await generateTextResponse(
+      userMessage,
+      CONVERSATION_INSTRUCTIONS,
+    );
+
+    if (response) {
+      return response;
+    }
+  } catch {
+    // Fall back when OpenAI is unavailable.
+  }
+
+  return FALLBACK_CONVERSATION;
+}

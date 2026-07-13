@@ -13,6 +13,7 @@ export const ACTIVITY_TYPES = [
   "estimate_sent",
   "settings_updated",
   "notification_queued",
+  "website_lead_captured",
 ] as const;
 
 export type ActivityType = (typeof ACTIVITY_TYPES)[number];

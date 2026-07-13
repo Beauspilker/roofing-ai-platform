@@ -170,10 +170,19 @@ export function isDashboardActiveLead(lead: Lead): boolean {
 }
 
 export function deriveLeadPriority(lead: Lead): LeadPriority {
-  if (
-    lead.insurance_claim ||
-    (lead.status === "new" && lead.last_contacted_at === null)
-  ) {
+  if (lead.insurance_claim || lead.project_type === "storm_damage") {
+    return "high";
+  }
+
+  if (lead.description?.includes("[Urgency: emergency]")) {
+    return "high";
+  }
+
+  if (lead.status === "new" && lead.last_contacted_at === null) {
+    if (lead.source === "website") {
+      return "medium";
+    }
+
     return "high";
   }
 

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { SignOutButton } from "@/components/auth/SignOutButton";
 import { BusinessControlCenterForm } from "@/components/settings/BusinessControlCenterForm";
+import { PublicIntakeLinkSection } from "@/components/settings/PublicIntakeLinkSection";
 import { getBusinessSettingsByCompanyId } from "@/lib/business-settings";
 import { getCompanyByUserId } from "@/lib/companies";
 import { createClient } from "@/lib/supabase/server";
@@ -48,7 +49,11 @@ export default async function BusinessSettingsPage() {
           <SignOutButton />
         </header>
 
-        <div className="mt-8 rounded-xl border border-gray-800 bg-gray-950 p-8">
+        <div className="mt-8 space-y-8 rounded-xl border border-gray-800 bg-gray-950 p-8">
+          <PublicIntakeLinkSection
+            companyId={company.id}
+            aiPhoneEnabled={settings?.ai_phone_enabled ?? true}
+          />
           <BusinessControlCenterForm company={company} settings={settings} />
         </div>
       </div>

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { ActivityTimelineSection } from "@/components/leads/ActivityTimelineSection";
+import { CustomerNotificationsSection } from "@/components/leads/CustomerNotificationsSection";
 import { CustomerPhotosSection } from "@/components/leads/CustomerPhotosSection";
 import { LeadArchiveControls } from "@/components/leads/LeadArchiveControls";
 import { LeadDetailsView } from "@/components/leads/LeadDetailsView";
@@ -8,9 +9,11 @@ import { LeadRestoredBanner } from "@/components/leads/LeadRestoredBanner";
 import { LeadSaveSuccessBanner } from "@/components/leads/LeadSaveSuccessBanner";
 import { LeadNotesSection } from "@/components/leads/LeadNotesSection";
 import { getActivityByLeadId } from "@/lib/activity";
+import { getBusinessSettingsByCompanyId } from "@/lib/business-settings";
 import { getCompanyByUserId } from "@/lib/companies";
-import { getLeadByIdForCompany } from "@/lib/leads";
+import { getLeadByIdForCompany, isArchivedLead } from "@/lib/leads";
 import { getNotesByLeadId } from "@/lib/notes";
+import { getNotificationsByLeadId } from "@/lib/notifications";
 import { getCustomerPhotosWithSignedUrls } from "@/lib/photos";
 import { createClient } from "@/lib/supabase/server";
 
@@ -51,6 +54,15 @@ export default async function LeadDetailsPage({
     company.id,
   );
   const activities = await getActivityByLeadId(supabase, lead.id, company.id);
+  const notifications = await getNotificationsByLeadId(
+    supabase,
+    lead.id,
+    company.id,
+  );
+  const businessSettings = await getBusinessSettingsByCompanyId(
+    supabase,
+    company.id,
+  );
 
   return (
     <main className="min-h-screen bg-black px-4 py-8 text-white sm:px-6 lg:px-8">
@@ -101,6 +113,15 @@ export default async function LeadDetailsPage({
               canUpload
             />
             <LeadNotesSection leadId={lead.id} notes={notes} />
+            <CustomerNotificationsSection
+              lead={lead}
+              notifications={notifications}
+              smsFollowUpEnabled={businessSettings?.sms_follow_up_enabled ?? false}
+              emailFollowUpEnabled={
+                businessSettings?.email_follow_up_enabled ?? false
+              }
+              canSend={!isArchivedLead(lead)}
+            />
             <ActivityTimelineSection activities={activities} />
           </div>
         </div>

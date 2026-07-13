@@ -7,6 +7,8 @@ type LeadFormFieldProps = {
   autoComplete?: string;
   placeholder?: string;
   defaultValue?: string;
+  value?: string;
+  onChange?: (value: string) => void;
 };
 
 export function LeadFormField({
@@ -18,7 +20,11 @@ export function LeadFormField({
   autoComplete,
   placeholder,
   defaultValue = "",
+  value,
+  onChange,
 }: LeadFormFieldProps) {
+  const isControlled = value !== undefined && onChange !== undefined;
+
   return (
     <div>
       <label htmlFor={id} className="block text-sm font-medium text-gray-300">
@@ -34,7 +40,9 @@ export function LeadFormField({
         required={required}
         autoComplete={autoComplete}
         placeholder={placeholder}
-        defaultValue={defaultValue}
+        {...(isControlled
+          ? { value, onChange: (event) => onChange(event.target.value) }
+          : { defaultValue })}
         className="mt-2 w-full rounded-xl border border-gray-800 bg-black px-4 py-3 text-white outline-none transition placeholder:text-gray-500 focus:border-blue-600"
       />
     </div>

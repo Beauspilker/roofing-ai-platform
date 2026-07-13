@@ -35,3 +35,11 @@ create policy "Users can update their own company"
   to authenticated
   using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
+
+-- Phase 10 Business Control Center profile fields.
+-- Existing deployments: also run supabase/phase_10_business_control_center.sql
+alter table public.companies add column if not exists website text;
+alter table public.companies add column if not exists address_line_1 text;
+alter table public.companies add column if not exists city text;
+alter table public.companies add column if not exists state text;
+alter table public.companies add column if not exists postal_code text;

@@ -73,18 +73,38 @@ export async function getActivityByLeadId(
 
 type CreateActivityInput = {
   companyId: string;
-  leadId: string;
+  leadId?: string | null;
   activityType: ActivityType;
   summary: string;
   actorUserId?: string | null;
   metadata?: Record<string, unknown>;
 };
 
+export async function createCompanyActivity(
+  supabase: SupabaseClient,
+  {
+    companyId,
+    activityType,
+    summary,
+    actorUserId = null,
+    metadata = {},
+  }: Omit<CreateActivityInput, "leadId">,
+): Promise<ActivityHistory> {
+  return createActivity(supabase, {
+    companyId,
+    leadId: null,
+    activityType,
+    summary,
+    actorUserId,
+    metadata,
+  });
+}
+
 export async function createActivity(
   supabase: SupabaseClient,
   {
     companyId,
-    leadId,
+    leadId = null,
     activityType,
     summary,
     actorUserId = null,

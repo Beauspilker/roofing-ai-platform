@@ -43,6 +43,12 @@ export default async function DashboardPage() {
           </div>
 
           <div className="flex flex-col gap-3 sm:flex-row">
+            <Link
+              href="/dashboard/settings"
+              className="rounded-xl border border-gray-700 px-6 py-3 text-center font-semibold transition hover:border-blue-600 hover:text-blue-300"
+            >
+              Business Control Center
+            </Link>
             <SignOutButton />
             <Link
               href="/"

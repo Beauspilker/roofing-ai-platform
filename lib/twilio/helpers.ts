@@ -45,6 +45,18 @@ export function getSpeechResult(formData: FormData): string {
   return formData.get("SpeechResult")?.toString().trim() ?? "";
 }
 
+export function getTwilioCallContext(formData: FormData): {
+  callSid: string;
+  callerPhone: string;
+  calledPhone: string;
+} {
+  return {
+    callSid: formData.get("CallSid")?.toString().trim() ?? "",
+    callerPhone: formData.get("From")?.toString().trim() ?? "",
+    calledPhone: formData.get("To")?.toString().trim() ?? "",
+  };
+}
+
 export function isGoodbyePhrase(speech: string): boolean {
   const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
 

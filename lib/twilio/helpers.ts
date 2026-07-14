@@ -1,13 +1,17 @@
 import { NextResponse } from "next/server";
 import twilio from "twilio";
 
+export const OPENING_QUESTION = "Could you tell me what's going on?";
+
 export const OPENING_GREETING =
-  "Hi, this is Beau's Roofing. What can I help you with today?";
+  "Hi, thanks for calling Beau's Roofing. " +
+  "I'm the company's AI assistant, and I'm here to help get you taken care of today. " +
+  OPENING_QUESTION;
 
 export const ROOF_QUESTION = OPENING_GREETING;
 
 export const OPENING_RETRY_PROMPT =
-  "I didn't catch that. What can I help you with today?";
+  `I didn't catch that. ${OPENING_QUESTION}`;
 
 export const NO_INPUT_RETRY_PROMPT = OPENING_RETRY_PROMPT;
 

@@ -1,9 +1,5 @@
 import twilio from "twilio";
-import {
-  getNextMissingStage,
-  getStageQuestion,
-  OPENING_GREETING,
-} from "@/lib/call-intake";
+import { OPENING_GREETING } from "@/lib/call-intake";
 import {
   createTranscriptEntry,
   ensureCallSessionForTwilioCall,
@@ -12,6 +8,7 @@ import {
 import {
   appendSpeechGather,
   getTwilioCallContext,
+  OPENING_QUESTION,
   twimlResponse,
 } from "@/lib/twilio/helpers";
 
@@ -31,16 +28,9 @@ export async function POST(request: Request) {
       });
 
       if (session) {
-        const nextStage = getNextMissingStage(session.collected_fields ?? {});
-
         await updateCallSession({
           callSid,
-          currentQuestion:
-            getStageQuestion(
-              nextStage,
-              session.collected_fields ?? {},
-              callerPhone,
-            ) ?? message,
+          currentQuestion: OPENING_QUESTION,
           transcriptEntry: createTranscriptEntry("assistant", message),
         });
       }

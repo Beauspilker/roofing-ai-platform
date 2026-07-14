@@ -5,6 +5,7 @@ import {
   buildIntakeResponse,
   buildWrapUpSummary,
   getNextMissingStage,
+  getRecentAssistantPhrases,
   getStageQuestion,
   isAwaitingSummaryConfirmation,
   mergeCallerAnswer,
@@ -47,13 +48,16 @@ function getNoInputRetryPrompt(
   }
 
   const nextStage = getNextMissingStage(fields);
+
+  if (isInitial && nextStage === "problem") {
+    return OPENING_RETRY_PROMPT;
+  }
+
   const question =
     getStageQuestion(nextStage, fields, callerPhone) ?? session.current_question;
 
   if (question) {
-    return isInitial && nextStage === "problem"
-      ? OPENING_RETRY_PROMPT
-      : `I didn't catch that. ${question}`;
+    return `I didn't catch that. ${question}`;
   }
 
   return NO_INPUT_FOLLOW_UP_PROMPT;
@@ -167,7 +171,6 @@ export async function POST(request: Request) {
     speechResult,
     callerPhone,
   );
-  const turnIndex = (session.transcript?.length ?? 0) + 1;
 
   session =
     (await updateCallSession({
@@ -199,9 +202,9 @@ export async function POST(request: Request) {
 
   const reply = buildIntakeResponse(updatedFields, answeredStage, {
     callerPhone,
-    turnIndex,
     fieldsBefore,
     callerAnswer: speechResult,
+    priorPhrases: getRecentAssistantPhrases(session.transcript),
   });
 
   await updateCallSession({

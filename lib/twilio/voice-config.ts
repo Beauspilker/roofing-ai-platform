@@ -2,18 +2,48 @@
  * Central Twilio voice configuration.
  * Override TWILIO_VOICE in the environment to change the receptionist voice.
  */
-export const TWILIO_VOICE: "Polly.Ruth-Neural" =
-  (process.env.TWILIO_VOICE?.trim() as "Polly.Ruth-Neural" | undefined) ||
-  "Polly.Ruth-Neural";
+export const DEFAULT_TWILIO_VOICE = "Polly.Joanna" as const;
+
+export type AllowedTwilioVoice =
+  | typeof DEFAULT_TWILIO_VOICE
+  | "Polly.Matthew"
+  | "Polly.Joanna-Neural"
+  | "Polly.Matthew-Neural"
+  | "Polly.Kendra"
+  | "Polly.Kimberly"
+  | "Polly.Salli"
+  | "Polly.Ivy"
+  | "man"
+  | "woman"
+  | "alice";
 
 export const TWILIO_LANGUAGE = "en-US" as const;
 
-export const SPOKEN_PROSODY = {
-  rate: "92%",
-  pitch: "-2%",
-} as const;
+const ALLOWED_TWILIO_VOICES = new Set<string>([
+  "Polly.Joanna",
+  "Polly.Matthew",
+  "Polly.Joanna-Neural",
+  "Polly.Matthew-Neural",
+  "Polly.Kendra",
+  "Polly.Kimberly",
+  "Polly.Salli",
+  "Polly.Ivy",
+  "man",
+  "woman",
+  "alice",
+]);
 
-export const SENTENCE_BREAK_MS = "350ms";
+export function resolveTwilioVoice(configured?: string): AllowedTwilioVoice {
+  const trimmed = configured?.trim();
+
+  if (trimmed && ALLOWED_TWILIO_VOICES.has(trimmed)) {
+    return trimmed as AllowedTwilioVoice;
+  }
+
+  return DEFAULT_TWILIO_VOICE;
+}
+
+export const TWILIO_VOICE = resolveTwilioVoice(process.env.TWILIO_VOICE);
 
 export const SPEECH_GATHER_OPTIONS = {
   enhanced: true,
@@ -25,7 +55,7 @@ export const SPEECH_GATHER_OPTIONS = {
 };
 
 export function getSayVoiceAttributes(): {
-  voice: typeof TWILIO_VOICE;
+  voice: AllowedTwilioVoice;
   language: typeof TWILIO_LANGUAGE;
 } {
   return {

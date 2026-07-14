@@ -11,13 +11,14 @@ import {
   OPENING_QUESTION,
   twimlResponse,
 } from "@/lib/twilio/helpers";
+import { appendSpokenSay } from "@/lib/twilio/speech";
 
 export async function POST(request: Request) {
   const formData = await request.formData();
   const { callSid, callerPhone, calledPhone } = getTwilioCallContext(formData);
   const message = OPENING_GREETING;
   const twiml = new twilio.twiml.VoiceResponse();
-  twiml.say(message);
+  appendSpokenSay(twiml, message);
 
   if (callSid) {
     try {

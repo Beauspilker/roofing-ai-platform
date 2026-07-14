@@ -1,11 +1,13 @@
 import { NextResponse } from "next/server";
 import twilio from "twilio";
+import { appendSpokenSay } from "@/lib/twilio/speech";
+import { SPEECH_GATHER_OPTIONS } from "@/lib/twilio/voice-config";
 
-export const OPENING_QUESTION = "Could you tell me what's going on?";
+export const OPENING_QUESTION = "What's going on with the roof?";
 
 export const OPENING_GREETING =
   "Hi, thanks for calling Beau's Roofing. " +
-  "I'm the company's AI assistant, and I'm here to help get you taken care of today. " +
+  "I'm the AI assistant here to help. " +
   OPENING_QUESTION;
 
 export const ROOF_QUESTION = OPENING_GREETING;
@@ -18,10 +20,10 @@ export const NO_INPUT_RETRY_PROMPT = OPENING_RETRY_PROMPT;
 export const NO_INPUT_FOLLOW_UP_PROMPT = "I didn't catch that. Please go ahead.";
 
 export const NO_INPUT_GOODBYE =
-  "I'm sorry, I wasn't able to hear you. Please call back when you're ready. Goodbye!";
+  "Sorry, I couldn't hear you. Please call back when you're ready. Goodbye.";
 
 export const CALLER_GOODBYE =
-  "Thank you for calling Beau's Roofing. Have a great day!";
+  "Thank you for calling Beau's Roofing. Have a wonderful day.";
 
 const GOODBYE_PHRASES = [
   "goodbye",
@@ -119,11 +121,11 @@ export function appendSpeechGather(
     action: `${origin}/api/twilio/conversation?${params.toString()}`,
     method: "POST",
     actionOnEmptyResult: true,
-    speechTimeout: "auto",
+    ...SPEECH_GATHER_OPTIONS,
   });
 
   if (options.prompt) {
-    gather.say(options.prompt);
+    appendSpokenSay(gather, options.prompt);
   }
 }
 

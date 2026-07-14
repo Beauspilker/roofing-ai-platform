@@ -53,6 +53,7 @@ import {
   OPENING_RETRY_PROMPT,
   twimlResponse,
 } from "@/lib/twilio/helpers";
+import { appendSpokenSay } from "@/lib/twilio/speech";
 
 function getNoInputRetryPrompt(
   session: Awaited<ReturnType<typeof getCallSessionBySid>>,
@@ -106,6 +107,10 @@ function buildResumeReply(
   return buildCombinedResponse([prefix], question);
 }
 
+function speak(twiml: twilio.twiml.VoiceResponse, text: string): void {
+  appendSpokenSay(twiml, text);
+}
+
 export async function POST(request: Request) {
   const formData = await request.formData();
   const speechResult = getSpeechResult(formData);
@@ -136,11 +141,11 @@ export async function POST(request: Request) {
         await completeCallSession(callSid, "failed");
       }
 
-      twiml.say(NO_INPUT_GOODBYE);
+      speak(twiml, NO_INPUT_GOODBYE);
       return twimlResponse(twiml);
     }
 
-    twiml.say(getNoInputRetryPrompt(session, callerPhone, isInitial));
+    speak(twiml, getNoInputRetryPrompt(session, callerPhone, isInitial));
     appendSpeechGather(twiml, request, {
       attempt: attempt + 1,
       initial: isInitial,
@@ -153,13 +158,13 @@ export async function POST(request: Request) {
       await completeCallSession(callSid, "completed");
     }
 
-    twiml.say(CALLER_GOODBYE);
+    speak(twiml, CALLER_GOODBYE);
     return twimlResponse(twiml);
   }
 
   if (!session || !callSid) {
     const reply = await generateConversationResponse(speechResult);
-    twiml.say(reply);
+    speak(twiml, reply);
     appendSpeechGather(twiml, request, { attempt: 1 });
     return twimlResponse(twiml);
   }
@@ -178,7 +183,7 @@ export async function POST(request: Request) {
       callSid,
       transcriptEntry: createTranscriptEntry("assistant", reply),
     });
-    twiml.say(reply);
+    speak(twiml, reply);
     appendSpeechGather(twiml, request, { attempt: 1 });
     return twimlResponse(twiml);
   }
@@ -205,7 +210,7 @@ export async function POST(request: Request) {
         transcriptEntry: createTranscriptEntry("assistant", reply),
       });
       await completeCallSession(callSid, "completed");
-      twiml.say(reply);
+      speak(twiml, reply);
       return twimlResponse(twiml);
     }
 
@@ -232,7 +237,7 @@ export async function POST(request: Request) {
         callSid,
         transcriptEntry: createTranscriptEntry("assistant", reply),
       });
-      twiml.say(reply);
+      speak(twiml, reply);
       appendSpeechGather(twiml, request, { attempt: 1 });
       return twimlResponse(twiml);
     }
@@ -250,7 +255,7 @@ export async function POST(request: Request) {
         callSid,
         transcriptEntry: createTranscriptEntry("assistant", reply),
       });
-      twiml.say(reply);
+      speak(twiml, reply);
       appendSpeechGather(twiml, request, { attempt: 1 });
       return twimlResponse(twiml);
     }
@@ -268,7 +273,7 @@ export async function POST(request: Request) {
         callSid,
         transcriptEntry: createTranscriptEntry("assistant", reply),
       });
-      twiml.say(reply);
+      speak(twiml, reply);
       appendSpeechGather(twiml, request, { attempt: 1 });
       return twimlResponse(twiml);
     }
@@ -288,7 +293,7 @@ export async function POST(request: Request) {
       callSid,
       transcriptEntry: createTranscriptEntry("assistant", reply),
     });
-    twiml.say(reply);
+    speak(twiml, reply);
     appendSpeechGather(twiml, request, { attempt: 1 });
     return twimlResponse(twiml);
   }
@@ -309,7 +314,7 @@ export async function POST(request: Request) {
       callSid,
       transcriptEntry: createTranscriptEntry("assistant", reply),
     });
-    twiml.say(reply);
+    speak(twiml, reply);
     appendSpeechGather(twiml, request, { attempt: 1 });
     return twimlResponse(twiml);
   }
@@ -329,7 +334,7 @@ export async function POST(request: Request) {
       callSid,
       transcriptEntry: createTranscriptEntry("assistant", reply),
     });
-    twiml.say(reply);
+    speak(twiml, reply);
     appendSpeechGather(twiml, request, { attempt: 1 });
     return twimlResponse(twiml);
   }
@@ -372,7 +377,7 @@ export async function POST(request: Request) {
       transcriptEntry: createTranscriptEntry("assistant", summary),
     });
 
-    twiml.say(summary);
+    speak(twiml, summary);
     appendSpeechGather(twiml, request, { attempt: 1 });
     return twimlResponse(twiml);
   }
@@ -391,7 +396,7 @@ export async function POST(request: Request) {
     transcriptEntry: createTranscriptEntry("assistant", reply),
   });
 
-  twiml.say(reply);
+  speak(twiml, reply);
   appendSpeechGather(twiml, request, {
     attempt: 1,
   });

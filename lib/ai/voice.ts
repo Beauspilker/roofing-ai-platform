@@ -1,11 +1,11 @@
 import { generateTextResponse } from "@/lib/ai/openai";
-import { OPENING_GREETING, OPENING_QUESTION } from "@/lib/twilio/helpers";
+import { OPENING_GREETING } from "@/lib/twilio/helpers";
 
 const RECEPTIONIST_INSTRUCTIONS =
-  "You are a friendly roofing company phone receptionist. Reply with one short spoken greeting sentence only. No quotes, labels, or extra commentary.";
+  "You are a calm roofing office receptionist. Reply with one short spoken sentence. Use contractions. No quotes or labels.";
 
 const RECEPTIONIST_PROMPT =
-  "Generate a short phone greeting for Beau's Roofing. It should sound like: Hi, thanks for calling Beau's Roofing. I'm the company's AI assistant, and I'm here to help get you taken care of today. Could you tell me what's going on?";
+  "Generate a short phone greeting for Beau's Roofing. Sound like a calm office coordinator. Under twenty words.";
 
 export async function generateVoiceResponse(): Promise<string> {
   try {
@@ -25,12 +25,12 @@ export async function generateVoiceResponse(): Promise<string> {
 }
 
 const FALLBACK_CONVERSATION =
-  `I'm having trouble right now. ${OPENING_QUESTION}`;
+  "I'm having a little trouble on my end. What's going on with the roof?";
 
 const FALLBACK_CONVERSATION_INSTRUCTIONS =
-  "You are a friendly roofing receptionist for Beau's Roofing on a live phone call. " +
-  "Reply in one or two short spoken sentences. Ask only one question at a time. " +
-  "Do not use repetitive sympathy phrases. No quotes, labels, or bullet points.";
+  "You are a calm roofing office receptionist for Beau's Roofing on a live phone call. " +
+  "Reply in one or two short spoken sentences. Use contractions. Ask only one question. " +
+  "No quotes, labels, or bullet points.";
 
 export async function generateConversationResponse(
   userMessage: string,

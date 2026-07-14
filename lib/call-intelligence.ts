@@ -3,7 +3,12 @@ import {
   isSummaryDataField,
 } from "@/lib/call-summary";
 
-export type FaqTopic = "insurance" | "service_area" | "inspection_cost" | "same_day";
+export type FaqTopic =
+  | "insurance"
+  | "service_area"
+  | "inspection_cost"
+  | "same_day"
+  | "photos";
 
 export type IntakeFields = {
   problem_description?: string;
@@ -61,7 +66,7 @@ const CORRECTION_PREFIX_PATTERN =
   /^(no|actually|wait|not|correction)[,.]?\s+/i;
 
 const SMALL_TALK_PATTERN =
-  /\b(how'?s your day|how are you|how'?s it going|hope you'?re|staying dry|been crazy|pretty crazy|rough day|busy day)\b/i;
+  /\b(how'?s your day|how are you|how'?s it going|hope you'?re|staying dry|been crazy|pretty crazy|rough day|busy day|^thanks\b|thank you)\b/i;
 
 const FAQ_PATTERNS: Array<{ topic: FaqTopic; pattern: RegExp }> = [
   {
@@ -82,7 +87,12 @@ const FAQ_PATTERNS: Array<{ topic: FaqTopic; pattern: RegExp }> = [
   {
     topic: "same_day",
     pattern:
-      /\b(come today|same day|someone today|out today|this afternoon|right now)\b/i,
+      /\b(come today|same day|someone today|out today|this afternoon|right now|how soon|when can someone come|how quickly)\b/i,
+  },
+  {
+    topic: "photos",
+    pattern:
+      /\b(send photos|send pictures|text photos|email photos|upload photos|share photos|take pictures)\b/i,
   },
 ];
 
@@ -119,13 +129,19 @@ export function detectSmallTalk(speech: string): boolean {
 }
 
 export function buildSmallTalkResponse(speech: string): string {
+  if (/^thanks|thank you/i.test(speech.trim())) {
+    return "You're welcome.";
+  }
   if (/how'?s your day|how are you|how'?s it going/i.test(speech)) {
     return "Doing well, thank you.";
   }
-  if (/staying dry|crazy|storm|weather/i.test(speech)) {
+  if (/staying dry|crazy|storm|weather|busy day/i.test(speech)) {
     return "It's been a busy day on our end.";
   }
-  return "I appreciate you saying that.";
+  if (/hope you'?re/i.test(speech)) {
+    return "We appreciate that.";
+  }
+  return "Thank you.";
 }
 
 export function detectFaqTopic(speech: string): FaqTopic | null {
@@ -155,7 +171,9 @@ export function buildFaqResponse(topic: FaqTopic): string {
     case "inspection_cost":
       return "Inspection details depend on the situation, and our team can walk you through that when they follow up.";
     case "same_day":
-      return "We'll do our best to get someone out quickly, especially for urgent situations.";
+      return "We'll do our best to get a roofing specialist out quickly, especially for urgent situations.";
+    case "photos":
+      return "Yes, our team can review photos — someone will follow up on the best way to send them.";
   }
 }
 
@@ -309,42 +327,48 @@ export function applyTargetedCorrection(
   return { fields, updated: false };
 }
 
-export function detectSummaryEditTarget(speech: string): SummaryFieldKey | null {
+export function detectSummaryEditTargets(speech: string): SummaryFieldKey[] {
   const lower = speech.toLowerCase();
+  const targets = new Set<SummaryFieldKey>();
 
   if (/\b(address|location|property|street)\b/.test(lower)) {
-    return "address";
+    targets.add("address");
   }
   if (/\b(name)\b/.test(lower)) {
-    return "full_name";
+    targets.add("full_name");
   }
   if (/\b(phone|number|callback)\b/.test(lower)) {
-    return "callback_phone";
+    targets.add("callback_phone");
   }
   if (
-    /\b(appointment|schedule|time|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/.test(
+    /\b(appointment|schedule|time|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|morning|afternoon)\b/.test(
       lower,
     )
   ) {
-    return "appointment_preference";
+    targets.add("appointment_preference");
   }
   if (/\b(insurance|claim)\b/.test(lower)) {
-    return "insurance_claim";
+    targets.add("insurance_claim");
   }
   if (/\b(leak|water)\b/.test(lower)) {
-    return "active_leak";
+    targets.add("active_leak");
   }
-  if (/\b(damage|hail|wind|storm|roof)\b/.test(lower)) {
-    return "problem_description";
+  if (/\b(damage|hail|wind|storm|roof|shingles)\b/.test(lower)) {
+    targets.add("problem_description");
   }
   if (/\b(urgent|urgency|asap|priority)\b/.test(lower)) {
-    return "urgency";
+    targets.add("urgency");
   }
-  if (/\b(note|notes|anything else)\b/.test(lower)) {
-    return "additional_notes";
+  if (/\b(note|notes)\b/.test(lower)) {
+    targets.add("additional_notes");
   }
 
-  return null;
+  return [...targets];
+}
+
+export function detectSummaryEditTarget(speech: string): SummaryFieldKey | null {
+  const targets = detectSummaryEditTargets(speech);
+  return targets[0] ?? null;
 }
 
 function extractYesNoValue(text: string): string | null {
@@ -394,6 +418,9 @@ export function applySummaryFieldValue(
         text.match(
           /\b(?:address is|at|to)\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80})/i,
         ) ??
+        text.match(
+          /(?:change|update|move|correct|fix).*?(?:address|location|property|street).*?(?:to|is)\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80})/i,
+        ) ??
         text.match(/(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80})/i);
       if (addressMatch?.[1]) {
         updated.address = addressMatch[1].trim();
@@ -415,17 +442,23 @@ export function applySummaryFieldValue(
       }
       break;
     }
-    case "appointment_preference":
-      if (
-        text.length > 0 &&
-        /appointment|tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d\s*(am|pm)/i.test(
-          text,
-        )
-      ) {
-        updated.appointment_preference = text;
+    case "appointment_preference": {
+      const appointmentMatch =
+        text.match(
+          /(?:appointment|inspection|schedule|time).*?(?:to|for|on|is)\s+([^,.]+(?:morning|afternoon|evening)?)/i,
+        ) ??
+        text.match(
+          /(?:move|change|update).*?(?:appointment|inspection|visit|come).*?(?:to|for|on)\s+([^,.]+)/i,
+        ) ??
+        text.match(
+          /\b(tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday(?:\s+(?:morning|afternoon|evening))?|\d{1,2}\s*(?:am|pm))(?:\s+(?:morning|afternoon|evening))?/i,
+        );
+      if (appointmentMatch?.[1] || appointmentMatch?.[0]) {
+        updated.appointment_preference = (appointmentMatch[1] ?? appointmentMatch[0]).trim();
         return { fields: updated, updated: true, field: target };
       }
       break;
+    }
     case "insurance_claim": {
       const yesNo = extractYesNoValue(text);
       if (yesNo) {
@@ -474,11 +507,45 @@ export function applySummaryFieldValue(
   return { fields, updated: false };
 }
 
+const SUMMARY_CORRECTION_ORDER: SummaryFieldKey[] = [
+  "address",
+  "appointment_preference",
+  "full_name",
+  "callback_phone",
+  "insurance_claim",
+  "problem_description",
+  "active_leak",
+  "urgency",
+  "additional_notes",
+];
+
+export function applySummaryCorrections(
+  fields: IntakeFields,
+  speech: string,
+  callerPhone?: string,
+): { fields: IntakeFields; updatedFields: SummaryFieldKey[] } {
+  let working = { ...fields };
+  const updatedFields: SummaryFieldKey[] = [];
+
+  for (const target of SUMMARY_CORRECTION_ORDER) {
+    const result = applySummaryFieldValue(working, speech, target, callerPhone);
+
+    if (result.updated && result.field) {
+      working = result.fields;
+      if (!updatedFields.includes(result.field)) {
+        updatedFields.push(result.field);
+      }
+    }
+  }
+
+  return { fields: working, updatedFields };
+}
+
 export type SummaryEditOutcome =
   | {
       status: "updated";
       fields: IntakeFields;
-      field: SummaryFieldKey;
+      updatedFields: SummaryFieldKey[];
     }
   | {
       status: "awaiting_value";
@@ -513,7 +580,7 @@ export function processSummaryEdit(
       return {
         status: "updated",
         fields: applied.fields,
-        field: applied.field,
+        updatedFields: [applied.field],
       };
     }
 
@@ -524,48 +591,38 @@ export function processSummaryEdit(
     };
   }
 
-  const correction = applyTargetedCorrection(
-    fields,
-    speech,
-    "wrap_up",
-    callerPhone,
-  );
+  const multi = applySummaryCorrections(fields, speech, callerPhone);
 
-  if (
-    correction.updated &&
-    correction.field &&
-    isSummaryDataField(correction.field) &&
-    correction.field !== "additional_notes"
-  ) {
+  if (multi.updatedFields.length > 0) {
     return {
       status: "updated",
-      fields: correction.fields,
-      field: correction.field,
+      fields: multi.fields,
+      updatedFields: multi.updatedFields,
     };
   }
 
-  if (
-    correction.updated &&
-    correction.field === "additional_notes" &&
-    /\b(note|mention|add|also)\b/i.test(speech)
-  ) {
+  const targets = detectSummaryEditTargets(speech);
+
+  if (targets.length === 1) {
     return {
-      status: "updated",
-      fields: correction.fields,
-      field: "additional_notes",
+      status: "awaiting_value",
+      fields: {
+        ...fields,
+        summary_editing: true,
+        summary_edit_target: targets[0],
+      },
+      target: targets[0],
     };
   }
 
-  const target = detectSummaryEditTarget(speech);
+  if (targets.length > 1) {
+    const combined = applySummaryCorrections(fields, speech, callerPhone);
 
-  if (target) {
-    const applied = applySummaryFieldValue(fields, speech, target, callerPhone);
-
-    if (applied.updated && applied.field) {
+    if (combined.updatedFields.length > 0) {
       return {
         status: "updated",
-        fields: applied.fields,
-        field: applied.field,
+        fields: combined.fields,
+        updatedFields: combined.updatedFields,
       };
     }
 
@@ -574,9 +631,9 @@ export function processSummaryEdit(
       fields: {
         ...fields,
         summary_editing: true,
-        summary_edit_target: target,
+        summary_edit_target: targets[0],
       },
-      target,
+      target: targets[0],
     };
   }
 

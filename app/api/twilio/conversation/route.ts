@@ -26,7 +26,7 @@ import {
 } from "@/lib/call-intelligence";
 import {
   buildSummaryEditValuePrompt,
-  buildSummaryFieldUpdateReply,
+  buildSummaryFieldsUpdateReply,
   getPostEditConfirmationPrompt,
   getSummaryConfirmationPrompt,
   isPostEditAffirmation,
@@ -217,9 +217,9 @@ export async function POST(request: Request) {
 
     if (editOutcome.status === "updated") {
       const updatedFields = clearSummaryEditState(editOutcome.fields);
-      const reply = buildSummaryFieldUpdateReply(
-        editOutcome.field,
+      const reply = buildSummaryFieldsUpdateReply(
         updatedFields,
+        editOutcome.updatedFields,
       );
 
       await updateCallSession({

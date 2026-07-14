@@ -288,6 +288,80 @@ function extractProjectType(text: string): string | null {
   return null;
 }
 
+function extractInsuranceClaim(text: string): string | null {
+  const lower = text.toLowerCase();
+
+  if (
+    /\b(already|talked to|spoken to|contacted|filed|started|opened|called).*(insurance|claim)\b/.test(
+      lower,
+    ) ||
+    /\b(insurance|claim).*(already|started|filed|opened)\b/.test(lower)
+  ) {
+    return "yes";
+  }
+
+  if (
+    /\b(no|not yet|haven't|have not|don't|do not).*(insurance|claim|filed)\b/.test(
+      lower,
+    )
+  ) {
+    return "no";
+  }
+
+  return null;
+}
+
+function extractDamageContext(text: string): Partial<CollectedFields> {
+  const result: Partial<CollectedFields> = {};
+  const lower = text.toLowerCase();
+
+  if (
+    /shingles everywhere|shingles all over|missing shingles|loose shingles/i.test(
+      lower,
+    )
+  ) {
+    result.project_type = "storm damage";
+    result.storm_damage = "yes";
+    result.problem_description = "loose shingles reported";
+  }
+
+  if (/started leaking|began leaking|roof leaking|ceiling leaking|leak/i.test(lower)) {
+    if (/yesterday|last night|today|this morning|recently|last week/i.test(lower)) {
+      result.problem_description =
+        result.problem_description ?? `roof issue reported ${extractDamageTimingFromText(text) ?? "recently"}`;
+    }
+    if (/ceiling|kitchen|bathroom|inside|interior|water/i.test(lower)) {
+      result.active_leak = "yes";
+    }
+  }
+
+  if (/yesterday|last night|today|this morning|last week|recently/i.test(lower)) {
+    if (/hail|storm|wind|damage|hit|leak/i.test(lower)) {
+      result.problem_description =
+        result.problem_description ??
+        `storm-related roof issue reported ${extractDamageTimingFromText(text) ?? "recently"}`;
+      if (/hail|storm|wind/i.test(lower)) {
+        result.storm_damage = "yes";
+      }
+    }
+  }
+
+  return result;
+}
+
+function extractDamageTimingFromText(text: string): string | null {
+  const lower = text.toLowerCase();
+
+  if (/\byesterday\b/.test(lower)) return "yesterday";
+  if (/\blast night\b/.test(lower)) return "last night";
+  if (/\bthis morning\b/.test(lower)) return "this morning";
+  if (/\btoday\b/.test(lower)) return "today";
+  if (/\blast week\b/.test(lower)) return "last week";
+  if (/\brecently\b/.test(lower)) return "recently";
+
+  return null;
+}
+
 function extractUrgency(text: string): string | null {
   const normalized = text.toLowerCase();
 
@@ -385,6 +459,23 @@ export function extractFieldsFromSpeech(
   const stormDamage = extractStormDamage(text);
   if (stormDamage) {
     extracted.storm_damage = stormDamage;
+  }
+
+  const insuranceClaim = extractInsuranceClaim(text);
+  if (insuranceClaim) {
+    extracted.insurance_claim = insuranceClaim;
+  }
+
+  const damageContext = extractDamageContext(text);
+  for (const [key, value] of Object.entries(damageContext)) {
+    const fieldKey = key as IntakeFieldKey;
+    if (
+      typeof value === "string" &&
+      !hasValue(extracted[fieldKey]) &&
+      hasValue(value)
+    ) {
+      extracted[fieldKey] = value;
+    }
   }
 
   if (indicatesWaterIntrusion(text) || /emergency|urgent|asap/i.test(text.toLowerCase())) {
@@ -558,39 +649,24 @@ export function getStageQuestion(
         ? "Is this number the best one to reach you?"
         : "What's the best phone number to reach you?";
     case "address":
-      return "What address should we inspect?";
+      return "What address should our roofing team inspect?";
     case "project_type":
-      if (fields.address) {
-        return "Are you looking for repair, replacement, an inspection, or help with storm damage?";
-      }
-      return "Are you looking for a repair, replacement, inspection, or help with storm damage?";
+      return "Are you looking for a repair, replacement, an inspection, or help with storm damage?";
     case "active_leak":
-      return "Is water getting inside the home right now?";
+      return "Is there any interior water intrusion in the home right now?";
     case "storm_damage":
-      if (
-        fields.project_type?.toLowerCase().includes("storm") ||
-        fields.storm_damage === "yes"
-      ) {
-        return "Was this from recent storm damage?";
-      }
-      return "Was this from recent storm damage?";
+      return "Was this related to recent storm damage?";
     case "insurance_claim":
-      if (
-        fields.storm_damage === "yes" ||
-        fields.project_type?.toLowerCase().includes("storm")
-      ) {
-        return "Have you already started an insurance claim for this damage?";
-      }
-      return "Have you already started an insurance claim for this damage, or not yet?";
+      return "Have you already started an insurance claim for this damage?";
     case "urgency":
       if (fields.active_leak === "yes" || fields.urgency === "emergency") {
-        return "How soon do you need someone on-site?";
+        return "How soon do you need a roofing specialist on-site?";
       }
-      return "How soon do you need someone out?";
+      return "How soon would you like someone from our roofing team out?";
     case "appointment":
-      return "What day and time works best for someone to stop by?";
+      return "What day and time works best for a roofing specialist to stop by?";
     case "additional_notes":
-      return "Is there anything else our team should know?";
+      return "Is there anything else our roofing team should know?";
     default:
       return null;
   }
@@ -642,8 +718,8 @@ export function buildWrapUpSummary(fields: CollectedFields): string {
 export function buildConfirmedGoodbye(): string {
   return (
     "Perfect. Everything has been sent to our roofing team. " +
-    "Someone will be reaching out shortly to confirm the next steps. " +
-    "We appreciate you calling Beau's Roofing, and have a great day."
+    "Someone will be reaching out shortly to discuss the next steps. " +
+    "Thank you for calling Beau's Roofing. Have a wonderful day."
   );
 }
 

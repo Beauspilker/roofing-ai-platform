@@ -49,8 +49,10 @@ const CALL_PREFIX =
 const UNCERTAIN_PHRASES =
   /\b(i think|hopefully|maybe|probably|it sounds like|sounds like|i guess|i believe|i feel like)\b/gi;
 
-const SUMMARY_CONFIRMATION = "Does all of that sound correct?";
-const POST_EDIT_CONFIRMATION = "Is everything else correct?";
+const SUMMARY_CONFIRMATION =
+  "Does everything look accurate before I send this to our roofing team?";
+const POST_EDIT_CONFIRMATION =
+  "Does everything else look accurate before I send this to our roofing team?";
 
 function hasText(value: string | undefined): value is string {
   return typeof value === "string" && value.trim().length > 0;
@@ -143,6 +145,10 @@ function professionalizeFreeText(text: string): string {
     .replace(/\bstarted leaking\b/gi, "water intrusion began")
     .replace(/\bleaking\b/gi, "water intrusion")
     .replace(/\bfiled an insurance claim\b/gi, "insurance claim started")
+    .replace(/\btalked to insurance\b/gi, "insurance claim initiated")
+    .replace(/\bspoken to insurance\b/gi, "insurance claim initiated")
+    .replace(/\bshingles everywhere\b/gi, "loose shingles reported")
+    .replace(/\bshingles all over\b/gi, "loose shingles reported")
     .replace(/\bneed someone to come\b/gi, "inspection requested")
     .replace(/\bjust need\b/gi, "requested")
     .trim();
@@ -155,6 +161,12 @@ function summarizeDamageReason(fields: SummaryFields): string | null {
   const projectType = fields.project_type?.trim().toLowerCase() ?? "";
   const lower = problem.toLowerCase();
   const timing = extractDamageTiming(problem);
+
+  if (/shingles everywhere|shingles all over|missing shingles|loose shingles/i.test(lower)) {
+    return /storm|hail|wind|tornado|hurricane/i.test(lower) || fields.storm_damage === "yes"
+      ? "Loose shingles reported following the storm"
+      : "Loose shingles reported on the roof system";
+  }
 
   if (/hail/.test(lower) || projectType === "storm damage") {
     return timing
@@ -227,11 +239,11 @@ function summarizeLeak(fields: SummaryFields): string | null {
 
 function summarizeInsurance(fields: SummaryFields): string | null {
   if (isYes(fields.insurance_claim)) {
-    return "Insurance claim has already been started";
+    return "Insurance claim has already been initiated";
   }
 
   if (isNo(fields.insurance_claim)) {
-    return "Insurance claim has not been started";
+    return "Insurance claim has not been initiated";
   }
 
   return null;
@@ -326,46 +338,38 @@ function reasonToSpoken(reason: string): string {
     .replace(/^Insurance /, "insurance ");
 }
 
-function appointmentToSpoken(appointment: string): string {
-  const lower = appointment.toLowerCase();
-
-  if (lower.startsWith("requested inspection ")) {
-    const detail = appointment.slice("Requested inspection ".length);
-    return `You'd like someone to come ${detail}.`;
-  }
-
-  if (lower.startsWith("requested inspection:")) {
-    const detail = appointment.slice("Requested inspection:".length).trim();
-    return `You'd like someone to come ${detail}.`;
-  }
-
-  return `You'd like someone to come ${appointment.toLowerCase()}.`;
-}
-
 function insuranceToSpoken(insurance: string): string {
-  if (insurance.includes("already been started")) {
-    return "You've already started an insurance claim.";
+  if (insurance.includes("already been initiated")) {
+    return "You've already opened an insurance claim.";
   }
 
-  if (insurance.includes("not been started")) {
-    return "You haven't started an insurance claim yet.";
+  if (insurance.includes("not been initiated")) {
+    return "You haven't opened an insurance claim yet.";
   }
 
   return insurance;
 }
 
+function appointmentToSpokenShort(appointment: string): string {
+  const detail = appointment
+    .replace(/^Requested inspection:?\s*/i, "")
+    .trim()
+    .toLowerCase();
+  return `You'd like a roofing specialist to come ${detail}.`;
+}
+
 function leakToSpoken(leak: string): string {
   if (leak.includes("Interior water intrusion affecting")) {
     const location = leak.replace("Interior water intrusion affecting the ", "");
-    return `I've also noted that water has begun leaking into the ${location}.`;
+    return `I've also noted interior leaking in the ${location}.`;
   }
 
   if (leak.includes("Active interior water intrusion")) {
-    return "I've also noted that water has begun coming inside.";
+    return "I've also noted active interior water intrusion.";
   }
 
   if (leak.includes("No active interior")) {
-    return "There's no water coming inside right now.";
+    return "There's no active interior water intrusion right now.";
   }
 
   return leak;
@@ -373,41 +377,47 @@ function leakToSpoken(leak: string): string {
 
 export function buildSpokenCallSummary(fields: SummaryFields): string {
   const content = buildProfessionalSummaryContent(fields);
-  const lines: string[] = ["Here's what I have."];
+  const sentences: string[] = [];
 
   if (content.reason) {
-    lines.push(`You're calling about ${reasonToSpoken(content.reason)}.`);
+    sentences.push(`I have you down for ${reasonToSpoken(content.reason)}.`);
   }
 
   if (content.location) {
-    lines.push(`We'll be inspecting the property at ${content.location}.`);
+    sentences.push(
+      `We'll be inspecting the property at ${content.location}.`,
+    );
   }
 
-  if (content.contactName && !content.location) {
-    lines.push(`I have you as ${content.contactName}.`);
+  if (content.contactName) {
+    sentences.push(`I have ${content.contactName} as the contact.`);
   }
 
   if (content.insurance) {
-    lines.push(insuranceToSpoken(content.insurance));
+    sentences.push(insuranceToSpoken(content.insurance));
   }
 
   if (content.appointment) {
-    lines.push(appointmentToSpoken(content.appointment));
+    sentences.push(appointmentToSpokenShort(content.appointment));
   }
 
   if (content.leak) {
-    lines.push(leakToSpoken(content.leak));
+    sentences.push(leakToSpoken(content.leak));
   }
 
   if (content.urgency && content.urgency.includes("urgent")) {
-    lines.push("I've marked this as urgent for our team.");
+    sentences.push("I've marked this as an urgent priority for our roofing team.");
   }
 
   if (content.additionalNotes) {
-    lines.push(`I've also noted ${content.additionalNotes.toLowerCase()}.`);
+    sentences.push(`I've also noted ${content.additionalNotes.toLowerCase()}.`);
   }
 
-  return `${lines.join(" ")} ${SUMMARY_CONFIRMATION}`;
+  if (sentences.length === 0) {
+    sentences.push("I have your information ready for our roofing team.");
+  }
+
+  return `${sentences.join(" ")} ${SUMMARY_CONFIRMATION}`;
 }
 
 export function buildCrmCallSummary(fields: SummaryFields): string {
@@ -453,38 +463,112 @@ export function buildCrmCallSummary(fields: SummaryFields): string {
   return lines.join("\n");
 }
 
-function fieldUpdateShortLine(field: SummaryFieldKey): string {
+function fieldEditLabel(field: SummaryFieldKey): string {
   switch (field) {
-    case "full_name":
-      return "I've updated the name.";
-    case "callback_phone":
-      return "I've updated the phone number.";
     case "address":
-      return "I've updated the address.";
+      return "inspection address";
+    case "appointment_preference":
+      return "appointment time";
+    case "full_name":
+      return "contact name";
+    case "callback_phone":
+      return "phone number";
     case "problem_description":
     case "project_type":
     case "storm_damage":
-      return "I've updated the damage details.";
+      return "damage details";
     case "active_leak":
-      return "I've noted the water intrusion.";
+      return "water intrusion details";
     case "insurance_claim":
-      return "I've updated the insurance information.";
+      return "insurance information";
     case "urgency":
-      return "I've updated the priority.";
-    case "appointment_preference":
-      return "I've updated the appointment.";
+      return "priority";
     case "additional_notes":
-      return "I've added that note.";
+      return "additional notes";
+    default:
+      return "information";
+  }
+}
+
+function fieldUpdateDetailLine(
+  field: SummaryFieldKey,
+  fields: SummaryFields,
+): string {
+  const content = buildProfessionalSummaryContent(fields);
+
+  switch (field) {
+    case "address":
+      return content.location
+        ? `I've updated the inspection address to ${content.location}.`
+        : "I've updated the inspection address.";
+    case "appointment_preference": {
+      const detail = content.appointment
+        ?.replace(/^Requested inspection:?\s*/i, "")
+        .trim()
+        .toLowerCase();
+      return detail
+        ? `I've updated the appointment to ${detail}.`
+        : "I've updated the appointment.";
+    }
+    case "full_name":
+      return content.contactName
+        ? `I've updated the contact name to ${content.contactName}.`
+        : "I've updated the contact name.";
+    case "callback_phone":
+      return "I've updated the callback phone number.";
+    case "problem_description":
+    case "project_type":
+    case "storm_damage":
+      return content.reason
+        ? `I've updated the damage details to ${reasonToSpoken(content.reason)}.`
+        : "I've updated the damage details.";
+    case "active_leak":
+      return content.leak
+        ? `I've noted ${content.leak.toLowerCase()}.`
+        : "I've noted the water intrusion.";
+    case "insurance_claim":
+      return content.insurance
+        ? `I've updated the insurance information — ${content.insurance.toLowerCase()}.`
+        : "I've updated the insurance information.";
+    case "urgency":
+      return content.urgency
+        ? `I've updated the priority — ${content.urgency.toLowerCase()}.`
+        : "I've updated the priority.";
+    case "additional_notes":
+      return content.additionalNotes
+        ? `I've added the note — ${content.additionalNotes.toLowerCase()}.`
+        : "I've added that note.";
     default:
       return "I've updated that.";
   }
 }
 
+export function buildSummaryFieldsUpdateReply(
+  fields: SummaryFields,
+  updatedFields: SummaryFieldKey[],
+): string {
+  if (updatedFields.length === 0) {
+    return `No problem. I've updated that. ${POST_EDIT_CONFIRMATION}`;
+  }
+
+  if (updatedFields.length === 1) {
+    return `No problem. ${fieldUpdateDetailLine(updatedFields[0], fields)} ${POST_EDIT_CONFIRMATION}`;
+  }
+
+  if (updatedFields.length === 2) {
+    return `No problem. I've updated both the ${fieldEditLabel(updatedFields[0])} and the ${fieldEditLabel(updatedFields[1])}. ${POST_EDIT_CONFIRMATION}`;
+  }
+
+  const labels = updatedFields.map(fieldEditLabel);
+  const last = labels.pop();
+  return `No problem. I've updated the ${labels.join(", the ")}, and the ${last}. ${POST_EDIT_CONFIRMATION}`;
+}
+
 export function buildSummaryFieldUpdateReply(
   field: SummaryFieldKey,
-  _fields: SummaryFields,
+  fields: SummaryFields,
 ): string {
-  return `${fieldUpdateShortLine(field)} ${POST_EDIT_CONFIRMATION}`;
+  return buildSummaryFieldsUpdateReply(fields, [field]);
 }
 
 export function buildSummaryEditValuePrompt(field: SummaryFieldKey): string {
@@ -526,6 +610,9 @@ export function isPostEditAffirmation(speech: string): boolean {
   const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
 
   return (
+    /\b(looks? accurate|everything (else )?(is )?(correct|right|good|fine|accurate))\b/.test(
+      normalized,
+    ) ||
     /\beverything else (is )?(correct|right|good|fine)\b/.test(normalized) ||
     /\bnothing else\b/.test(normalized) ||
     /^(that'?s all|thats all|that'?s it|thats it|we'?re good|all set)\b/.test(

@@ -163,7 +163,7 @@ export function detectEmergency(speech: string): boolean {
 export function buildEmergencyResponse(): string {
   return (
     "I'm sorry that's happening. " +
-    "I'm marking this as urgent so our team knows to prioritize it."
+    "I've marked this as urgent so our team can prioritize it."
   );
 }
 
@@ -198,19 +198,11 @@ export function buildInterruptionResume(currentQuestion: string | null): string 
 }
 
 export function buildStageTransition(
-  answeredStage: IntakeStage | null,
-  nextStage: IntakeStage,
-  priorPhrases: string[],
-  turnIndex: number,
+  _answeredStage: IntakeStage | null,
+  _nextStage: IntakeStage,
+  _priorPhrases: string[],
+  _turnIndex: number,
 ): string | null {
-  if (answeredStage && ["full_name", "callback_phone", "address"].includes(answeredStage)) {
-    return pickRotatingAcknowledgment(priorPhrases, turnIndex);
-  }
-
-  if (nextStage === "address" || nextStage === "insurance_claim") {
-    return pickRotatingAcknowledgment(priorPhrases, turnIndex);
-  }
-
   return null;
 }
 

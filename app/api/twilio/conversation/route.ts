@@ -15,7 +15,6 @@ import {
   buildFaqResponse,
   buildInterruptionResume,
   buildSmallTalkResponse,
-  buildSummaryEditAcknowledgment,
   detectEmergency,
   detectFaqTopic,
   detectSmallTalk,
@@ -24,6 +23,7 @@ import {
   isLikelyFaqOnly,
   isSummaryFinalConfirmation,
 } from "@/lib/call-intelligence";
+import { buildSummaryFieldUpdateReply, getSummaryConfirmationPrompt, isSummaryDataField } from "@/lib/call-summary";
 import {
   completeCallSession,
   createTranscriptEntry,
@@ -59,7 +59,7 @@ function getNoInputRetryPrompt(
   if (isAwaitingSummaryConfirmation(fields)) {
     return fields.summary_editing
       ? "I didn't catch that. Anything else you'd like to change?"
-      : "I didn't catch that. Does everything sound correct?";
+      : `I didn't catch that. ${getSummaryConfirmationPrompt()}`;
   }
 
   const nextStage = getNextMissingStage(fields);
@@ -214,11 +214,20 @@ export async function POST(request: Request) {
     );
 
     if (correction.updated || hasCorrectionIntent(speechResult)) {
-      const reply = buildSummaryEditAcknowledgment();
+      const updatedFields = correction.updated
+        ? (correction.fields as typeof fieldsBefore)
+        : fieldsBefore;
+      const reply =
+        correction.updated &&
+        correction.field &&
+        isSummaryDataField(correction.field)
+          ? buildSummaryFieldUpdateReply(correction.field, updatedFields)
+          : "Absolutely. I've updated that. Everything else stays the same. Anything else you'd like to change?";
+
       await updateCallSession({
         callSid,
         collectedFields: {
-          ...(correction.updated ? correction.fields : fieldsBefore),
+          ...updatedFields,
           summary_editing: true,
         },
         transcriptEntry: createTranscriptEntry("caller", speechResult),
@@ -234,7 +243,7 @@ export async function POST(request: Request) {
 
     const reply = fieldsBefore.summary_editing
       ? "Anything else you'd like to change?"
-      : "Does everything sound correct?";
+      : getSummaryConfirmationPrompt();
 
     await updateCallSession({
       callSid,
@@ -324,7 +333,7 @@ export async function POST(request: Request) {
         ...updatedFields,
         summary_delivered: true,
       },
-      currentQuestion: "Does everything sound correct?",
+      currentQuestion: getSummaryConfirmationPrompt(),
       transcriptEntry: createTranscriptEntry("assistant", summary),
     });
 

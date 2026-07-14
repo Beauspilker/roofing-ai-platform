@@ -3,11 +3,21 @@ import {
   applyTargetedCorrection,
   buildCombinedResponse,
   buildEmergencyResponse,
-  buildStageTransition,
   detectEmergency,
   hasCorrectionIntent,
   stripInterruptionPrefix,
 } from "@/lib/call-intelligence";
+import {
+  buildCrmCallSummary,
+  buildSpokenCallSummary,
+  getSummaryConfirmationPrompt,
+} from "@/lib/call-summary";
+
+export {
+  buildCrmCallSummary,
+  buildSpokenCallSummary,
+  getSummaryConfirmationPrompt,
+} from "@/lib/call-summary";
 
 export { OPENING_GREETING };
 
@@ -462,7 +472,7 @@ function pickContextualEmpathy(
 
   if (answeredStage === "problem" || answeredStage === "project_type") {
     if (indicatesStructuralEmergency(text)) {
-      const phrase = "That definitely sounds urgent.";
+      const phrase = "I've noted this as urgent.";
       return wasPhraseUsedRecently(phrase, priorPhrases) ? null : phrase;
     }
 
@@ -514,31 +524,56 @@ export function getStageQuestion(
   fields: CollectedFields = {},
   callerPhone?: string,
 ): string | null {
+  const firstName = fieldText(fields.full_name)?.split(/\s+/)[0];
+
   switch (stage) {
     case "problem":
       return "What's happening with the roof?";
     case "full_name":
       return "What's your name?";
     case "callback_phone":
+      if (firstName) {
+        return callerPhone
+          ? `${firstName}, is this number the best one to reach you?`
+          : `What's the best number to reach you, ${firstName}?`;
+      }
       return callerPhone
-        ? "What's the best phone number to reach you — is this one okay?"
+        ? "Is this number the best one to reach you?"
         : "What's the best phone number to reach you?";
     case "address":
-      return "What address would you like us to inspect?";
+      return "What address should we inspect?";
     case "project_type":
+      if (fields.address) {
+        return "Are you looking for repair, replacement, an inspection, or help with storm damage?";
+      }
       return "Are you looking for a repair, replacement, inspection, or help with storm damage?";
     case "active_leak":
-      return "Is water currently getting inside your home?";
+      return "Is water getting inside the home right now?";
     case "storm_damage":
+      if (
+        fields.project_type?.toLowerCase().includes("storm") ||
+        fields.storm_damage === "yes"
+      ) {
+        return "Was this from recent storm damage?";
+      }
       return "Was this from recent storm damage?";
     case "insurance_claim":
+      if (
+        fields.storm_damage === "yes" ||
+        fields.project_type?.toLowerCase().includes("storm")
+      ) {
+        return "Have you already started an insurance claim for this damage?";
+      }
       return "Have you already started an insurance claim for this damage, or not yet?";
     case "urgency":
+      if (fields.active_leak === "yes" || fields.urgency === "emergency") {
+        return "How soon do you need someone on-site?";
+      }
       return "How soon do you need someone out?";
     case "appointment":
-      return "What day and time usually works best for someone to stop by?";
+      return "What day and time works best for someone to stop by?";
     case "additional_notes":
-      return "Is there anything else you'd like our team to know?";
+      return "Is there anything else our team should know?";
     default:
       return null;
   }
@@ -580,77 +615,18 @@ export function buildIntakeResponse(
     options.priorPhrases ?? [],
   );
 
-  const transition =
-    empathy ??
-    buildStageTransition(
-      answeredStage,
-      nextStage as CollectionStage,
-      options.priorPhrases ?? [],
-      options.turnIndex ?? 0,
-    );
-
-  return buildCombinedResponse([transition], question);
+  return buildCombinedResponse([empathy], question);
 }
 
 export function buildWrapUpSummary(fields: CollectedFields): string {
-  const problem = fieldText(fields.problem_description);
-  const fullName = fieldText(fields.full_name);
-  const address = fieldText(fields.address);
-  const projectType = fieldText(fields.project_type);
-  const activeLeak = fieldText(fields.active_leak);
-  const stormDamage = fieldText(fields.storm_damage);
-  const insuranceClaim = fieldText(fields.insurance_claim);
-  const appointment = fieldText(fields.appointment_preference);
-  const additionalNotes = fieldText(fields.additional_notes);
-
-  const parts: string[] = ["Perfect.", "Here's what I have."];
-
-  if (problem) {
-    const locationSuffix = address ? ` at ${address}` : "";
-    parts.push(`You're calling about ${problem}${locationSuffix}.`);
-  } else if (projectType) {
-    const locationSuffix = address ? ` at ${address}` : "";
-    parts.push(`You're calling about ${projectType}${locationSuffix}.`);
-  } else if (address) {
-    parts.push(`You'd like us to inspect ${address}.`);
-  }
-
-  if (fullName) {
-    parts.push(`I have you as ${fullName}.`);
-  }
-
-  if (isYesValue(activeLeak)) {
-    parts.push("Water has started coming inside.");
-  } else if (isNoValue(activeLeak)) {
-    parts.push("There's no water coming inside right now.");
-  }
-
-  if (isYesValue(stormDamage)) {
-    parts.push("This sounds storm-related.");
-  }
-
-  if (isYesValue(insuranceClaim)) {
-    parts.push("You've already started an insurance claim.");
-  } else if (isNoValue(insuranceClaim)) {
-    parts.push("You haven't opened an insurance claim yet.");
-  }
-
-  if (appointment) {
-    parts.push(`You'd like someone to come out ${appointment}.`);
-  }
-
-  if (additionalNotes && additionalNotes.toLowerCase() !== "none") {
-    parts.push(`You also mentioned ${additionalNotes}.`);
-  }
-
-  return `${parts.join(" ")} Does everything sound correct?`;
+  return buildSpokenCallSummary(fields);
 }
 
 export function buildConfirmedGoodbye(): string {
   return (
-    "Perfect. I've sent everything to our roofing team. " +
-    "Someone will reach out as soon as possible regarding next steps. " +
-    "Thank you for calling Beau's Roofing. Have a great day!"
+    "Perfect. Everything has been sent to our roofing team. " +
+    "Someone will be reaching out shortly to confirm the next steps. " +
+    "We appreciate you calling Beau's Roofing, and have a great day."
   );
 }
 
@@ -675,26 +651,5 @@ export function getRecentAssistantPhrases(
 }
 
 export function formatCollectedFields(fields: CollectedFields): string {
-  const lines: string[] = [];
-  const entries: Array<[string, string | null]> = [
-    ["Roof issue", fieldText(fields.problem_description)],
-    ["Name", fieldText(fields.full_name)],
-    ["Callback phone", fieldText(fields.callback_phone)],
-    ["Address", fieldText(fields.address)],
-    ["Project type", fieldText(fields.project_type)],
-    ["Active leak", fieldText(fields.active_leak)],
-    ["Storm damage", fieldText(fields.storm_damage)],
-    ["Insurance claim", fieldText(fields.insurance_claim)],
-    ["Urgency", fieldText(fields.urgency)],
-    ["Appointment preference", fieldText(fields.appointment_preference)],
-    ["Additional notes", fieldText(fields.additional_notes)],
-  ];
-
-  for (const [label, value] of entries) {
-    if (value) {
-      lines.push(`- ${label}: ${value}`);
-    }
-  }
-
-  return lines.join("\n");
+  return buildCrmCallSummary(fields);
 }

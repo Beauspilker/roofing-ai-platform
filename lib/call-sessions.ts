@@ -16,11 +16,12 @@ export type {
   ConversationStage,
 } from "@/lib/call-intake";
 export {
-  buildIntakeResponse,
-  buildWrapUpSummary,
+  buildCrmCallSummary,
+  buildSpokenCallSummary,
   formatCollectedFields,
   getNextMissingStage,
   getStageQuestion,
+  getSummaryConfirmationPrompt,
   isIntakeComplete,
   mergeCallerAnswer,
 } from "@/lib/call-intake";

@@ -1,14 +1,11 @@
 import twilio from "twilio";
 import { generateVoiceResponse } from "@/lib/ai/voice";
+import { getNextMissingStage, getStageQuestion } from "@/lib/call-intake";
 import {
   createTranscriptEntry,
-  getCompanyIdByCalledPhone,
-  getCurrentStage,
-  getOrCreateCallSession,
-  getStageQuestion,
+  ensureCallSessionForTwilioCall,
   updateCallSession,
 } from "@/lib/call-sessions";
-import { createServiceClient } from "@/lib/supabase/service";
 import {
   appendSpeechGather,
   getTwilioCallContext,
@@ -23,35 +20,29 @@ export async function POST(request: Request) {
   const twiml = new twilio.twiml.VoiceResponse();
   twiml.say(message);
 
-  const supabase = createServiceClient();
+  const initialQuestion = ROOF_QUESTION;
 
-  if (supabase && callSid) {
+  if (callSid) {
     try {
-      const companyId = await getCompanyIdByCalledPhone(supabase, calledPhone);
+      const session = await ensureCallSessionForTwilioCall({
+        callSid,
+        callerPhone,
+        calledPhone,
+      });
 
-      if (companyId) {
-        const session = await getOrCreateCallSession({
+      if (session) {
+        const nextStage = getNextMissingStage(session.collected_fields ?? {});
+
+        await updateCallSession({
           callSid,
-          companyId,
-          callerPhone,
-          calledPhone,
+          currentQuestion:
+            getStageQuestion(
+              nextStage,
+              session.collected_fields ?? {},
+              callerPhone,
+            ) ?? initialQuestion,
+          transcriptEntry: createTranscriptEntry("assistant", message),
         });
-
-        if (session) {
-          const initialStage = getCurrentStage(
-            session.collected_fields ?? { stage: "problem" },
-          );
-
-          await updateCallSession({
-            callSid,
-            currentQuestion: getStageQuestion(initialStage) ?? ROOF_QUESTION,
-            collectedFields: {
-              ...(session.collected_fields ?? {}),
-              stage: initialStage,
-            },
-            transcriptEntry: createTranscriptEntry("assistant", message),
-          });
-        }
       }
     } catch (error) {
       console.error("Failed to initialize call session:", error);
@@ -61,7 +52,7 @@ export async function POST(request: Request) {
   appendSpeechGather(twiml, request, {
     attempt: 1,
     initial: true,
-    prompt: ROOF_QUESTION,
+    prompt: initialQuestion,
   });
 
   return twimlResponse(twiml);

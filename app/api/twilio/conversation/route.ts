@@ -1,59 +1,48 @@
 import twilio from "twilio";
-import { generateConversationResponse } from "@/lib/ai/voice";
 import {
-  applyCallerAnswer,
-  buildConversationMemoryContext,
+  buildIntakeResponse,
+  buildWrapUpSummary,
+  getNextMissingStage,
+  getStageQuestion,
+  mergeCallerAnswer,
+} from "@/lib/call-intake";
+import {
   completeCallSession,
   createTranscriptEntry,
+  ensureCallSessionForTwilioCall,
   getCallSessionBySid,
-  getCompanyIdByCalledPhone,
-  getCurrentStage,
-  getOrCreateCallSession,
-  getStageQuestion,
   updateCallSession,
 } from "@/lib/call-sessions";
-import { createServiceClient } from "@/lib/supabase/service";
+import { generateConversationResponse } from "@/lib/ai/voice";
 import {
   appendSpeechGather,
   CALLER_GOODBYE,
   getSpeechResult,
   getTwilioCallContext,
   isGoodbyePhrase,
-  NO_INPUT_FOLLOW_UP_PROMPT,
   NO_INPUT_GOODBYE,
-  NO_INPUT_RETRY_PROMPT,
+  NO_INPUT_FOLLOW_UP_PROMPT,
   twimlResponse,
 } from "@/lib/twilio/helpers";
 
-async function ensureCallSession(
-  callSid: string,
+function getNoInputRetryPrompt(
+  session: Awaited<ReturnType<typeof getCallSessionBySid>>,
   callerPhone: string,
-  calledPhone: string,
-) {
-  const existingSession = await getCallSessionBySid(callSid);
-
-  if (existingSession) {
-    return existingSession;
+): string {
+  if (!session) {
+    return "I didn't catch that. Please tell me what is going on with your roof today.";
   }
 
-  const supabase = createServiceClient();
+  const nextStage = getNextMissingStage(session.collected_fields ?? {});
+  const question =
+    getStageQuestion(nextStage, session.collected_fields ?? {}, callerPhone) ??
+    session.current_question;
 
-  if (!supabase) {
-    return null;
+  if (question) {
+    return `I didn't catch that. ${question}`;
   }
 
-  const companyId = await getCompanyIdByCalledPhone(supabase, calledPhone);
-
-  if (!companyId) {
-    return null;
-  }
-
-  return getOrCreateCallSession({
-    callSid,
-    companyId,
-    callerPhone,
-    calledPhone,
-  });
+  return NO_INPUT_FOLLOW_UP_PROMPT;
 }
 
 export async function POST(request: Request) {
@@ -65,6 +54,13 @@ export async function POST(request: Request) {
   const isInitial = searchParams.get("initial") === "1";
 
   const twiml = new twilio.twiml.VoiceResponse();
+  let session = callSid
+    ? await ensureCallSessionForTwilioCall({
+        callSid,
+        callerPhone,
+        calledPhone,
+      })
+    : null;
 
   if (!speechResult) {
     if (callSid) {
@@ -83,7 +79,7 @@ export async function POST(request: Request) {
       return twimlResponse(twiml);
     }
 
-    twiml.say(isInitial ? NO_INPUT_RETRY_PROMPT : NO_INPUT_FOLLOW_UP_PROMPT);
+    twiml.say(getNoInputRetryPrompt(session, callerPhone));
     appendSpeechGather(twiml, request, {
       attempt: attempt + 1,
       initial: isInitial,
@@ -100,44 +96,63 @@ export async function POST(request: Request) {
     return twimlResponse(twiml);
   }
 
-  let session = callSid
-    ? await ensureCallSession(callSid, callerPhone, calledPhone)
-    : null;
-
-  let memory = session ? buildConversationMemoryContext(session) : undefined;
-
-  if (session && callSid) {
-    const answerStage = getCurrentStage(session.collected_fields ?? {});
-    const updatedFields = applyCallerAnswer(
-      session.collected_fields ?? {},
-      answerStage,
-      speechResult,
-    );
-
-    session =
-      (await updateCallSession({
-        callSid,
-        collectedFields: updatedFields,
-        transcriptEntry: createTranscriptEntry("caller", speechResult),
-        attemptCount: 1,
-      })) ?? session;
-
-    memory = buildConversationMemoryContext(session);
+  if (!session || !callSid) {
+    const reply = await generateConversationResponse(speechResult);
+    twiml.say(reply);
+    appendSpeechGather(twiml, request, { attempt: 1 });
+    return twimlResponse(twiml);
   }
 
-  const reply = await generateConversationResponse(speechResult, memory);
-  twiml.say(reply);
+  const fieldsBefore = session.collected_fields ?? {};
+  const answeredStage = getNextMissingStage(fieldsBefore);
+  const updatedFields = mergeCallerAnswer(
+    fieldsBefore,
+    speechResult,
+    callerPhone,
+  );
+  const turnIndex = (session.transcript?.length ?? 0) + 1;
 
-  if (session && callSid) {
-    const nextStage = getCurrentStage(session.collected_fields ?? {});
+  session =
+    (await updateCallSession({
+      callSid,
+      collectedFields: updatedFields,
+      transcriptEntry: createTranscriptEntry("caller", speechResult),
+      attemptCount: 1,
+    })) ?? session;
+
+  const nextStage = getNextMissingStage(updatedFields);
+
+  if (nextStage === "wrap_up") {
+    const summary = buildWrapUpSummary(updatedFields);
 
     await updateCallSession({
       callSid,
-      currentQuestion: getStageQuestion(nextStage),
-      transcriptEntry: createTranscriptEntry("assistant", reply),
+      collectedFields: {
+        ...updatedFields,
+        summary_delivered: true,
+      },
+      currentQuestion: null,
+      transcriptEntry: createTranscriptEntry("assistant", summary),
     });
+    await completeCallSession(callSid, "completed");
+
+    twiml.say(summary);
+    return twimlResponse(twiml);
   }
 
+  const reply = buildIntakeResponse(updatedFields, answeredStage, {
+    callerPhone,
+    turnIndex,
+    fieldsBefore,
+  });
+
+  await updateCallSession({
+    callSid,
+    currentQuestion: getStageQuestion(nextStage, updatedFields, callerPhone),
+    transcriptEntry: createTranscriptEntry("assistant", reply),
+  });
+
+  twiml.say(reply);
   appendSpeechGather(twiml, request, {
     attempt: 1,
   });

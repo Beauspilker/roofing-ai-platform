@@ -50,10 +50,15 @@ export function getTwilioCallContext(formData: FormData): {
   callerPhone: string;
   calledPhone: string;
 } {
+  const calledPhone =
+    formData.get("To")?.toString().trim() ||
+    formData.get("Called")?.toString().trim() ||
+    "";
+
   return {
     callSid: formData.get("CallSid")?.toString().trim() ?? "",
     callerPhone: formData.get("From")?.toString().trim() ?? "",
-    calledPhone: formData.get("To")?.toString().trim() ?? "",
+    calledPhone,
   };
 }
 

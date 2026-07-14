@@ -1,34 +1,35 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
+import {
+  type CollectedFields,
+  formatCollectedFields,
+  getNextMissingStage,
+  getStageQuestion,
+} from "@/lib/call-intake";
 import { createServiceClient } from "@/lib/supabase/service";
-import { ROOF_QUESTION } from "@/lib/twilio/helpers";
+import {
+  normalizePhone,
+  resolveCompanyForTwilioCall,
+} from "@/lib/twilio/company";
 
-export const CALL_INTAKE_STAGES = [
-  "problem",
-  "full_name",
-  "address",
-  "project_type",
-  "insurance_claim",
-  "appointment",
-] as const;
-
-export type CollectionStage = (typeof CALL_INTAKE_STAGES)[number];
-
-export type ConversationStage = CollectionStage | "wrap_up";
+export type {
+  CollectedFields,
+  CollectionStage,
+  ConversationStage,
+} from "@/lib/call-intake";
+export {
+  buildIntakeResponse,
+  buildWrapUpSummary,
+  formatCollectedFields,
+  getNextMissingStage,
+  getStageQuestion,
+  isIntakeComplete,
+  mergeCallerAnswer,
+} from "@/lib/call-intake";
+export { normalizePhone, resolveCompanyForTwilioCall } from "@/lib/twilio/company";
 
 export type TranscriptEntry = {
   role: "caller" | "assistant";
   content: string;
   at: string;
-};
-
-export type CollectedFields = {
-  stage?: ConversationStage;
-  problem_description?: string;
-  full_name?: string;
-  address?: string;
-  project_type?: string;
-  insurance_claim?: string;
-  appointment_preference?: string;
 };
 
 export type CallSession = {
@@ -50,119 +51,6 @@ export type CallSession = {
   updated_at: string;
 };
 
-const STAGE_FIELD_KEYS: Record<CollectionStage, keyof CollectedFields> = {
-  problem: "problem_description",
-  full_name: "full_name",
-  address: "address",
-  project_type: "project_type",
-  insurance_claim: "insurance_claim",
-  appointment: "appointment_preference",
-};
-
-const STAGE_LABELS: Record<ConversationStage, string> = {
-  problem: "what is going on with their roof",
-  full_name: "their full name",
-  address: "the property address",
-  project_type:
-    "whether this is a repair, replacement, inspection, or storm damage",
-  insurance_claim: "whether they are filing an insurance claim",
-  appointment: "when would be a good time for an inspection visit",
-  wrap_up: "anything else they need help with before ending the call",
-};
-
-export function normalizePhone(phone: string): string {
-  const digits = phone.replace(/\D/g, "");
-  return digits.length >= 10 ? digits.slice(-10) : digits;
-}
-
-export function getCurrentStage(fields: CollectedFields): ConversationStage {
-  if (fields.stage) {
-    return fields.stage;
-  }
-
-  return getNextMissingStage(fields);
-}
-
-export function getNextMissingStage(
-  fields: CollectedFields,
-): ConversationStage {
-  for (const stage of CALL_INTAKE_STAGES) {
-    const fieldKey = STAGE_FIELD_KEYS[stage];
-    const value = fields[fieldKey];
-
-    if (typeof value !== "string" || value.trim().length === 0) {
-      return stage;
-    }
-  }
-
-  return "wrap_up";
-}
-
-export function applyCallerAnswer(
-  fields: CollectedFields,
-  stage: ConversationStage,
-  answer: string,
-): CollectedFields {
-  if (stage === "wrap_up") {
-    return { ...fields, stage: "wrap_up" };
-  }
-
-  const fieldKey = STAGE_FIELD_KEYS[stage];
-  const updatedFields: CollectedFields = {
-    ...fields,
-    [fieldKey]: answer.trim(),
-  };
-
-  return {
-    ...updatedFields,
-    stage: getNextMissingStage(updatedFields),
-  };
-}
-
-export function formatCollectedFields(fields: CollectedFields): string {
-  const lines: string[] = [];
-
-  if (fields.problem_description?.trim()) {
-    lines.push(`- Roof issue: ${fields.problem_description.trim()}`);
-  }
-  if (fields.full_name?.trim()) {
-    lines.push(`- Name: ${fields.full_name.trim()}`);
-  }
-  if (fields.address?.trim()) {
-    lines.push(`- Address: ${fields.address.trim()}`);
-  }
-  if (fields.project_type?.trim()) {
-    lines.push(`- Project type: ${fields.project_type.trim()}`);
-  }
-  if (fields.insurance_claim?.trim()) {
-    lines.push(`- Insurance claim: ${fields.insurance_claim.trim()}`);
-  }
-  if (fields.appointment_preference?.trim()) {
-    lines.push(`- Appointment preference: ${fields.appointment_preference.trim()}`);
-  }
-
-  return lines.join("\n");
-}
-
-export function getStageQuestion(stage: ConversationStage): string | null {
-  switch (stage) {
-    case "problem":
-      return ROOF_QUESTION;
-    case "full_name":
-      return "May I have your name?";
-    case "address":
-      return "What is the address of the property?";
-    case "project_type":
-      return "Is this for a repair, replacement, inspection, or storm damage?";
-    case "insurance_claim":
-      return "Are you filing an insurance claim for this?";
-    case "appointment":
-      return "When would be a good time for us to come take a look?";
-    default:
-      return null;
-  }
-}
-
 export function createTranscriptEntry(
   role: TranscriptEntry["role"],
   content: string,
@@ -174,32 +62,33 @@ export function createTranscriptEntry(
   };
 }
 
-export async function getCompanyIdByCalledPhone(
-  supabase: SupabaseClient,
-  calledPhone: string,
-): Promise<string | null> {
-  const normalizedCalledPhone = normalizePhone(calledPhone);
-
-  if (!normalizedCalledPhone) {
-    return process.env.TWILIO_DEFAULT_COMPANY_ID?.trim() ?? null;
+export async function ensureCallSessionForTwilioCall(input: {
+  callSid: string;
+  callerPhone: string;
+  calledPhone: string;
+}): Promise<CallSession | null> {
+  if (!input.callSid) {
+    return null;
   }
 
-  const { data, error } = await supabase
-    .from("companies")
-    .select("id, business_phone")
-    .not("business_phone", "is", null);
+  const existingSession = await getCallSessionBySid(input.callSid);
 
-  if (error) {
-    throw error;
+  if (existingSession) {
+    return existingSession;
   }
 
-  for (const company of data ?? []) {
-    if (normalizePhone(company.business_phone ?? "") === normalizedCalledPhone) {
-      return company.id;
-    }
+  const companyId = await resolveCompanyForTwilioCall(input.calledPhone);
+
+  if (!companyId) {
+    return null;
   }
 
-  return process.env.TWILIO_DEFAULT_COMPANY_ID?.trim() ?? null;
+  return getOrCreateCallSession({
+    callSid: input.callSid,
+    companyId,
+    callerPhone: input.callerPhone,
+    calledPhone: input.calledPhone,
+  });
 }
 
 export async function getCallSessionBySid(
@@ -308,11 +197,11 @@ export async function completeCallSession(
 export function buildConversationMemoryContext(session: CallSession) {
   const collectedFields =
     (session.collected_fields as CollectedFields | null) ?? {};
+  const currentStage = getNextMissingStage(collectedFields);
 
   return {
     collectedFields,
-    currentStage: getCurrentStage(collectedFields),
-    stageLabel: STAGE_LABELS[getCurrentStage(collectedFields)],
+    currentStage,
     transcript: (session.transcript as TranscriptEntry[] | null) ?? [],
   };
 }

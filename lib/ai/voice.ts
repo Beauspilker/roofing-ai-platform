@@ -1,13 +1,11 @@
 import { generateTextResponse } from "@/lib/ai/openai";
-
-const FALLBACK_GREETING =
-  "Thank you for calling. This is the Roofing AI assistant. How can I help you today?";
+import { OPENING_GREETING } from "@/lib/twilio/helpers";
 
 const RECEPTIONIST_INSTRUCTIONS =
   "You are a friendly roofing company phone receptionist. Reply with one short spoken greeting sentence only. No quotes, labels, or extra commentary.";
 
 const RECEPTIONIST_PROMPT =
-  "Generate a short phone greeting for Beau's Roofing. It should sound like: Thank you for calling. This is Beau's Roofing AI assistant. How can I help you today?";
+  "Generate a short phone greeting for Beau's Roofing. It should sound like: Hi, this is Beau's Roofing. What can I help you with today?";
 
 export async function generateVoiceResponse(): Promise<string> {
   try {
@@ -23,11 +21,11 @@ export async function generateVoiceResponse(): Promise<string> {
     // Fall back to the static greeting when OpenAI is unavailable.
   }
 
-  return FALLBACK_GREETING;
+  return OPENING_GREETING;
 }
 
 const FALLBACK_CONVERSATION =
-  "I'm having trouble right now. Please tell me what is going on with your roof today.";
+  "I'm having trouble right now. What can I help you with today?";
 
 const FALLBACK_CONVERSATION_INSTRUCTIONS =
   "You are a friendly roofing receptionist for Beau's Roofing on a live phone call. " +

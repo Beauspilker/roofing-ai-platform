@@ -1,9 +1,12 @@
 import twilio from "twilio";
 import {
+  buildConfirmedGoodbye,
+  buildCorrectionGoodbye,
   buildIntakeResponse,
   buildWrapUpSummary,
   getNextMissingStage,
   getStageQuestion,
+  isAwaitingSummaryConfirmation,
   mergeCallerAnswer,
 } from "@/lib/call-intake";
 import {
@@ -19,27 +22,38 @@ import {
   CALLER_GOODBYE,
   getSpeechResult,
   getTwilioCallContext,
+  isConfirmationPhrase,
+  isCorrectionPhrase,
   isGoodbyePhrase,
   NO_INPUT_GOODBYE,
   NO_INPUT_FOLLOW_UP_PROMPT,
+  OPENING_RETRY_PROMPT,
   twimlResponse,
 } from "@/lib/twilio/helpers";
 
 function getNoInputRetryPrompt(
   session: Awaited<ReturnType<typeof getCallSessionBySid>>,
   callerPhone: string,
+  isInitial: boolean,
 ): string {
   if (!session) {
-    return "I didn't catch that. Please tell me what is going on with your roof today.";
+    return OPENING_RETRY_PROMPT;
   }
 
-  const nextStage = getNextMissingStage(session.collected_fields ?? {});
+  const fields = session.collected_fields ?? {};
+
+  if (isAwaitingSummaryConfirmation(fields)) {
+    return "I didn't catch that. Does all of that sound correct?";
+  }
+
+  const nextStage = getNextMissingStage(fields);
   const question =
-    getStageQuestion(nextStage, session.collected_fields ?? {}, callerPhone) ??
-    session.current_question;
+    getStageQuestion(nextStage, fields, callerPhone) ?? session.current_question;
 
   if (question) {
-    return `I didn't catch that. ${question}`;
+    return isInitial && nextStage === "problem"
+      ? OPENING_RETRY_PROMPT
+      : `I didn't catch that. ${question}`;
   }
 
   return NO_INPUT_FOLLOW_UP_PROMPT;
@@ -79,7 +93,7 @@ export async function POST(request: Request) {
       return twimlResponse(twiml);
     }
 
-    twiml.say(getNoInputRetryPrompt(session, callerPhone));
+    twiml.say(getNoInputRetryPrompt(session, callerPhone, isInitial));
     appendSpeechGather(twiml, request, {
       attempt: attempt + 1,
       initial: isInitial,
@@ -104,6 +118,49 @@ export async function POST(request: Request) {
   }
 
   const fieldsBefore = session.collected_fields ?? {};
+
+  if (isAwaitingSummaryConfirmation(fieldsBefore)) {
+    let reply: string;
+    let confirmed = false;
+
+    if (isConfirmationPhrase(speechResult)) {
+      reply = buildConfirmedGoodbye();
+      confirmed = true;
+    } else if (isCorrectionPhrase(speechResult)) {
+      reply = buildCorrectionGoodbye();
+      confirmed = true;
+    } else {
+      reply = "Does all of that sound correct?";
+    }
+
+    await updateCallSession({
+      callSid,
+      collectedFields: {
+        ...fieldsBefore,
+        summary_confirmed: confirmed,
+      },
+      transcriptEntry: createTranscriptEntry("caller", speechResult),
+    });
+
+    if (confirmed) {
+      await updateCallSession({
+        callSid,
+        transcriptEntry: createTranscriptEntry("assistant", reply),
+      });
+      await completeCallSession(callSid, "completed");
+      twiml.say(reply);
+      return twimlResponse(twiml);
+    }
+
+    await updateCallSession({
+      callSid,
+      transcriptEntry: createTranscriptEntry("assistant", reply),
+    });
+    twiml.say(reply);
+    appendSpeechGather(twiml, request, { attempt: 1 });
+    return twimlResponse(twiml);
+  }
+
   const answeredStage = getNextMissingStage(fieldsBefore);
   const updatedFields = mergeCallerAnswer(
     fieldsBefore,
@@ -131,12 +188,12 @@ export async function POST(request: Request) {
         ...updatedFields,
         summary_delivered: true,
       },
-      currentQuestion: null,
+      currentQuestion: "Does all of that sound correct?",
       transcriptEntry: createTranscriptEntry("assistant", summary),
     });
-    await completeCallSession(callSid, "completed");
 
     twiml.say(summary);
+    appendSpeechGather(twiml, request, { attempt: 1 });
     return twimlResponse(twiml);
   }
 
@@ -144,6 +201,7 @@ export async function POST(request: Request) {
     callerPhone,
     turnIndex,
     fieldsBefore,
+    callerAnswer: speechResult,
   });
 
   await updateCallSession({

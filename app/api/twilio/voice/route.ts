@@ -1,6 +1,9 @@
 import twilio from "twilio";
-import { generateVoiceResponse } from "@/lib/ai/voice";
-import { getNextMissingStage, getStageQuestion } from "@/lib/call-intake";
+import {
+  getNextMissingStage,
+  getStageQuestion,
+  OPENING_GREETING,
+} from "@/lib/call-intake";
 import {
   createTranscriptEntry,
   ensureCallSessionForTwilioCall,
@@ -9,18 +12,15 @@ import {
 import {
   appendSpeechGather,
   getTwilioCallContext,
-  ROOF_QUESTION,
   twimlResponse,
 } from "@/lib/twilio/helpers";
 
 export async function POST(request: Request) {
   const formData = await request.formData();
   const { callSid, callerPhone, calledPhone } = getTwilioCallContext(formData);
-  const message = await generateVoiceResponse();
+  const message = OPENING_GREETING;
   const twiml = new twilio.twiml.VoiceResponse();
   twiml.say(message);
-
-  const initialQuestion = ROOF_QUESTION;
 
   if (callSid) {
     try {
@@ -40,7 +40,7 @@ export async function POST(request: Request) {
               nextStage,
               session.collected_fields ?? {},
               callerPhone,
-            ) ?? initialQuestion,
+            ) ?? message,
           transcriptEntry: createTranscriptEntry("assistant", message),
         });
       }
@@ -52,7 +52,6 @@ export async function POST(request: Request) {
   appendSpeechGather(twiml, request, {
     attempt: 1,
     initial: true,
-    prompt: initialQuestion,
   });
 
   return twimlResponse(twiml);

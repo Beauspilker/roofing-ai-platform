@@ -1,4 +1,6 @@
-import { ROOF_QUESTION } from "@/lib/twilio/helpers";
+import { OPENING_GREETING } from "@/lib/twilio/helpers";
+
+export { OPENING_GREETING };
 
 export const CALL_INTAKE_STAGES = [
   "problem",
@@ -31,11 +33,12 @@ export type CollectedFields = {
   appointment_preference?: string;
   additional_notes?: string;
   summary_delivered?: boolean;
+  summary_confirmed?: boolean;
 };
 
 type IntakeFieldKey = Exclude<
   keyof CollectedFields,
-  "summary_delivered"
+  "summary_delivered" | "summary_confirmed"
 >;
 
 const STAGE_FIELD_KEYS: Record<CollectionStage, IntakeFieldKey> = {
@@ -52,13 +55,12 @@ const STAGE_FIELD_KEYS: Record<CollectionStage, IntakeFieldKey> = {
   additional_notes: "additional_notes",
 };
 
-const ACKNOWLEDGMENTS = [
+const BRIEF_ACKNOWLEDGMENTS = [
   "Thanks.",
   "Okay.",
+  "That helps.",
   "Understood.",
   "Perfect.",
-  "That helps.",
-  "Alright.",
 ] as const;
 
 function hasValue(value: string | undefined): boolean {
@@ -71,6 +73,28 @@ function fieldText(value: string | undefined): string | null {
   }
 
   return value.trim();
+}
+
+function isYesValue(value: string | null): boolean {
+  if (!value) {
+    return false;
+  }
+
+  return /^(yes|yeah|yep|yup|true|correct|sure)$/i.test(value.trim());
+}
+
+function isNoValue(value: string | null): boolean {
+  if (!value) {
+    return false;
+  }
+
+  return /^(no|nope|nah|false|none|not|negative)$/i.test(value.trim());
+}
+
+function isUrgentProblem(text: string): boolean {
+  return /leak|leaking|water|emergency|urgent|damage|hole|dripping|flooding|collapsed|hail|storm/i.test(
+    text,
+  );
 }
 
 export function getNextMissingStage(fields: CollectedFields): ConversationStage {
@@ -86,6 +110,14 @@ export function getNextMissingStage(fields: CollectedFields): ConversationStage 
 
 export function isIntakeComplete(fields: CollectedFields): boolean {
   return getNextMissingStage(fields) === "wrap_up";
+}
+
+export function isAwaitingSummaryConfirmation(fields: CollectedFields): boolean {
+  return (
+    isIntakeComplete(fields) &&
+    fields.summary_delivered === true &&
+    fields.summary_confirmed !== true
+  );
 }
 
 function extractYesNo(text: string): string | null {
@@ -319,28 +351,38 @@ function countNewlyFilledFields(
   return count;
 }
 
+const ROUTINE_STAGES: CollectionStage[] = [
+  "full_name",
+  "callback_phone",
+  "address",
+  "appointment",
+  "active_leak",
+  "storm_damage",
+  "insurance_claim",
+  "additional_notes",
+];
+
 function pickAcknowledgment(
   answeredStage: CollectionStage,
+  answerText: string,
   newlyFilledCount: number,
   turnIndex: number,
 ): string | null {
-  if (newlyFilledCount > 1) {
+  if (newlyFilledCount > 1 || ROUTINE_STAGES.includes(answeredStage)) {
     return null;
   }
 
-  if (answeredStage === "problem" || answeredStage === "additional_notes") {
-    return null;
+  if (answeredStage === "problem") {
+    return isUrgentProblem(answerText) ? "I understand." : null;
   }
 
-  if (
-    answeredStage === "active_leak" ||
-    answeredStage === "storm_damage" ||
-    answeredStage === "insurance_claim"
-  ) {
-    return turnIndex % 2 === 0 ? "Thanks." : null;
+  if (answeredStage === "project_type" || answeredStage === "urgency") {
+    return turnIndex % 4 === 0
+      ? BRIEF_ACKNOWLEDGMENTS[turnIndex % BRIEF_ACKNOWLEDGMENTS.length]
+      : null;
   }
 
-  return ACKNOWLEDGMENTS[turnIndex % ACKNOWLEDGMENTS.length] ?? null;
+  return null;
 }
 
 export function getStageQuestion(
@@ -350,7 +392,7 @@ export function getStageQuestion(
 ): string | null {
   switch (stage) {
     case "problem":
-      return ROOF_QUESTION;
+      return "Could you tell me what's going on with the roof?";
     case "full_name":
       return "May I have your full name?";
     case "callback_phone":
@@ -385,6 +427,7 @@ export function buildIntakeResponse(
     callerPhone?: string;
     turnIndex?: number;
     fieldsBefore?: CollectedFields;
+    callerAnswer?: string;
   } = {},
 ): string {
   const nextStage = getNextMissingStage(fields);
@@ -407,6 +450,7 @@ export function buildIntakeResponse(
 
   const acknowledgment = pickAcknowledgment(
     answeredStage,
+    options.callerAnswer ?? "",
     newlyFilledCount,
     options.turnIndex ?? 0,
   );
@@ -428,8 +472,43 @@ function formatPhoneForSpeech(phone: string): string {
   return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
 }
 
+function describeYesNo(
+  value: string | null,
+  yesPhrase: string,
+  noPhrase: string,
+): string | null {
+  if (isYesValue(value)) {
+    return yesPhrase;
+  }
+
+  if (isNoValue(value)) {
+    return noPhrase;
+  }
+
+  return null;
+}
+
+function describeUrgency(value: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const normalized = value.toLowerCase();
+
+  if (normalized.includes("emergency")) {
+    return "This is urgent.";
+  }
+  if (normalized.includes("flexible")) {
+    return "Timing is flexible.";
+  }
+  if (normalized.includes("standard")) {
+    return "Standard timing works for you.";
+  }
+
+  return `You said the timing is ${value}.`;
+}
+
 export function buildWrapUpSummary(fields: CollectedFields): string {
-  const details: string[] = [];
   const problem = fieldText(fields.problem_description);
   const fullName = fieldText(fields.full_name);
   const callbackPhone = fieldText(fields.callback_phone);
@@ -442,49 +521,99 @@ export function buildWrapUpSummary(fields: CollectedFields): string {
   const appointment = fieldText(fields.appointment_preference);
   const additionalNotes = fieldText(fields.additional_notes);
 
+  const sentences: string[] = [];
+
   if (problem) {
-    details.push(`the issue is ${problem}`);
+    const projectSuffix = projectType ? ` related to ${projectType}` : "";
+    sentences.push(`You're calling about ${problem}${projectSuffix}.`);
+  } else if (projectType) {
+    sentences.push(`You're calling about a ${projectType} project.`);
   }
+
+  const contactParts: string[] = [];
   if (fullName) {
-    details.push(`your name is ${fullName}`);
-  }
-  if (callbackPhone) {
-    details.push(`we'll call you at ${formatPhoneForSpeech(callbackPhone)}`);
+    contactParts.push(`I have you as ${fullName}`);
   }
   if (address) {
-    details.push(`the property is at ${address}`);
+    contactParts.push(`at ${address}`);
   }
-  if (projectType) {
-    details.push(`this is a ${projectType} project`);
+  if (callbackPhone) {
+    contactParts.push(
+      `and we'll reach you at ${formatPhoneForSpeech(callbackPhone)}`,
+    );
   }
-  if (activeLeak) {
-    details.push(`active leak: ${activeLeak}`);
+  if (contactParts.length > 0) {
+    sentences.push(`${contactParts.join(" ")}.`);
   }
-  if (stormDamage) {
-    details.push(`storm damage: ${stormDamage}`);
+
+  const conditionParts: string[] = [];
+  const leakPhrase = describeYesNo(
+    activeLeak,
+    "There is an active leak.",
+    "There is no active leak.",
+  );
+  if (leakPhrase) {
+    conditionParts.push(leakPhrase);
   }
-  if (insuranceClaim) {
-    details.push(`insurance claim: ${insuranceClaim}`);
+
+  const stormPhrase = describeYesNo(
+    stormDamage,
+    "This was caused by recent storm damage.",
+    "This was not caused by recent storm damage.",
+  );
+  if (stormPhrase) {
+    conditionParts.push(stormPhrase);
   }
-  if (urgency) {
-    details.push(`urgency is ${urgency}`);
+
+  const insurancePhrase = describeYesNo(
+    insuranceClaim,
+    "You're planning to file an insurance claim.",
+    "You haven't filed an insurance claim yet.",
+  );
+  if (insurancePhrase) {
+    conditionParts.push(insurancePhrase);
+  }
+
+  if (conditionParts.length > 0) {
+    sentences.push(conditionParts.join(" "));
+  }
+
+  const closingParts: string[] = [];
+  const urgencyPhrase = describeUrgency(urgency);
+  if (urgencyPhrase) {
+    closingParts.push(urgencyPhrase);
   }
   if (appointment) {
-    details.push(`you'd like us to come out ${appointment}`);
+    closingParts.push(`You requested ${appointment}.`);
   }
-  if (additionalNotes && additionalNotes.toLowerCase() !== "none") {
-    details.push(`additional notes: ${additionalNotes}`);
+  if (
+    additionalNotes &&
+    additionalNotes.toLowerCase() !== "none"
+  ) {
+    closingParts.push(`You also mentioned ${additionalNotes}.`);
+  }
+  if (closingParts.length > 0) {
+    sentences.push(closingParts.join(" "));
   }
 
-  const summaryBody =
-    details.length > 0
-      ? details.join(", ")
-      : "we have your request on file";
+  if (sentences.length === 0) {
+    sentences.push("I have your request on file.");
+  }
 
+  return `${sentences.join(" ")} Does all of that sound correct?`;
+}
+
+export function buildConfirmedGoodbye(): string {
   return (
-    `Thanks. Let me confirm what I have: ${summaryBody}. ` +
-    "Someone from Beau's Roofing will follow up to confirm your appointment. " +
+    "Perfect. Someone from Beau's Roofing will follow up to confirm your appointment. " +
     "Thank you for calling. Have a great day!"
+  );
+}
+
+export function buildCorrectionGoodbye(): string {
+  return (
+    "Thanks for letting us know. Someone from Beau's Roofing will follow up with you to make any corrections. " +
+    "Have a great day!"
   );
 }
 

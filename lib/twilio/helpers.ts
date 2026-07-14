@@ -1,11 +1,15 @@
 import { NextResponse } from "next/server";
 import twilio from "twilio";
 
-export const ROOF_QUESTION =
-  "Please tell me what is going on with your roof today.";
+export const OPENING_GREETING =
+  "Hi, this is Beau's Roofing. What can I help you with today?";
 
-export const NO_INPUT_RETRY_PROMPT =
-  "I didn't catch that. Please tell me what is going on with your roof today.";
+export const ROOF_QUESTION = OPENING_GREETING;
+
+export const OPENING_RETRY_PROMPT =
+  "I didn't catch that. What can I help you with today?";
+
+export const NO_INPUT_RETRY_PROMPT = OPENING_RETRY_PROMPT;
 
 export const NO_INPUT_FOLLOW_UP_PROMPT = "I didn't catch that. Please go ahead.";
 
@@ -67,6 +71,24 @@ export function isGoodbyePhrase(speech: string): boolean {
 
   return GOODBYE_PHRASES.some(
     (phrase) => normalized === phrase || normalized.includes(phrase),
+  );
+}
+
+export function isConfirmationPhrase(speech: string): boolean {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+
+  return (
+    /^(yes|yeah|yep|yup|correct|right|exactly|sure|absolutely|sounds good|sound good|that'?s right|thats right|that is correct|all good|perfect|ok(?:ay)?)\b/.test(
+      normalized,
+    ) || normalized === "uh huh"
+  );
+}
+
+export function isCorrectionPhrase(speech: string): boolean {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+
+  return /^(no|nope|nah|not quite|incorrect|wrong|that'?s wrong|thats wrong|not right|actually)\b/.test(
+    normalized,
   );
 }
 

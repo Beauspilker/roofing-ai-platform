@@ -1,4 +1,13 @@
 import { OPENING_GREETING } from "@/lib/twilio/helpers";
+import {
+  applyTargetedCorrection,
+  buildCombinedResponse,
+  buildEmergencyResponse,
+  buildStageTransition,
+  detectEmergency,
+  hasCorrectionIntent,
+  stripInterruptionPrefix,
+} from "@/lib/call-intelligence";
 
 export { OPENING_GREETING };
 
@@ -34,11 +43,13 @@ export type CollectedFields = {
   additional_notes?: string;
   summary_delivered?: boolean;
   summary_confirmed?: boolean;
+  summary_editing?: boolean;
+  emergency_acknowledged?: boolean;
 };
 
 type IntakeFieldKey = Exclude<
   keyof CollectedFields,
-  "summary_delivered" | "summary_confirmed"
+  "summary_delivered" | "summary_confirmed" | "summary_editing" | "emergency_acknowledged"
 >;
 
 const STAGE_FIELD_KEYS: Record<CollectionStage, IntakeFieldKey> = {
@@ -90,12 +101,6 @@ function isNoValue(value: string | null): boolean {
   }
 
   return /^(no|nope|nah|false|none|not|negative)$/i.test(value.trim());
-}
-
-function isUrgentProblem(text: string): boolean {
-  return /leak|leaking|water|emergency|urgent|damage|hole|dripping|flooding|collapsed|hail|storm/i.test(
-    text,
-  );
 }
 
 function indicatesWaterIntrusion(text: string): boolean {
@@ -237,8 +242,11 @@ function extractAddress(text: string): string | null {
 function extractProjectType(text: string): string | null {
   const normalized = text.toLowerCase();
 
-  if (normalized.includes("storm")) {
+  if (normalized.includes("storm") || normalized.includes("hail")) {
     return "storm damage";
+  }
+  if (normalized.includes("wind")) {
+    return "wind damage";
   }
   if (normalized.includes("replace")) {
     return "replacement";
@@ -364,9 +372,32 @@ export function mergeCallerAnswer(
   answer: string,
   callerPhone?: string,
 ): CollectedFields {
+  const currentStage = getNextMissingStage(fields);
+
+  if (hasCorrectionIntent(answer)) {
+    const correction = applyTargetedCorrection(
+      fields,
+      answer,
+      currentStage === "wrap_up" ? "wrap_up" : currentStage,
+      callerPhone,
+    );
+
+    if (correction.updated) {
+      const corrected = correction.fields as CollectedFields;
+      if (detectEmergency(answer)) {
+        corrected.urgency = corrected.urgency ?? "emergency";
+        if (/water|leak|pouring/i.test(answer.toLowerCase())) {
+          corrected.active_leak = "yes";
+        }
+      }
+      return corrected;
+    }
+  }
+
+  const processedAnswer = stripInterruptionPrefix(answer);
   const answeringStage = getNextMissingStage(fields);
   const updated: CollectedFields = { ...fields };
-  const extracted = extractFieldsFromSpeech(answer, callerPhone);
+  const extracted = extractFieldsFromSpeech(processedAnswer, callerPhone);
 
   for (const stage of CALL_INTAKE_STAGES) {
     const fieldKey = STAGE_FIELD_KEYS[stage];
@@ -377,13 +408,17 @@ export function mergeCallerAnswer(
     }
   }
 
+  if (detectEmergency(processedAnswer)) {
+    updated.urgency = updated.urgency ?? "emergency";
+  }
+
   if (answeringStage !== "wrap_up") {
     const primaryKey = STAGE_FIELD_KEYS[answeringStage];
 
     if (!hasValue(updated[primaryKey])) {
       updated[primaryKey] = normalizeFieldValue(
         answeringStage,
-        answer,
+        processedAnswer,
         callerPhone,
       );
     }
@@ -431,18 +466,8 @@ function pickContextualEmpathy(
       return wasPhraseUsedRecently(phrase, priorPhrases) ? null : phrase;
     }
 
-    if (indicatesWaterIntrusion(text)) {
-      const phrase = "We'll make sure that gets marked as urgent.";
-      return wasPhraseUsedRecently(phrase, priorPhrases) ? null : phrase;
-    }
-
-    if (/emergency|urgent|asap|right away|immediately|needs attention/i.test(text)) {
-      const phrase = "It sounds like that needs attention quickly.";
-      return wasPhraseUsedRecently(phrase, priorPhrases) ? null : phrase;
-    }
-
-    if (indicatesStormDamage(text) || isUrgentProblem(text)) {
-      const phrase = "Thanks for letting me know.";
+    if (indicatesWaterIntrusion(text) || detectEmergency(text)) {
+      const phrase = buildEmergencyResponse();
       return wasPhraseUsedRecently(phrase, priorPhrases) ? null : phrase;
     }
 
@@ -452,7 +477,7 @@ function pickContextualEmpathy(
   if (answeredStage === "active_leak") {
     const yesNo = extractYesNo(answerText);
     if (yesNo && isYesValue(yesNo)) {
-      const phrase = "We'll make sure that gets marked as urgent.";
+      const phrase = buildEmergencyResponse();
       return wasPhraseUsedRecently(phrase, priorPhrases) ? null : phrase;
     }
 
@@ -460,12 +485,6 @@ function pickContextualEmpathy(
   }
 
   if (answeredStage === "storm_damage") {
-    const yesNo = extractYesNo(answerText);
-    if (yesNo && isYesValue(yesNo)) {
-      const phrase = "Thanks for letting me know.";
-      return wasPhraseUsedRecently(phrase, priorPhrases) ? null : phrase;
-    }
-
     return null;
   }
 
@@ -502,7 +521,7 @@ export function getStageQuestion(
       return "What's your name?";
     case "callback_phone":
       return callerPhone
-        ? "What's the best number to reach you — is this one okay?"
+        ? "What's the best phone number to reach you — is this one okay?"
         : "What's the best phone number to reach you?";
     case "address":
       return "What address would you like us to inspect?";
@@ -513,9 +532,9 @@ export function getStageQuestion(
     case "storm_damage":
       return "Was this from recent storm damage?";
     case "insurance_claim":
-      return "Have you already started an insurance claim, or not yet?";
+      return "Have you already started an insurance claim for this damage, or not yet?";
     case "urgency":
-      return "How soon do you need someone out — is it an emergency, or more standard timing?";
+      return "How soon do you need someone out?";
     case "appointment":
       return "What day and time usually works best for someone to stop by?";
     case "additional_notes":
@@ -554,138 +573,83 @@ export function buildIntakeResponse(
     return question;
   }
 
-  const prefix = pickTransitionPrefix(
+  const empathy = pickTransitionPrefix(
     answeredStage,
     options.callerAnswer ?? "",
     newlyFilledCount,
     options.priorPhrases ?? [],
   );
 
-  if (prefix) {
-    return `${prefix} ${question}`;
-  }
+  const transition =
+    empathy ??
+    buildStageTransition(
+      answeredStage,
+      nextStage as CollectionStage,
+      options.priorPhrases ?? [],
+      options.turnIndex ?? 0,
+    );
 
-  return question;
-}
-
-function formatPhoneForSpeech(phone: string): string {
-  const digits = phone.replace(/\D/g, "").slice(-10);
-
-  if (digits.length !== 10) {
-    return phone;
-  }
-
-  return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
-}
-
-function describeUrgency(value: string | null): string | null {
-  if (!value) {
-    return null;
-  }
-
-  const normalized = value.toLowerCase();
-
-  if (normalized.includes("emergency")) {
-    return "We'll treat this as urgent.";
-  }
-  if (normalized.includes("flexible")) {
-    return "Timing sounds flexible on your end.";
-  }
-  if (normalized.includes("standard")) {
-    return "Standard timing works for you.";
-  }
-
-  return null;
-}
-
-function buildSummaryLead(fields: CollectedFields): string {
-  const problem = fieldText(fields.problem_description);
-  const projectType = fieldText(fields.project_type);
-  const address = fieldText(fields.address);
-
-  if (problem && address) {
-    return `You're calling about ${problem} at ${address}.`;
-  }
-
-  if (problem) {
-    const projectHint =
-      projectType && !problem.toLowerCase().includes(projectType.toLowerCase())
-        ? ` related to ${projectType}`
-        : "";
-    return `You're calling about ${problem}${projectHint}.`;
-  }
-
-  if (projectType && address) {
-    return `You're calling about ${projectType} at ${address}.`;
-  }
-
-  if (projectType) {
-    return `You're calling about ${projectType}.`;
-  }
-
-  if (address) {
-    return `You'd like us to take a look at ${address}.`;
-  }
-
-  return "I have the details of your request.";
+  return buildCombinedResponse([transition], question);
 }
 
 export function buildWrapUpSummary(fields: CollectedFields): string {
+  const problem = fieldText(fields.problem_description);
   const fullName = fieldText(fields.full_name);
-  const callbackPhone = fieldText(fields.callback_phone);
+  const address = fieldText(fields.address);
+  const projectType = fieldText(fields.project_type);
   const activeLeak = fieldText(fields.active_leak);
   const stormDamage = fieldText(fields.storm_damage);
   const insuranceClaim = fieldText(fields.insurance_claim);
-  const urgency = fieldText(fields.urgency);
   const appointment = fieldText(fields.appointment_preference);
   const additionalNotes = fieldText(fields.additional_notes);
 
-  const narrative: string[] = ["Perfect.", "Here's what I have.", buildSummaryLead(fields)];
+  const parts: string[] = ["Perfect.", "Here's what I have."];
 
-  if (fullName) {
-    narrative.push(`I have you as ${fullName}.`);
+  if (problem) {
+    const locationSuffix = address ? ` at ${address}` : "";
+    parts.push(`You're calling about ${problem}${locationSuffix}.`);
+  } else if (projectType) {
+    const locationSuffix = address ? ` at ${address}` : "";
+    parts.push(`You're calling about ${projectType}${locationSuffix}.`);
+  } else if (address) {
+    parts.push(`You'd like us to inspect ${address}.`);
   }
 
-  if (callbackPhone) {
-    narrative.push(`We'll reach you at ${formatPhoneForSpeech(callbackPhone)}.`);
+  if (fullName) {
+    parts.push(`I have you as ${fullName}.`);
   }
 
   if (isYesValue(activeLeak)) {
-    narrative.push("Water has started coming inside.");
+    parts.push("Water has started coming inside.");
   } else if (isNoValue(activeLeak)) {
-    narrative.push("There's no water coming inside right now.");
+    parts.push("There's no water coming inside right now.");
   }
 
   if (isYesValue(stormDamage)) {
-    narrative.push("This sounds storm-related.");
+    parts.push("This sounds storm-related.");
   }
 
   if (isYesValue(insuranceClaim)) {
-    narrative.push("You've already started an insurance claim.");
+    parts.push("You've already started an insurance claim.");
   } else if (isNoValue(insuranceClaim)) {
-    narrative.push("You haven't opened an insurance claim yet.");
-  }
-
-  const urgencyPhrase = describeUrgency(urgency);
-  if (urgencyPhrase) {
-    narrative.push(urgencyPhrase);
+    parts.push("You haven't opened an insurance claim yet.");
   }
 
   if (appointment) {
-    narrative.push(`You'd like someone to come out ${appointment}.`);
+    parts.push(`You'd like someone to come out ${appointment}.`);
   }
 
   if (additionalNotes && additionalNotes.toLowerCase() !== "none") {
-    narrative.push(`You also mentioned ${additionalNotes}.`);
+    parts.push(`You also mentioned ${additionalNotes}.`);
   }
 
-  return `${narrative.join(" ")} Does all of that sound correct?`;
+  return `${parts.join(" ")} Does everything sound correct?`;
 }
 
 export function buildConfirmedGoodbye(): string {
   return (
-    "Perfect. I'll send this over to our roofing team right away. " +
-    "Someone should be reaching out soon to confirm everything. " +
+    "Perfect. I've sent everything to our roofing team. " +
+    "Someone will reach out as soon as possible regarding next steps. " +
     "Thank you for calling Beau's Roofing. Have a great day!"
   );
 }

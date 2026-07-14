@@ -1,7 +1,6 @@
 import twilio from "twilio";
 import {
   buildConfirmedGoodbye,
-  buildCorrectionGoodbye,
   buildIntakeResponse,
   buildWrapUpSummary,
   getNextMissingStage,
@@ -10,6 +9,21 @@ import {
   isAwaitingSummaryConfirmation,
   mergeCallerAnswer,
 } from "@/lib/call-intake";
+import {
+  applyTargetedCorrection,
+  buildCombinedResponse,
+  buildFaqResponse,
+  buildInterruptionResume,
+  buildSmallTalkResponse,
+  buildSummaryEditAcknowledgment,
+  detectEmergency,
+  detectFaqTopic,
+  detectSmallTalk,
+  hasCorrectionIntent,
+  isInterruptionPause,
+  isLikelyFaqOnly,
+  isSummaryFinalConfirmation,
+} from "@/lib/call-intelligence";
 import {
   completeCallSession,
   createTranscriptEntry,
@@ -24,7 +38,6 @@ import {
   getSpeechResult,
   getTwilioCallContext,
   isConfirmationPhrase,
-  isCorrectionPhrase,
   isGoodbyePhrase,
   NO_INPUT_GOODBYE,
   NO_INPUT_FOLLOW_UP_PROMPT,
@@ -44,7 +57,9 @@ function getNoInputRetryPrompt(
   const fields = session.collected_fields ?? {};
 
   if (isAwaitingSummaryConfirmation(fields)) {
-    return "I didn't catch that. Does all of that sound correct?";
+    return fields.summary_editing
+      ? "I didn't catch that. Anything else you'd like to change?"
+      : "I didn't catch that. Does everything sound correct?";
   }
 
   const nextStage = getNextMissingStage(fields);
@@ -61,6 +76,21 @@ function getNoInputRetryPrompt(
   }
 
   return NO_INPUT_FOLLOW_UP_PROMPT;
+}
+
+function buildResumeReply(
+  fields: Parameters<typeof getStageQuestion>[1],
+  callerPhone: string,
+  session: NonNullable<Awaited<ReturnType<typeof getCallSessionBySid>>>,
+  prefix: string,
+): string {
+  const stage = getNextMissingStage(fields ?? {});
+  const question =
+    getStageQuestion(stage, fields ?? {}, callerPhone) ??
+    session.current_question ??
+    "Let's keep going.";
+
+  return buildCombinedResponse([prefix], question);
 }
 
 export async function POST(request: Request) {
@@ -122,31 +152,35 @@ export async function POST(request: Request) {
   }
 
   const fieldsBefore = session.collected_fields ?? {};
+  const priorPhrases = getRecentAssistantPhrases(session.transcript);
+  const turnIndex = session.transcript?.length ?? 0;
 
-  if (isAwaitingSummaryConfirmation(fieldsBefore)) {
-    let reply: string;
-    let confirmed = false;
-
-    if (isConfirmationPhrase(speechResult)) {
-      reply = buildConfirmedGoodbye();
-      confirmed = true;
-    } else if (isCorrectionPhrase(speechResult)) {
-      reply = buildCorrectionGoodbye();
-      confirmed = true;
-    } else {
-      reply = "Does all of that sound correct?";
-    }
-
+  if (isInterruptionPause(speechResult)) {
+    const reply = buildInterruptionResume(session.current_question);
     await updateCallSession({
       callSid,
-      collectedFields: {
-        ...fieldsBefore,
-        summary_confirmed: confirmed,
-      },
       transcriptEntry: createTranscriptEntry("caller", speechResult),
     });
+    await updateCallSession({
+      callSid,
+      transcriptEntry: createTranscriptEntry("assistant", reply),
+    });
+    twiml.say(reply);
+    appendSpeechGather(twiml, request, { attempt: 1 });
+    return twimlResponse(twiml);
+  }
 
-    if (confirmed) {
+  if (isAwaitingSummaryConfirmation(fieldsBefore)) {
+    if (
+      isConfirmationPhrase(speechResult) &&
+      !hasCorrectionIntent(speechResult)
+    ) {
+      const reply = buildConfirmedGoodbye();
+      await updateCallSession({
+        callSid,
+        collectedFields: { ...fieldsBefore, summary_confirmed: true },
+        transcriptEntry: createTranscriptEntry("caller", speechResult),
+      });
       await updateCallSession({
         callSid,
         transcriptEntry: createTranscriptEntry("assistant", reply),
@@ -156,6 +190,97 @@ export async function POST(request: Request) {
       return twimlResponse(twiml);
     }
 
+    if (fieldsBefore.summary_editing && isSummaryFinalConfirmation(speechResult)) {
+      const reply = buildConfirmedGoodbye();
+      await updateCallSession({
+        callSid,
+        collectedFields: { ...fieldsBefore, summary_confirmed: true },
+        transcriptEntry: createTranscriptEntry("caller", speechResult),
+      });
+      await updateCallSession({
+        callSid,
+        transcriptEntry: createTranscriptEntry("assistant", reply),
+      });
+      await completeCallSession(callSid, "completed");
+      twiml.say(reply);
+      return twimlResponse(twiml);
+    }
+
+    const correction = applyTargetedCorrection(
+      fieldsBefore,
+      speechResult,
+      "wrap_up",
+      callerPhone,
+    );
+
+    if (correction.updated || hasCorrectionIntent(speechResult)) {
+      const reply = buildSummaryEditAcknowledgment();
+      await updateCallSession({
+        callSid,
+        collectedFields: {
+          ...(correction.updated ? correction.fields : fieldsBefore),
+          summary_editing: true,
+        },
+        transcriptEntry: createTranscriptEntry("caller", speechResult),
+      });
+      await updateCallSession({
+        callSid,
+        transcriptEntry: createTranscriptEntry("assistant", reply),
+      });
+      twiml.say(reply);
+      appendSpeechGather(twiml, request, { attempt: 1 });
+      return twimlResponse(twiml);
+    }
+
+    const reply = fieldsBefore.summary_editing
+      ? "Anything else you'd like to change?"
+      : "Does everything sound correct?";
+
+    await updateCallSession({
+      callSid,
+      transcriptEntry: createTranscriptEntry("caller", speechResult),
+    });
+    await updateCallSession({
+      callSid,
+      transcriptEntry: createTranscriptEntry("assistant", reply),
+    });
+    twiml.say(reply);
+    appendSpeechGather(twiml, request, { attempt: 1 });
+    return twimlResponse(twiml);
+  }
+
+  const faqTopic = detectFaqTopic(speechResult);
+  if (faqTopic && isLikelyFaqOnly(speechResult)) {
+    const reply = buildResumeReply(
+      fieldsBefore,
+      callerPhone,
+      session,
+      buildFaqResponse(faqTopic),
+    );
+    await updateCallSession({
+      callSid,
+      transcriptEntry: createTranscriptEntry("caller", speechResult),
+    });
+    await updateCallSession({
+      callSid,
+      transcriptEntry: createTranscriptEntry("assistant", reply),
+    });
+    twiml.say(reply);
+    appendSpeechGather(twiml, request, { attempt: 1 });
+    return twimlResponse(twiml);
+  }
+
+  if (detectSmallTalk(speechResult)) {
+    const reply = buildResumeReply(
+      fieldsBefore,
+      callerPhone,
+      session,
+      buildSmallTalkResponse(speechResult),
+    );
+    await updateCallSession({
+      callSid,
+      transcriptEntry: createTranscriptEntry("caller", speechResult),
+    });
     await updateCallSession({
       callSid,
       transcriptEntry: createTranscriptEntry("assistant", reply),
@@ -166,11 +291,19 @@ export async function POST(request: Request) {
   }
 
   const answeredStage = getNextMissingStage(fieldsBefore);
-  const updatedFields = mergeCallerAnswer(
+  let updatedFields = mergeCallerAnswer(
     fieldsBefore,
     speechResult,
     callerPhone,
   );
+
+  if (detectEmergency(speechResult) && !updatedFields.emergency_acknowledged) {
+    updatedFields = {
+      ...updatedFields,
+      urgency: updatedFields.urgency ?? "emergency",
+      emergency_acknowledged: true,
+    };
+  }
 
   session =
     (await updateCallSession({
@@ -191,7 +324,7 @@ export async function POST(request: Request) {
         ...updatedFields,
         summary_delivered: true,
       },
-      currentQuestion: "Does all of that sound correct?",
+      currentQuestion: "Does everything sound correct?",
       transcriptEntry: createTranscriptEntry("assistant", summary),
     });
 
@@ -202,9 +335,10 @@ export async function POST(request: Request) {
 
   const reply = buildIntakeResponse(updatedFields, answeredStage, {
     callerPhone,
+    turnIndex,
     fieldsBefore,
     callerAnswer: speechResult,
-    priorPhrases: getRecentAssistantPhrases(session.transcript),
+    priorPhrases,
   });
 
   await updateCallSession({

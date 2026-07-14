@@ -50,6 +50,7 @@ const UNCERTAIN_PHRASES =
   /\b(i think|hopefully|maybe|probably|it sounds like|sounds like|i guess|i believe|i feel like)\b/gi;
 
 const SUMMARY_CONFIRMATION = "Does all of that sound correct?";
+const POST_EDIT_CONFIRMATION = "Is everything else correct?";
 
 function hasText(value: string | undefined): value is string {
   return typeof value === "string" && value.trim().length > 0;
@@ -452,73 +453,92 @@ export function buildCrmCallSummary(fields: SummaryFields): string {
   return lines.join("\n");
 }
 
-function fieldUpdateLine(
-  field: keyof SummaryFields,
-  fields: SummaryFields,
-): string | null {
-  const content = buildProfessionalSummaryContent(fields);
-
+function fieldUpdateShortLine(field: SummaryFieldKey): string {
   switch (field) {
     case "full_name":
-      return content.contactName
-        ? `I've updated the contact name to ${content.contactName}.`
-        : null;
+      return "I've updated the name.";
     case "callback_phone":
-      return hasText(fields.callback_phone)
-        ? `I've updated the callback number.`
-        : null;
+      return "I've updated the phone number.";
     case "address":
-      return content.location
-        ? `I've updated the inspection address to ${content.location}.`
-        : null;
+      return "I've updated the address.";
     case "problem_description":
     case "project_type":
     case "storm_damage":
-      return content.reason
-        ? `I've updated the damage details to ${reasonToSpoken(content.reason).replace(/\.$/, "")}.`
-        : null;
+      return "I've updated the damage details.";
     case "active_leak":
-      return content.leak ? `I've noted ${content.leak.toLowerCase()}.` : null;
+      return "I've noted the water intrusion.";
     case "insurance_claim":
-      return content.insurance
-        ? `I've updated this — ${content.insurance.toLowerCase()}.`
-        : null;
+      return "I've updated the insurance information.";
     case "urgency":
-      return content.urgency
-        ? `I've updated the priority — ${content.urgency.toLowerCase()}.`
-        : null;
-    case "appointment_preference": {
-      if (!content.appointment) {
-        return null;
-      }
-
-      const detail = content.appointment
-        .replace(/^Requested inspection:?\s*/i, "")
-        .toLowerCase();
-      return `I've updated the appointment to ${detail}.`;
-    }
+      return "I've updated the priority.";
+    case "appointment_preference":
+      return "I've updated the appointment.";
     case "additional_notes":
-      return content.additionalNotes
-        ? `I've added that note — ${content.additionalNotes.toLowerCase()}.`
-        : null;
+      return "I've added that note.";
     default:
-      return null;
+      return "I've updated that.";
   }
 }
 
 export function buildSummaryFieldUpdateReply(
-  field: keyof SummaryFields,
-  fields: SummaryFields,
+  field: SummaryFieldKey,
+  _fields: SummaryFields,
 ): string {
-  const updateLine = fieldUpdateLine(field, fields);
+  return `${fieldUpdateShortLine(field)} ${POST_EDIT_CONFIRMATION}`;
+}
 
-  if (updateLine) {
-    return `Absolutely. ${updateLine} Everything else stays the same. Anything else you'd like to change?`;
+export function buildSummaryEditValuePrompt(field: SummaryFieldKey): string {
+  switch (field) {
+    case "full_name":
+      return "What's the correct name?";
+    case "callback_phone":
+      return "What's the correct phone number?";
+    case "address":
+      return "What's the correct address?";
+    case "problem_description":
+    case "project_type":
+    case "storm_damage":
+      return "What's the correct damage description?";
+    case "active_leak":
+      return "Is water currently getting inside?";
+    case "insurance_claim":
+      return "Have you started an insurance claim, or not yet?";
+    case "urgency":
+      return "How soon do you need someone out?";
+    case "appointment_preference":
+      return "What day and time works better?";
+    case "additional_notes":
+      return "What else should our team know?";
+    default:
+      return "What should I change it to?";
   }
-
-  return "Absolutely. I've updated that. Everything else stays the same. Anything else you'd like to change?";
 }
 
 export function getSummaryConfirmationPrompt(): string {
   return SUMMARY_CONFIRMATION;
+}
+
+export function getPostEditConfirmationPrompt(): string {
+  return POST_EDIT_CONFIRMATION;
+}
+
+export function isPostEditAffirmation(speech: string): boolean {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+
+  return (
+    /\beverything else (is )?(correct|right|good|fine)\b/.test(normalized) ||
+    /\bnothing else\b/.test(normalized) ||
+    /^(that'?s all|thats all|that'?s it|thats it|we'?re good|all set)\b/.test(
+      normalized,
+    ) ||
+    /^no,? (that'?s|thats) (all|it)\b/.test(normalized)
+  );
+}
+
+export function isSummaryChangeDeclined(speech: string): boolean {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+
+  return /^(no|nope|nah|not quite|incorrect|wrong|that'?s wrong|not right)\b/.test(
+    normalized,
+  );
 }

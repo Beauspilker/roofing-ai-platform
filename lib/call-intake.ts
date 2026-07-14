@@ -54,12 +54,13 @@ export type CollectedFields = {
   summary_delivered?: boolean;
   summary_confirmed?: boolean;
   summary_editing?: boolean;
+  summary_edit_target?: string;
   emergency_acknowledged?: boolean;
 };
 
 type IntakeFieldKey = Exclude<
   keyof CollectedFields,
-  "summary_delivered" | "summary_confirmed" | "summary_editing" | "emergency_acknowledged"
+  "summary_delivered" | "summary_confirmed" | "summary_editing" | "summary_edit_target" | "emergency_acknowledged"
 >;
 
 const STAGE_FIELD_KEYS: Record<CollectionStage, IntakeFieldKey> = {
@@ -176,6 +177,22 @@ export function isAwaitingSummaryConfirmation(fields: CollectedFields): boolean 
     fields.summary_delivered === true &&
     fields.summary_confirmed !== true
   );
+}
+
+export function isAwaitingSummaryEditValue(fields: CollectedFields): boolean {
+  return (
+    fields.summary_editing === true &&
+    typeof fields.summary_edit_target === "string" &&
+    fields.summary_edit_target.length > 0
+  );
+}
+
+export function clearSummaryEditState(fields: CollectedFields): CollectedFields {
+  return {
+    ...fields,
+    summary_editing: false,
+    summary_edit_target: undefined,
+  };
 }
 
 function extractYesNo(text: string): string | null {

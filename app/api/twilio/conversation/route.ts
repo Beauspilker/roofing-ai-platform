@@ -3,14 +3,15 @@ import {
   buildConfirmedGoodbye,
   buildIntakeResponse,
   buildWrapUpSummary,
+  clearSummaryEditState,
   getNextMissingStage,
   getRecentAssistantPhrases,
   getStageQuestion,
   isAwaitingSummaryConfirmation,
+  isAwaitingSummaryEditValue,
   mergeCallerAnswer,
 } from "@/lib/call-intake";
 import {
-  applyTargetedCorrection,
   buildCombinedResponse,
   buildFaqResponse,
   buildInterruptionResume,
@@ -21,9 +22,17 @@ import {
   hasCorrectionIntent,
   isInterruptionPause,
   isLikelyFaqOnly,
-  isSummaryFinalConfirmation,
+  processSummaryEdit,
 } from "@/lib/call-intelligence";
-import { buildSummaryFieldUpdateReply, getSummaryConfirmationPrompt, isSummaryDataField } from "@/lib/call-summary";
+import {
+  buildSummaryEditValuePrompt,
+  buildSummaryFieldUpdateReply,
+  getPostEditConfirmationPrompt,
+  getSummaryConfirmationPrompt,
+  isPostEditAffirmation,
+  isSummaryChangeDeclined,
+  type SummaryFieldKey,
+} from "@/lib/call-summary";
 import {
   completeCallSession,
   createTranscriptEntry,
@@ -57,9 +66,13 @@ function getNoInputRetryPrompt(
   const fields = session.collected_fields ?? {};
 
   if (isAwaitingSummaryConfirmation(fields)) {
-    return fields.summary_editing
-      ? "I didn't catch that. Anything else you'd like to change?"
-      : `I didn't catch that. ${getSummaryConfirmationPrompt()}`;
+    if (isAwaitingSummaryEditValue(fields)) {
+      return `I didn't catch that. ${buildSummaryEditValuePrompt(
+        fields.summary_edit_target as SummaryFieldKey,
+      )}`;
+    }
+
+    return `I didn't catch that. ${getSummaryConfirmationPrompt()}`;
   }
 
   const nextStage = getNextMissingStage(fields);
@@ -171,14 +184,20 @@ export async function POST(request: Request) {
   }
 
   if (isAwaitingSummaryConfirmation(fieldsBefore)) {
+    const awaitingEditValue = isAwaitingSummaryEditValue(fieldsBefore);
+
     if (
-      isConfirmationPhrase(speechResult) &&
+      !awaitingEditValue &&
+      (isConfirmationPhrase(speechResult) || isPostEditAffirmation(speechResult)) &&
       !hasCorrectionIntent(speechResult)
     ) {
       const reply = buildConfirmedGoodbye();
       await updateCallSession({
         callSid,
-        collectedFields: { ...fieldsBefore, summary_confirmed: true },
+        collectedFields: clearSummaryEditState({
+          ...fieldsBefore,
+          summary_confirmed: true,
+        }),
         transcriptEntry: createTranscriptEntry("caller", speechResult),
       });
       await updateCallSession({
@@ -190,46 +209,23 @@ export async function POST(request: Request) {
       return twimlResponse(twiml);
     }
 
-    if (fieldsBefore.summary_editing && isSummaryFinalConfirmation(speechResult)) {
-      const reply = buildConfirmedGoodbye();
-      await updateCallSession({
-        callSid,
-        collectedFields: { ...fieldsBefore, summary_confirmed: true },
-        transcriptEntry: createTranscriptEntry("caller", speechResult),
-      });
-      await updateCallSession({
-        callSid,
-        transcriptEntry: createTranscriptEntry("assistant", reply),
-      });
-      await completeCallSession(callSid, "completed");
-      twiml.say(reply);
-      return twimlResponse(twiml);
-    }
-
-    const correction = applyTargetedCorrection(
+    const editOutcome = processSummaryEdit(
       fieldsBefore,
       speechResult,
-      "wrap_up",
       callerPhone,
     );
 
-    if (correction.updated || hasCorrectionIntent(speechResult)) {
-      const updatedFields = correction.updated
-        ? (correction.fields as typeof fieldsBefore)
-        : fieldsBefore;
-      const reply =
-        correction.updated &&
-        correction.field &&
-        isSummaryDataField(correction.field)
-          ? buildSummaryFieldUpdateReply(correction.field, updatedFields)
-          : "Absolutely. I've updated that. Everything else stays the same. Anything else you'd like to change?";
+    if (editOutcome.status === "updated") {
+      const updatedFields = clearSummaryEditState(editOutcome.fields);
+      const reply = buildSummaryFieldUpdateReply(
+        editOutcome.field,
+        updatedFields,
+      );
 
       await updateCallSession({
         callSid,
-        collectedFields: {
-          ...updatedFields,
-          summary_editing: true,
-        },
+        collectedFields: updatedFields,
+        currentQuestion: getPostEditConfirmationPrompt(),
         transcriptEntry: createTranscriptEntry("caller", speechResult),
       });
       await updateCallSession({
@@ -241,12 +237,51 @@ export async function POST(request: Request) {
       return twimlResponse(twiml);
     }
 
-    const reply = fieldsBefore.summary_editing
-      ? "Anything else you'd like to change?"
+    if (editOutcome.status === "awaiting_value") {
+      const reply = buildSummaryEditValuePrompt(editOutcome.target);
+
+      await updateCallSession({
+        callSid,
+        collectedFields: editOutcome.fields,
+        currentQuestion: reply,
+        transcriptEntry: createTranscriptEntry("caller", speechResult),
+      });
+      await updateCallSession({
+        callSid,
+        transcriptEntry: createTranscriptEntry("assistant", reply),
+      });
+      twiml.say(reply);
+      appendSpeechGather(twiml, request, { attempt: 1 });
+      return twimlResponse(twiml);
+    }
+
+    if (!awaitingEditValue && isSummaryChangeDeclined(speechResult)) {
+      const reply = "What would you like to change?";
+
+      await updateCallSession({
+        callSid,
+        collectedFields: clearSummaryEditState(fieldsBefore),
+        currentQuestion: reply,
+        transcriptEntry: createTranscriptEntry("caller", speechResult),
+      });
+      await updateCallSession({
+        callSid,
+        transcriptEntry: createTranscriptEntry("assistant", reply),
+      });
+      twiml.say(reply);
+      appendSpeechGather(twiml, request, { attempt: 1 });
+      return twimlResponse(twiml);
+    }
+
+    const reply = awaitingEditValue
+      ? buildSummaryEditValuePrompt(
+          fieldsBefore.summary_edit_target as SummaryFieldKey,
+        )
       : getSummaryConfirmationPrompt();
 
     await updateCallSession({
       callSid,
+      currentQuestion: reply,
       transcriptEntry: createTranscriptEntry("caller", speechResult),
     });
     await updateCallSession({

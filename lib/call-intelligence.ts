@@ -1,3 +1,8 @@
+import {
+  type SummaryFieldKey,
+  isSummaryDataField,
+} from "@/lib/call-summary";
+
 export type FaqTopic = "insurance" | "service_area" | "inspection_cost" | "same_day";
 
 export type IntakeFields = {
@@ -15,6 +20,7 @@ export type IntakeFields = {
   summary_delivered?: boolean;
   summary_confirmed?: boolean;
   summary_editing?: boolean;
+  summary_edit_target?: string;
   emergency_acknowledged?: boolean;
 };
 
@@ -235,9 +241,13 @@ export function applyTargetedCorrection(
     return { fields: updated, updated: true, field: "full_name" };
   }
 
-  const addressMatch = text.match(
-    /\b(?:address is|at)\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80})/i,
-  );
+  const addressMatch =
+    text.match(
+      /\b(?:address is|at|to)\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80})/i,
+    ) ??
+    text.match(
+      /(?:change|update|correct|fix).*?(?:address|location|property).*?(?:to|is)\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80})/i,
+    );
   if (addressMatch?.[1]) {
     updated.address = addressMatch[1].trim();
     return { fields: updated, updated: true, field: "address" };
@@ -283,8 +293,7 @@ export function applyTargetedCorrection(
 
   if (hasCorrectionIntent(speech) && text.length > 0) {
     if (currentStage === "wrap_up" || fields.summary_delivered) {
-      updated.additional_notes = text;
-      return { fields: updated, updated: true, field: "additional_notes" };
+      return { fields, updated: false };
     }
 
     const fieldKey = STAGE_FIELD_KEYS[currentStage];
@@ -300,8 +309,282 @@ export function applyTargetedCorrection(
   return { fields, updated: false };
 }
 
+export function detectSummaryEditTarget(speech: string): SummaryFieldKey | null {
+  const lower = speech.toLowerCase();
+
+  if (/\b(address|location|property|street)\b/.test(lower)) {
+    return "address";
+  }
+  if (/\b(name)\b/.test(lower)) {
+    return "full_name";
+  }
+  if (/\b(phone|number|callback)\b/.test(lower)) {
+    return "callback_phone";
+  }
+  if (
+    /\b(appointment|schedule|time|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/.test(
+      lower,
+    )
+  ) {
+    return "appointment_preference";
+  }
+  if (/\b(insurance|claim)\b/.test(lower)) {
+    return "insurance_claim";
+  }
+  if (/\b(leak|water)\b/.test(lower)) {
+    return "active_leak";
+  }
+  if (/\b(damage|hail|wind|storm|roof)\b/.test(lower)) {
+    return "problem_description";
+  }
+  if (/\b(urgent|urgency|asap|priority)\b/.test(lower)) {
+    return "urgency";
+  }
+  if (/\b(note|notes|anything else)\b/.test(lower)) {
+    return "additional_notes";
+  }
+
+  return null;
+}
+
+function extractYesNoValue(text: string): string | null {
+  const normalized = text.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+
+  if (/^(yes|yeah|yep|yup|correct|sure|absolutely)\b/.test(normalized)) {
+    return "yes";
+  }
+
+  if (/^(no|nope|nah|not|none|negative)\b/.test(normalized)) {
+    return "no";
+  }
+
+  return null;
+}
+
+export function applySummaryFieldValue(
+  fields: IntakeFields,
+  speech: string,
+  target: SummaryFieldKey,
+  callerPhone?: string,
+): { fields: IntakeFields; updated: boolean; field?: SummaryFieldKey } {
+  const cleaned = stripInterruptionPrefix(speech)
+    .replace(CORRECTION_PREFIX_PATTERN, "")
+    .trim();
+  const text = cleaned || speech.trim();
+  const lower = text.toLowerCase();
+  const updated: IntakeFields = { ...fields };
+
+  switch (target) {
+    case "full_name": {
+      const nameMatch = text.match(
+        /(?:name is|my name is|i'?m|this is)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z'-]+){0,2})/i,
+      );
+      if (nameMatch?.[1]) {
+        updated.full_name = nameMatch[1].trim();
+        return { fields: updated, updated: true, field: target };
+      }
+      if (/^[A-Z][a-z]+(?:\s+[A-Z][a-z'-]+){0,2}$/.test(text)) {
+        updated.full_name = text;
+        return { fields: updated, updated: true, field: target };
+      }
+      break;
+    }
+    case "address": {
+      const addressMatch =
+        text.match(
+          /\b(?:address is|at|to)\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80})/i,
+        ) ??
+        text.match(/(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80})/i);
+      if (addressMatch?.[1]) {
+        updated.address = addressMatch[1].trim();
+        return { fields: updated, updated: true, field: target };
+      }
+      break;
+    }
+    case "callback_phone": {
+      const phone = text.match(
+        /(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/,
+      );
+      if (phone) {
+        updated.callback_phone = phone[0].replace(/\D/g, "").slice(-10);
+        return { fields: updated, updated: true, field: target };
+      }
+      if (callerPhone && /same number|this number/i.test(lower)) {
+        updated.callback_phone = callerPhone;
+        return { fields: updated, updated: true, field: target };
+      }
+      break;
+    }
+    case "appointment_preference":
+      if (
+        text.length > 0 &&
+        /appointment|tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d\s*(am|pm)/i.test(
+          text,
+        )
+      ) {
+        updated.appointment_preference = text;
+        return { fields: updated, updated: true, field: target };
+      }
+      break;
+    case "insurance_claim": {
+      const yesNo = extractYesNoValue(text);
+      if (yesNo) {
+        updated.insurance_claim = yesNo;
+        return { fields: updated, updated: true, field: target };
+      }
+      break;
+    }
+    case "active_leak": {
+      const yesNo = extractYesNoValue(text);
+      if (yesNo) {
+        updated.active_leak = yesNo;
+        return { fields: updated, updated: true, field: target };
+      }
+      break;
+    }
+    case "urgency":
+      if (/emergency|urgent|asap|today|flexible|soon|week/i.test(lower)) {
+        updated.urgency = lower.includes("flex") ? "flexible" : lower.match(/emergency|urgent|asap|today/) ? "emergency" : "standard";
+        return { fields: updated, updated: true, field: target };
+      }
+      break;
+    case "problem_description":
+    case "project_type":
+    case "storm_damage":
+      if (text.length > 3) {
+        if (/hail|storm/i.test(lower)) {
+          updated.project_type = "storm damage";
+          updated.storm_damage = "yes";
+        } else if (/wind/i.test(lower)) {
+          updated.project_type = "wind damage";
+          updated.storm_damage = "yes";
+        }
+        updated.problem_description = text;
+        return { fields: updated, updated: true, field: "problem_description" };
+      }
+      break;
+    case "additional_notes":
+      if (text.length > 0 && !/^(no|nope|nah|nothing|none)\b/i.test(lower)) {
+        updated.additional_notes = text;
+        return { fields: updated, updated: true, field: target };
+      }
+      break;
+  }
+
+  return { fields, updated: false };
+}
+
+export type SummaryEditOutcome =
+  | {
+      status: "updated";
+      fields: IntakeFields;
+      field: SummaryFieldKey;
+    }
+  | {
+      status: "awaiting_value";
+      fields: IntakeFields;
+      target: SummaryFieldKey;
+    }
+  | {
+      status: "unchanged";
+    };
+
+export function processSummaryEdit(
+  fields: IntakeFields,
+  speech: string,
+  callerPhone?: string,
+): SummaryEditOutcome {
+  const pendingTarget =
+    typeof fields.summary_edit_target === "string" &&
+    isSummaryDataField(fields.summary_edit_target)
+      ? fields.summary_edit_target
+      : null;
+  const awaitingValue = fields.summary_editing === true && pendingTarget !== null;
+
+  if (awaitingValue && pendingTarget) {
+    const applied = applySummaryFieldValue(
+      fields,
+      speech,
+      pendingTarget,
+      callerPhone,
+    );
+
+    if (applied.updated && applied.field) {
+      return {
+        status: "updated",
+        fields: applied.fields,
+        field: applied.field,
+      };
+    }
+
+    return {
+      status: "awaiting_value",
+      fields,
+      target: pendingTarget,
+    };
+  }
+
+  const correction = applyTargetedCorrection(
+    fields,
+    speech,
+    "wrap_up",
+    callerPhone,
+  );
+
+  if (
+    correction.updated &&
+    correction.field &&
+    isSummaryDataField(correction.field) &&
+    correction.field !== "additional_notes"
+  ) {
+    return {
+      status: "updated",
+      fields: correction.fields,
+      field: correction.field,
+    };
+  }
+
+  if (
+    correction.updated &&
+    correction.field === "additional_notes" &&
+    /\b(note|mention|add|also)\b/i.test(speech)
+  ) {
+    return {
+      status: "updated",
+      fields: correction.fields,
+      field: "additional_notes",
+    };
+  }
+
+  const target = detectSummaryEditTarget(speech);
+
+  if (target) {
+    const applied = applySummaryFieldValue(fields, speech, target, callerPhone);
+
+    if (applied.updated && applied.field) {
+      return {
+        status: "updated",
+        fields: applied.fields,
+        field: applied.field,
+      };
+    }
+
+    return {
+      status: "awaiting_value",
+      fields: {
+        ...fields,
+        summary_editing: true,
+        summary_edit_target: target,
+      },
+      target,
+    };
+  }
+
+  return { status: "unchanged" };
+}
+
 export function buildSummaryEditAcknowledgment(): string {
-  return "Understood, I've updated that. Anything else you'd like to change?";
+  return "Understood, I've updated that. Is everything else correct?";
 }
 
 export function isSummaryFinalConfirmation(speech: string): boolean {

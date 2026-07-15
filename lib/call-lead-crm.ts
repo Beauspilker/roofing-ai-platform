@@ -11,6 +11,9 @@ import type { LeadProjectType } from "@/lib/leads";
 import {
   notifyEmployeesOfPhoneAiLeadIfNeeded,
 } from "@/lib/employee-lead-notifications";
+import {
+  sendCustomerConfirmationSmsIfNeeded,
+} from "@/lib/customer-confirmation-sms";
 import { createServiceClient } from "@/lib/supabase/service";
 
 export type PhoneLeadPriorityLabel = "Emergency" | "High" | "Medium" | "Low";
@@ -380,6 +383,32 @@ async function createLeadViaDirectInsert(
   return lead.id;
 }
 
+async function runPostLeadAutomations(
+  session: CallSession,
+  leadId: string,
+): Promise<void> {
+  const refreshedSession = await getCallSessionBySid(session.twilio_call_sid);
+  const workingSession = refreshedSession ?? { ...session, lead_id: leadId };
+
+  try {
+    await notifyEmployeesOfPhoneAiLeadIfNeeded({
+      session: workingSession,
+      leadId,
+    });
+  } catch (notificationError) {
+    console.error("Employee notification after CRM lead creation failed:", notificationError);
+  }
+
+  try {
+    await sendCustomerConfirmationSmsIfNeeded({
+      session: workingSession,
+      leadId,
+    });
+  } catch (confirmationError) {
+    console.error("Customer confirmation SMS after CRM lead creation failed:", confirmationError);
+  }
+}
+
 export async function createCrmLeadFromCallSession(
   session: CallSession,
 ): Promise<CrmLeadCreationResult> {
@@ -396,15 +425,7 @@ export async function createCrmLeadFromCallSession(
   }
 
   if (session.lead_id) {
-    try {
-      await notifyEmployeesOfPhoneAiLeadIfNeeded({
-        session,
-        leadId: session.lead_id,
-      });
-    } catch (notificationError) {
-      console.error("Employee notification after existing lead failed:", notificationError);
-    }
-
+    await runPostLeadAutomations(session, session.lead_id);
     return { status: "already_created", leadId: session.lead_id };
   }
 
@@ -468,15 +489,7 @@ export async function createCrmLeadFromCallSession(
         }),
       );
 
-      try {
-        const refreshedSession = await getCallSessionBySid(session.twilio_call_sid);
-        await notifyEmployeesOfPhoneAiLeadIfNeeded({
-          session: refreshedSession ?? { ...session, lead_id: leadId },
-          leadId,
-        });
-      } catch (notificationError) {
-        console.error("Employee notification after CRM lead creation failed:", notificationError);
-      }
+      await runPostLeadAutomations(session, leadId);
 
       return { status: "created", leadId };
     } catch (error) {

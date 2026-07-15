@@ -2,6 +2,7 @@ import {
   completeCallSession,
   getCallSessionBySid,
 } from "@/lib/call-sessions";
+import { retryCustomerConfirmationSms } from "@/lib/customer-confirmation-sms";
 import { retryEmployeeLeadNotification } from "@/lib/employee-lead-notifications";
 import { retryPendingCrmLeadCreation } from "@/lib/call-lead-crm";
 import { getTwilioCallContext } from "@/lib/twilio/helpers";
@@ -48,6 +49,16 @@ export async function POST(request: Request) {
         refreshedSession.employee_notification_status !== "skipped"
       ) {
         await retryEmployeeLeadNotification(callSid);
+      }
+
+      const latestSession = await getCallSessionBySid(callSid);
+
+      if (
+        latestSession?.lead_id &&
+        latestSession.customer_confirmation_status !== "sent" &&
+        latestSession.customer_confirmation_status !== "skipped"
+      ) {
+        await retryCustomerConfirmationSms(callSid);
       }
 
       console.info(

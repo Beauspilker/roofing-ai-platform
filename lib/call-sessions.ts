@@ -65,6 +65,10 @@ export type CallSession = {
   employee_notification_attempts?: number;
   employee_notification_last_error?: string | null;
   employee_notification_sent_at?: string | null;
+  customer_confirmation_status?: string | null;
+  customer_confirmation_attempts?: number;
+  customer_confirmation_last_error?: string | null;
+  customer_confirmation_sent_at?: string | null;
 };
 
 export function createTranscriptEntry(

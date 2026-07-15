@@ -56,6 +56,8 @@ export type CollectedFields = {
   summary_editing?: boolean;
   summary_edit_target?: string;
   emergency_acknowledged?: boolean;
+  priority_label?: string;
+  crm_summary?: string;
 };
 
 type IntakeFieldKey = Exclude<

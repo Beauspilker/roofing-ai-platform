@@ -1,4 +1,5 @@
-import { completeCallSession } from "@/lib/call-sessions";
+import { retryPendingCrmLeadCreation } from "@/lib/call-lead-crm";
+import { completeCallSession, getCallSessionBySid } from "@/lib/call-sessions";
 import { getTwilioCallContext } from "@/lib/twilio/helpers";
 import { validateTwilioRequest } from "@/lib/twilio/signature";
 
@@ -22,6 +23,19 @@ export async function POST(request: Request) {
         callSid,
         callStatus === "failed" ? "failed" : "completed",
       );
+
+      const session = await getCallSessionBySid(callSid);
+
+      if (
+        session &&
+        callStatus === "completed" &&
+        session.collected_fields?.summary_confirmed === true &&
+        !session.lead_id &&
+        session.crm_lead_status !== "created"
+      ) {
+        await retryPendingCrmLeadCreation(callSid);
+      }
+
       console.info(
         JSON.stringify({
           event: "call_status_update",

@@ -170,6 +170,10 @@ export function isDashboardActiveLead(lead: Lead): boolean {
 }
 
 export function deriveLeadPriority(lead: Lead): LeadPriority {
+  if (lead.description?.match(/\[Priority: Emergency\]/i)) {
+    return "high";
+  }
+
   if (lead.insurance_claim || lead.project_type === "storm_damage") {
     return "high";
   }

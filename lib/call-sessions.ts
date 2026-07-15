@@ -1,4 +1,8 @@
 import {
+  createCrmLeadFromCallSession,
+  shouldCreateCrmLeadFromSession,
+} from "@/lib/call-lead-crm";
+import {
   type CollectedFields,
   formatCollectedFields,
   getNextMissingStage,
@@ -52,6 +56,11 @@ export type CallSession = {
   expires_at: string;
   created_at: string;
   updated_at: string;
+  lead_id?: string | null;
+  crm_lead_status?: string | null;
+  crm_lead_attempts?: number;
+  crm_lead_last_error?: string | null;
+  crm_lead_created_at?: string | null;
 };
 
 export function createTranscriptEntry(
@@ -194,7 +203,33 @@ export async function completeCallSession(
     return null;
   }
 
-  return data as CallSession;
+  const session = data as CallSession;
+
+  if (
+    status === "completed" &&
+    shouldCreateCrmLeadFromSession(session) &&
+    !session.lead_id &&
+    session.crm_lead_status !== "created"
+  ) {
+    try {
+      const result = await createCrmLeadFromCallSession(session);
+
+      if (result.status === "failed") {
+        console.error(
+          JSON.stringify({
+            event: "crm_lead_creation_exhausted_retries",
+            callSid,
+            attempts: result.attempts,
+            errorMessage: result.error,
+          }),
+        );
+      }
+    } catch (crmError) {
+      console.error("Unexpected CRM lead creation error:", crmError);
+    }
+  }
+
+  return session;
 }
 
 export function buildConversationMemoryContext(session: CallSession) {

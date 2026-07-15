@@ -45,15 +45,42 @@ export function resolveTwilioVoice(configured?: string): AllowedTwilioVoice {
 
 export const TWILIO_VOICE = resolveTwilioVoice(process.env.TWILIO_VOICE);
 
+export const BASE_SPEECH_GATHER_HINTS =
+  "roof, hail, shingles, leak, insurance, inspection, appointment, address, storm, damage, roofing, name, first name, last name, phone number, street, city, zip code";
+
 export const SPEECH_GATHER_OPTIONS = {
   enhanced: true,
   language: TWILIO_LANGUAGE,
   speechModel: "phone_call" as const,
-  speechTimeout: "4",
-  timeout: 10,
-  hints:
-    "roof, hail, shingles, leak, insurance, inspection, appointment, address, storm, damage, roofing, name, phone number, street, city, zip code",
+  speechTimeout: "3",
+  timeout: 8,
+  hints: BASE_SPEECH_GATHER_HINTS,
 };
+
+const LONG_UTTERANCE_STAGES = new Set([
+  "full_name",
+  "address",
+  "callback_phone",
+]);
+
+export function getSpeechGatherOptionsForStage(stage: string | null): {
+  enhanced: boolean;
+  language: typeof TWILIO_LANGUAGE;
+  speechModel: "phone_call";
+  speechTimeout: string;
+  timeout: number;
+  hints: string;
+} {
+  if (stage && LONG_UTTERANCE_STAGES.has(stage)) {
+    return {
+      ...SPEECH_GATHER_OPTIONS,
+      speechTimeout: "5",
+      timeout: 10,
+    };
+  }
+
+  return SPEECH_GATHER_OPTIONS;
+}
 
 export function getSayVoiceAttributes(): {
   voice: AllowedTwilioVoice;

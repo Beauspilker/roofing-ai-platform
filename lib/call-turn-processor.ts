@@ -1,4 +1,11 @@
 import {
+  buildNameConfirmationPrompt,
+  buildNameRepeatPrompt,
+  isAwaitingNameConfirmation,
+  parseSpeechConfidence,
+  processNameCaptureTurn,
+} from "@/lib/call-name-capture";
+import {
   buildConfirmedGoodbye,
   buildIntakeResponse,
   buildWrapUpSummary,
@@ -10,6 +17,7 @@ import {
   isAwaitingSummaryEditValue,
   mergeCallerAnswer,
   type CollectedFields,
+  type ConversationStage,
 } from "@/lib/call-intake";
 import {
   buildCombinedResponse,
@@ -67,9 +75,55 @@ export type ProcessCallerTurnInput = {
   callSid: string;
   callerPhone: string;
   speechResult: string;
+  speechConfidence?: string | null;
   attempt: number;
   isInitial: boolean;
 };
+
+function getEffectiveGatherStage(
+  fields: CollectedFields,
+): ConversationStage | "wrap_up" {
+  if (isAwaitingNameConfirmation(fields)) {
+    return "full_name";
+  }
+
+  return getNextMissingStage(fields);
+}
+
+function isNameCaptureTurn(fields: CollectedFields): boolean {
+  if (isAwaitingNameConfirmation(fields) || fields.name_awaiting_repeat === true) {
+    return true;
+  }
+
+  return getNextMissingStage(fields) === "full_name";
+}
+
+async function persistTurn(
+  callSid: string,
+  input: {
+    collectedFields?: CollectedFields;
+    currentQuestion?: string | null;
+    callerSpeech: string;
+    assistantReply: string;
+    attemptCount?: number;
+  },
+): Promise<CallSession | null> {
+  const session =
+    (await updateCallSession({
+      callSid,
+      collectedFields: input.collectedFields,
+      currentQuestion: input.currentQuestion ?? null,
+      transcriptEntry: createTranscriptEntry("caller", input.callerSpeech),
+      attemptCount: input.attemptCount,
+    })) ?? null;
+
+  await updateCallSession({
+    callSid,
+    transcriptEntry: createTranscriptEntry("assistant", input.assistantReply),
+  });
+
+  return session;
+}
 
 function getNoInputRetryPrompt(
   session: CallSession | null,
@@ -81,6 +135,18 @@ function getNoInputRetryPrompt(
   }
 
   const fields = session.collected_fields ?? {};
+
+  if (isAwaitingNameConfirmation(fields)) {
+    const pending = fields.name_pending_confirmation?.trim();
+
+    if (pending) {
+      return `I didn't catch that. ${buildNameConfirmationPrompt(pending)}`;
+    }
+  }
+
+  if (fields.name_awaiting_repeat) {
+    return `I didn't catch that. ${buildNameRepeatPrompt()}`;
+  }
 
   if (isAwaitingSummaryConfirmation(fields)) {
     if (isAwaitingSummaryEditValue(fields)) {
@@ -125,9 +191,22 @@ function buildResumeReply(
 
 export async function processCallerTurn(
   input: ProcessCallerTurnInput,
-): Promise<TurnOutcome> {
-  const { callSid, callerPhone, speechResult, attempt, isInitial } = input;
+): Promise<TurnOutcome & {
+  nameConfirmationRequested?: boolean;
+  nameCorrected?: boolean;
+  gatherStage?: ConversationStage | "wrap_up" | null;
+}> {
+  const {
+    callSid,
+    callerPhone,
+    speechResult,
+    speechConfidence,
+    attempt,
+    isInitial,
+  } = input;
   let session = input.session;
+  let nameConfirmationRequested = false;
+  let nameCorrected = false;
 
   if (!speechResult.trim()) {
     if (callSid) {
@@ -154,6 +233,9 @@ export async function processCallerTurn(
       kind: "speak_continue",
       replyText: getNoInputRetryPrompt(session, callerPhone, isInitial),
       session,
+      gatherStage: session
+        ? getEffectiveGatherStage(session.collected_fields ?? {})
+        : null,
     };
   }
 
@@ -352,6 +434,91 @@ export async function processCallerTurn(
     return { kind: "speak_continue", replyText: reply, session };
   }
 
+  if (isNameCaptureTurn(fieldsBefore)) {
+    const nameOutcome = processNameCaptureTurn({
+      fields: fieldsBefore,
+      speech: speechResult,
+      confidence: parseSpeechConfidence(speechConfidence),
+    });
+
+    nameConfirmationRequested = nameOutcome.nameConfirmationRequested;
+    nameCorrected = nameOutcome.nameCorrected;
+
+    if (nameOutcome.status === "confirm" || nameOutcome.status === "repeat") {
+      session =
+        (await persistTurn(callSid, {
+          collectedFields: nameOutcome.fields,
+          currentQuestion: nameOutcome.replyText,
+          callerSpeech: speechResult,
+          assistantReply: nameOutcome.replyText,
+          attemptCount: 1,
+        })) ?? session;
+
+      return {
+        kind: "speak_continue",
+        replyText: nameOutcome.replyText,
+        session,
+        nameConfirmationRequested,
+        nameCorrected,
+        gatherStage: "full_name",
+      };
+    }
+
+    const confirmedFields = nameOutcome.fields;
+    const answeredStage = "full_name" as const;
+
+    const nextStage = getNextMissingStage(confirmedFields);
+
+    if (nextStage === "wrap_up") {
+      const summary = buildWrapUpSummary(confirmedFields);
+
+      session =
+        (await persistTurn(callSid, {
+          collectedFields: {
+            ...confirmedFields,
+            summary_delivered: true,
+          },
+          currentQuestion: getSummaryConfirmationPrompt(),
+          callerSpeech: speechResult,
+          assistantReply: summary,
+        })) ?? session;
+
+      return {
+        kind: "speak_continue",
+        replyText: summary,
+        session,
+        nameConfirmationRequested,
+        nameCorrected,
+        gatherStage: "wrap_up",
+      };
+    }
+
+    const reply = buildIntakeResponse(confirmedFields, answeredStage, {
+      callerPhone,
+      turnIndex,
+      fieldsBefore,
+      callerAnswer: speechResult,
+      priorPhrases,
+    });
+
+    session =
+      (await persistTurn(callSid, {
+        collectedFields: confirmedFields,
+        currentQuestion: getStageQuestion(nextStage, confirmedFields, callerPhone),
+        callerSpeech: speechResult,
+        assistantReply: reply,
+      })) ?? session;
+
+    return {
+      kind: "speak_continue",
+      replyText: reply,
+      session,
+      nameConfirmationRequested,
+      nameCorrected,
+      gatherStage: nextStage,
+    };
+  }
+
   const answeredStage = getNextMissingStage(fieldsBefore);
   let updatedFields = mergeCallerAnswer(
     fieldsBefore,
@@ -367,30 +534,29 @@ export async function processCallerTurn(
     };
   }
 
-  session =
-    (await updateCallSession({
-      callSid,
-      collectedFields: updatedFields,
-      transcriptEntry: createTranscriptEntry("caller", speechResult),
-      attemptCount: 1,
-    })) ?? session;
-
   const nextStage = getNextMissingStage(updatedFields);
 
   if (nextStage === "wrap_up") {
     const summary = buildWrapUpSummary(updatedFields);
 
-    await updateCallSession({
-      callSid,
-      collectedFields: {
-        ...updatedFields,
-        summary_delivered: true,
-      },
-      currentQuestion: getSummaryConfirmationPrompt(),
-      transcriptEntry: createTranscriptEntry("assistant", summary),
-    });
+    session =
+      (await persistTurn(callSid, {
+        collectedFields: {
+          ...updatedFields,
+          summary_delivered: true,
+        },
+        currentQuestion: getSummaryConfirmationPrompt(),
+        callerSpeech: speechResult,
+        assistantReply: summary,
+        attemptCount: 1,
+      })) ?? session;
 
-    return { kind: "speak_continue", replyText: summary, session };
+    return {
+      kind: "speak_continue",
+      replyText: summary,
+      session,
+      gatherStage: "wrap_up",
+    };
   }
 
   const reply = buildIntakeResponse(updatedFields, answeredStage, {
@@ -401,11 +567,19 @@ export async function processCallerTurn(
     priorPhrases,
   });
 
-  await updateCallSession({
-    callSid,
-    currentQuestion: getStageQuestion(nextStage, updatedFields, callerPhone),
-    transcriptEntry: createTranscriptEntry("assistant", reply),
-  });
+  session =
+    (await persistTurn(callSid, {
+      collectedFields: updatedFields,
+      currentQuestion: getStageQuestion(nextStage, updatedFields, callerPhone),
+      callerSpeech: speechResult,
+      assistantReply: reply,
+      attemptCount: 1,
+    })) ?? session;
 
-  return { kind: "speak_continue", replyText: reply, session };
+  return {
+    kind: "speak_continue",
+    replyText: reply,
+    session,
+    gatherStage: nextStage,
+  };
 }

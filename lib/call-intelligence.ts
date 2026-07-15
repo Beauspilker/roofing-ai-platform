@@ -27,6 +27,10 @@ export type IntakeFields = {
   summary_editing?: boolean;
   summary_edit_target?: string;
   emergency_acknowledged?: boolean;
+  name_pending_confirmation?: string;
+  name_raw_speech?: string;
+  name_awaiting_repeat?: boolean;
+  name_confirmation_attempts?: number;
 };
 
 export type IntakeStage =
@@ -252,10 +256,39 @@ export function applyTargetedCorrection(
   const updated: IntakeFields = { ...fields };
 
   const nameMatch = text.match(
-    /(?:name is|my name is|i'?m|this is)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z'-]+){0,2})/i,
+    /(?:name is|my name is|i'?m|this is|it's|it is|call me)\s+([A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,3})/i,
   );
   if (nameMatch?.[1]) {
     updated.full_name = nameMatch[1].trim();
+    return { fields: updated, updated: true, field: "full_name" };
+  }
+
+  const firstNameMatch = text.match(
+    /\b(?:my )?first name is\s+([A-Za-z][A-Za-z'-]+)/i,
+  );
+  if (firstNameMatch?.[1]) {
+    const lastName = updated.full_name?.trim().split(/\s+/).slice(1).join(" ");
+    updated.full_name = lastName
+      ? `${firstNameMatch[1].trim()} ${lastName}`
+      : firstNameMatch[1].trim();
+    return { fields: updated, updated: true, field: "full_name" };
+  }
+
+  const lastNameMatch = text.match(
+    /\b(?:my )?last name is\s+([A-Za-z][A-Za-z'-]+)/i,
+  );
+  if (lastNameMatch?.[1]) {
+    const firstName = updated.full_name?.trim().split(/\s+/)[0] ?? "";
+    updated.full_name = firstName
+      ? `${firstName} ${lastNameMatch[1].trim()}`
+      : lastNameMatch[1].trim();
+    return { fields: updated, updated: true, field: "full_name" };
+  }
+
+  if (/\b(last name|surname)\b.*\b(wrong|incorrect)\b/i.test(lower)) {
+    updated.name_pending_confirmation = undefined;
+    updated.full_name = undefined;
+    updated.name_awaiting_repeat = true;
     return { fields: updated, updated: true, field: "full_name" };
   }
 

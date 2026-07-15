@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import twilio from "twilio";
 import { appendSpokenSay } from "@/lib/twilio/speech";
-import { SPEECH_GATHER_OPTIONS } from "@/lib/twilio/voice-config";
+import { getSpeechGatherOptionsForStage } from "@/lib/twilio/voice-config";
 
 export const OPENING_QUESTION = "What's going on with the roof?";
 
@@ -79,6 +79,8 @@ export function logSpeechGatherTurn(input: {
   confidence: string | null;
   stage: string | null;
   outcome: "empty" | "received" | "continue" | "hangup";
+  nameConfirmationRequested?: boolean;
+  nameCorrected?: boolean;
 }): void {
   console.info(
     JSON.stringify({
@@ -90,6 +92,8 @@ export function logSpeechGatherTurn(input: {
       confidence: input.confidence,
       stage: input.stage,
       outcome: input.outcome,
+      nameConfirmationRequested: input.nameConfirmationRequested ?? false,
+      nameCorrected: input.nameCorrected ?? false,
       voicePath: "legacy_gather",
     }),
   );
@@ -145,6 +149,8 @@ export function appendSpeechGather(
     attempt: number;
     initial?: boolean;
     prompt?: string | null;
+    hints?: string;
+    stage?: string | null;
   },
 ): void {
   const origin = getRequestOrigin(request);
@@ -156,13 +162,16 @@ export function appendSpeechGather(
     params.set("initial", "1");
   }
 
+  const gatherOptions = getSpeechGatherOptionsForStage(options.stage ?? null);
+
   const gather = twiml.gather({
     input: ["speech"],
     action: `${origin}/api/twilio/conversation?${params.toString()}`,
     method: "POST",
     actionOnEmptyResult: true,
     bargeIn: true,
-    ...SPEECH_GATHER_OPTIONS,
+    ...gatherOptions,
+    hints: options.hints ?? gatherOptions.hints,
   });
 
   if (options.prompt) {

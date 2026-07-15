@@ -58,6 +58,10 @@ export type CollectedFields = {
   emergency_acknowledged?: boolean;
   priority_label?: string;
   crm_summary?: string;
+  name_pending_confirmation?: string;
+  name_raw_speech?: string;
+  name_awaiting_repeat?: boolean;
+  name_confirmation_attempts?: number;
 };
 
 type IntakeFieldKey = Exclude<
@@ -90,6 +94,25 @@ const ROUTINE_STAGES: CollectionStage[] = [
 
 function hasValue(value: string | undefined): boolean {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function getStringField(
+  fields: CollectedFields,
+  fieldKey: IntakeFieldKey,
+): string | undefined {
+  const value = fields[fieldKey];
+  return typeof value === "string" ? value : undefined;
+}
+
+function setStringField(
+  fields: CollectedFields,
+  fieldKey: IntakeFieldKey,
+  value: string,
+): CollectedFields {
+  return {
+    ...fields,
+    [fieldKey]: value,
+  };
 }
 
 function fieldText(value: string | undefined): string | null {
@@ -161,7 +184,9 @@ function extractStormDamage(text: string): string | null {
 export function getNextMissingStage(fields: CollectedFields): ConversationStage {
   for (const stage of CALL_INTAKE_STAGES) {
     const fieldKey = STAGE_FIELD_KEYS[stage];
-    if (!hasValue(fields[fieldKey])) {
+    const value = fields[fieldKey];
+
+    if (typeof value !== "string" || !hasValue(value)) {
       return stage;
     }
   }
@@ -471,12 +496,14 @@ export function extractFieldsFromSpeech(
   const damageContext = extractDamageContext(text);
   for (const [key, value] of Object.entries(damageContext)) {
     const fieldKey = key as IntakeFieldKey;
+    const existingValue = extracted[fieldKey];
+
     if (
       typeof value === "string" &&
-      !hasValue(extracted[fieldKey]) &&
+      !(typeof existingValue === "string" && hasValue(existingValue)) &&
       hasValue(value)
     ) {
-      extracted[fieldKey] = value;
+      (extracted as Partial<Record<IntakeFieldKey, string>>)[fieldKey] = value;
     }
   }
 
@@ -516,15 +543,19 @@ export function mergeCallerAnswer(
 
   const processedAnswer = stripInterruptionPrefix(answer);
   const answeringStage = getNextMissingStage(fields);
-  const updated: CollectedFields = { ...fields };
+  let updated: CollectedFields = { ...fields };
   const extracted = extractFieldsFromSpeech(processedAnswer, callerPhone);
 
   for (const stage of CALL_INTAKE_STAGES) {
     const fieldKey = STAGE_FIELD_KEYS[stage];
     const extractedValue = extracted[fieldKey];
 
-    if (!hasValue(updated[fieldKey]) && hasValue(extractedValue)) {
-      updated[fieldKey] = extractedValue;
+    if (
+      !hasValue(getStringField(updated, fieldKey)) &&
+      typeof extractedValue === "string" &&
+      hasValue(extractedValue)
+    ) {
+      updated = setStringField(updated, fieldKey, extractedValue);
     }
   }
 
@@ -535,11 +566,11 @@ export function mergeCallerAnswer(
   if (answeringStage !== "wrap_up") {
     const primaryKey = STAGE_FIELD_KEYS[answeringStage];
 
-    if (!hasValue(updated[primaryKey])) {
-      updated[primaryKey] = normalizeFieldValue(
-        answeringStage,
-        processedAnswer,
-        callerPhone,
+    if (!hasValue(getStringField(updated, primaryKey))) {
+      updated = setStringField(
+        updated,
+        primaryKey,
+        normalizeFieldValue(answeringStage, processedAnswer, callerPhone),
       );
     }
   }
@@ -555,7 +586,10 @@ function countNewlyFilledFields(
 
   for (const stage of CALL_INTAKE_STAGES) {
     const fieldKey = STAGE_FIELD_KEYS[stage];
-    if (!hasValue(before[fieldKey]) && hasValue(after[fieldKey])) {
+    if (
+      !hasValue(getStringField(before, fieldKey)) &&
+      hasValue(getStringField(after, fieldKey))
+    ) {
       count += 1;
     }
   }
@@ -719,8 +753,8 @@ export function buildWrapUpSummary(fields: CollectedFields): string {
 
 export function buildConfirmedGoodbye(): string {
   return (
-    "Perfect. Everything has been sent to our roofing team. " +
-    "Someone will be reaching out shortly to discuss the next steps. " +
+    "Thank you. Everything has been sent to our roofing team. " +
+    "Someone will reach out shortly. " +
     "Thank you for calling Beau's Roofing. Have a wonderful day."
   );
 }

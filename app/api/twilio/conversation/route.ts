@@ -1,5 +1,6 @@
 import twilio from "twilio";
 import { getNextMissingStage } from "@/lib/call-intake";
+import { isAwaitingNameConfirmation } from "@/lib/call-name-capture";
 import { processCallerTurn } from "@/lib/call-turn-processor";
 import { generateConversationResponse } from "@/lib/ai/voice";
 import {
@@ -14,7 +15,22 @@ import {
   twimlResponse,
 } from "@/lib/twilio/helpers";
 import { appendSpokenSay } from "@/lib/twilio/speech";
+import { getCompanySpeechHints } from "@/lib/twilio/speech-hints";
 import { validateTwilioRequest } from "@/lib/twilio/signature";
+
+function resolveGatherStage(
+  fields: Record<string, unknown> | null | undefined,
+): string | null {
+  if (!fields) {
+    return null;
+  }
+
+  if (isAwaitingNameConfirmation(fields)) {
+    return "full_name";
+  }
+
+  return getNextMissingStage(fields);
+}
 
 export async function POST(request: Request) {
   const formData = await request.formData();
@@ -40,7 +56,7 @@ export async function POST(request: Request) {
     : null;
 
   const gatherStage = session
-    ? getNextMissingStage(session.collected_fields ?? {})
+    ? resolveGatherStage(session.collected_fields ?? {})
     : null;
 
   logSpeechGatherTurn({
@@ -64,6 +80,7 @@ export async function POST(request: Request) {
     callSid,
     callerPhone,
     speechResult,
+    speechConfidence,
     attempt,
     isInitial,
   });
@@ -76,9 +93,15 @@ export async function POST(request: Request) {
     isInitial,
     hasSpeechResult: speechResult.length > 0,
     confidence: speechConfidence,
-    stage: gatherStage,
+    stage: outcome.gatherStage ?? gatherStage,
     outcome: outcome.kind === "speak_hangup" ? "hangup" : "continue",
+    nameConfirmationRequested: outcome.nameConfirmationRequested,
+    nameCorrected: outcome.nameCorrected,
   });
+
+  const speechHints = session?.company_id
+    ? await getCompanySpeechHints(session.company_id)
+    : undefined;
 
   if (outcome.kind === "speak_hangup") {
     appendSpokenSay(twiml, outcome.replyText);
@@ -89,6 +112,8 @@ export async function POST(request: Request) {
     attempt: speechResult ? 1 : attempt + 1,
     initial: isInitial,
     prompt: outcome.replyText,
+    hints: speechHints,
+    stage: outcome.gatherStage ?? gatherStage,
   });
 
   return twimlResponse(twiml);

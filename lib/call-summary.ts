@@ -54,6 +54,11 @@ const SUMMARY_CONFIRMATION =
 const POST_EDIT_CONFIRMATION =
   "Does everything else look accurate before I send this to our roofing team?";
 
+const SPOKEN_SUMMARY_CONFIRMATION =
+  "Does everything sound correct before I send this to our roofing team?";
+const SPOKEN_POST_EDIT_CONFIRMATION =
+  "Does everything else sound correct before I send this to our roofing team?";
+
 function hasText(value: string | undefined): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
@@ -417,7 +422,7 @@ export function buildSpokenCallSummary(fields: SummaryFields): string {
     sentences.push("I have your information ready for our roofing team.");
   }
 
-  return `${sentences.join(" ")} ${SUMMARY_CONFIRMATION}`;
+  return `${sentences.join(" ")} ${SPOKEN_SUMMARY_CONFIRMATION}`;
 }
 
 export function buildCrmCallSummary(fields: SummaryFields): string {
@@ -548,20 +553,20 @@ export function buildSummaryFieldsUpdateReply(
   updatedFields: SummaryFieldKey[],
 ): string {
   if (updatedFields.length === 0) {
-    return `No problem. I've updated that. ${POST_EDIT_CONFIRMATION}`;
+    return `No problem. I've updated that. ${SPOKEN_POST_EDIT_CONFIRMATION}`;
   }
 
   if (updatedFields.length === 1) {
-    return `No problem. ${fieldUpdateDetailLine(updatedFields[0], fields)} ${POST_EDIT_CONFIRMATION}`;
+    return `No problem. ${fieldUpdateDetailLine(updatedFields[0], fields)} ${SPOKEN_POST_EDIT_CONFIRMATION}`;
   }
 
   if (updatedFields.length === 2) {
-    return `No problem. I've updated both the ${fieldEditLabel(updatedFields[0])} and the ${fieldEditLabel(updatedFields[1])}. ${POST_EDIT_CONFIRMATION}`;
+    return `No problem. I've updated both the ${fieldEditLabel(updatedFields[0])} and the ${fieldEditLabel(updatedFields[1])}. ${SPOKEN_POST_EDIT_CONFIRMATION}`;
   }
 
   const labels = updatedFields.map(fieldEditLabel);
   const last = labels.pop();
-  return `No problem. I've updated the ${labels.join(", the ")}, and the ${last}. ${POST_EDIT_CONFIRMATION}`;
+  return `No problem. I've updated the ${labels.join(", the ")}, and the ${last}. ${SPOKEN_POST_EDIT_CONFIRMATION}`;
 }
 
 export function buildSummaryFieldUpdateReply(
@@ -599,18 +604,18 @@ export function buildSummaryEditValuePrompt(field: SummaryFieldKey): string {
 }
 
 export function getSummaryConfirmationPrompt(): string {
-  return SUMMARY_CONFIRMATION;
+  return SPOKEN_SUMMARY_CONFIRMATION;
 }
 
 export function getPostEditConfirmationPrompt(): string {
-  return POST_EDIT_CONFIRMATION;
+  return SPOKEN_POST_EDIT_CONFIRMATION;
 }
 
 export function isPostEditAffirmation(speech: string): boolean {
   const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
 
   return (
-    /\b(looks? accurate|everything (else )?(is )?(correct|right|good|fine|accurate))\b/.test(
+    /\b(sounds? correct|looks? accurate|everything (else )?(is )?(correct|right|good|fine|accurate))\b/.test(
       normalized,
     ) ||
     /\beverything else (is )?(correct|right|good|fine)\b/.test(normalized) ||

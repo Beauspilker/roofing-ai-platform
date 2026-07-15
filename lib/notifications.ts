@@ -4,7 +4,12 @@ export const NOTIFICATION_CHANNELS = ["sms", "email"] as const;
 
 export type NotificationChannel = (typeof NOTIFICATION_CHANNELS)[number];
 
-export const NOTIFICATION_STATUSES = ["simulated", "queued"] as const;
+export const NOTIFICATION_STATUSES = [
+  "simulated",
+  "queued",
+  "sent",
+  "failed",
+] as const;
 
 export type NotificationStatus = (typeof NOTIFICATION_STATUSES)[number];
 
@@ -20,6 +25,7 @@ export type Notification = {
   error_message: string | null;
   sent_at: string | null;
   created_at: string;
+  notification_kind?: string | null;
 };
 
 export type CreateNotificationInput = {
@@ -29,6 +35,10 @@ export type CreateNotificationInput = {
   recipient: string;
   subject?: string | null;
   message: string;
+  notificationKind?: string | null;
+  status?: NotificationStatus;
+  errorMessage?: string | null;
+  sentAt?: string | null;
 };
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -38,11 +48,18 @@ export function formatNotificationChannel(channel: NotificationChannel): string 
 }
 
 export function formatNotificationStatus(status: NotificationStatus): string {
-  if (status === "simulated") {
-    return "Simulated";
+  switch (status) {
+    case "simulated":
+      return "Simulated";
+    case "queued":
+      return "Queued";
+    case "sent":
+      return "Sent";
+    case "failed":
+      return "Failed";
+    default:
+      return status;
   }
-
-  return "Queued";
 }
 
 export function formatNotificationDate(createdAt: string): string {
@@ -169,6 +186,59 @@ export async function createSimulatedNotification(
 
   if (!data) {
     throw new Error("Failed to create notification record.");
+  }
+
+  return data;
+}
+
+export async function createEmployeeNotificationRecord(
+  supabase: SupabaseClient,
+  input: CreateNotificationInput,
+): Promise<Notification> {
+  const { data, error } = await supabase
+    .from("notifications")
+    .insert({
+      company_id: input.companyId,
+      lead_id: input.leadId,
+      channel: input.channel,
+      recipient: input.recipient.trim(),
+      subject: input.channel === "email" ? input.subject?.trim() || null : null,
+      message: input.message.trim(),
+      status: input.status ?? "queued",
+      sent_at: input.sentAt ?? null,
+      error_message: input.errorMessage ?? null,
+      notification_kind: input.notificationKind ?? null,
+    })
+    .select("*")
+    .single();
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data) {
+    throw new Error("Failed to create notification record.");
+  }
+
+  return data;
+}
+
+export async function getEmployeeNotificationForLead(
+  supabase: SupabaseClient,
+  leadId: string,
+  channel: NotificationChannel,
+  notificationKind: string,
+): Promise<Notification | null> {
+  const { data, error } = await supabase
+    .from("notifications")
+    .select("*")
+    .eq("lead_id", leadId)
+    .eq("channel", channel)
+    .eq("notification_kind", notificationKind)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
   }
 
   return data;

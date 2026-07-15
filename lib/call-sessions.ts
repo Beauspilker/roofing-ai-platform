@@ -61,6 +61,10 @@ export type CallSession = {
   crm_lead_attempts?: number;
   crm_lead_last_error?: string | null;
   crm_lead_created_at?: string | null;
+  employee_notification_status?: string | null;
+  employee_notification_attempts?: number;
+  employee_notification_last_error?: string | null;
+  employee_notification_sent_at?: string | null;
 };
 
 export function createTranscriptEntry(

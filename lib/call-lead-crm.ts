@@ -3,10 +3,14 @@ import { buildCrmCallSummary } from "@/lib/call-summary";
 import {
   type CallSession,
   type TranscriptEntry,
+  getCallSessionBySid,
   updateCallSession,
 } from "@/lib/call-sessions";
 import type { ActivityType } from "@/lib/activity";
 import type { LeadProjectType } from "@/lib/leads";
+import {
+  notifyEmployeesOfPhoneAiLeadIfNeeded,
+} from "@/lib/employee-lead-notifications";
 import { createServiceClient } from "@/lib/supabase/service";
 
 export type PhoneLeadPriorityLabel = "Emergency" | "High" | "Medium" | "Low";
@@ -392,6 +396,15 @@ export async function createCrmLeadFromCallSession(
   }
 
   if (session.lead_id) {
+    try {
+      await notifyEmployeesOfPhoneAiLeadIfNeeded({
+        session,
+        leadId: session.lead_id,
+      });
+    } catch (notificationError) {
+      console.error("Employee notification after existing lead failed:", notificationError);
+    }
+
     return { status: "already_created", leadId: session.lead_id };
   }
 
@@ -454,6 +467,16 @@ export async function createCrmLeadFromCallSession(
           attempts: totalAttempts,
         }),
       );
+
+      try {
+        const refreshedSession = await getCallSessionBySid(session.twilio_call_sid);
+        await notifyEmployeesOfPhoneAiLeadIfNeeded({
+          session: refreshedSession ?? { ...session, lead_id: leadId },
+          leadId,
+        });
+      } catch (notificationError) {
+        console.error("Employee notification after CRM lead creation failed:", notificationError);
+      }
 
       return { status: "created", leadId };
     } catch (error) {

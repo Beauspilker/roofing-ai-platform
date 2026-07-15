@@ -2,6 +2,17 @@
 import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
 
+// ../../lib/twilio/voice-mode.ts
+var DEFAULT_OPENAI_REALTIME_MODEL = "gpt-4o-realtime-preview";
+var DEFAULT_OPENAI_REALTIME_VOICE = "echo";
+function isRealtimeBargeInEnabled() {
+  const value = process.env.REALTIME_BARGE_IN_ENABLED?.trim().toLowerCase();
+  if (!value) {
+    return true;
+  }
+  return value === "true";
+}
+
 // src/config.ts
 function getConfig() {
   const openAiApiKey = process.env.OPENAI_API_KEY?.trim() ?? "";
@@ -12,8 +23,8 @@ function getConfig() {
     port: Number.parseInt(process.env.PORT ?? "8080", 10),
     mediaPath: process.env.REALTIME_MEDIA_PATH?.trim() || "/media",
     openAiApiKey,
-    openAiRealtimeModel: process.env.OPENAI_REALTIME_MODEL?.trim() || "gpt-4o-realtime-preview",
-    openAiRealtimeVoice: process.env.OPENAI_REALTIME_VOICE?.trim() || "alloy",
+    openAiRealtimeModel: process.env.OPENAI_REALTIME_MODEL?.trim() || DEFAULT_OPENAI_REALTIME_MODEL,
+    openAiRealtimeVoice: process.env.OPENAI_REALTIME_VOICE?.trim() || DEFAULT_OPENAI_REALTIME_VOICE,
     signingSecret,
     supabaseUrl,
     supabaseServiceRoleKey,
@@ -21,7 +32,7 @@ function getConfig() {
       process.env.MAX_CALL_DURATION_SECONDS ?? "900",
       10
     ),
-    bargeInEnabled: process.env.REALTIME_BARGE_IN_ENABLED?.trim().toLowerCase() === "true"
+    bargeInEnabled: isRealtimeBargeInEnabled()
   };
 }
 function assertBridgeConfig(config2) {
@@ -428,6 +439,7 @@ var OPENING_GREETING = "Hi, thanks for calling Beau's Roofing. I'm the AI assist
 var OPENING_RETRY_PROMPT = `I didn't catch that. ${OPENING_QUESTION}`;
 var NO_INPUT_FOLLOW_UP_PROMPT = "I didn't catch that. Please go ahead.";
 var NO_INPUT_GOODBYE = "Sorry, I couldn't hear you. Please call back when you're ready. Goodbye.";
+var MAX_SPEECH_NO_INPUT_ATTEMPTS = 4;
 var CALLER_GOODBYE = "Thank you for calling Beau's Roofing. Have a wonderful day.";
 var GOODBYE_PHRASES = [
   "goodbye",
@@ -455,6 +467,12 @@ function isConfirmationPhrase(speech) {
     normalized
   ) || normalized === "uh huh";
 }
+function isCorrectionPhrase(speech) {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  return /^(no|nope|nah|not quite|incorrect|wrong|that'?s wrong|thats wrong|not right|actually)\b/.test(
+    normalized
+  );
+}
 
 // ../../lib/call-summary.ts
 var SUMMARY_DATA_FIELDS = /* @__PURE__ */ new Set([
@@ -477,8 +495,8 @@ var FILLER_WORDS = /\b(uh+|um+|uh huh|you know|i mean|kind of|sort of|like|basic
 var OPENING_FILLER = /^(hey|hi|hello|yeah|yep|so|well|okay|ok|thanks|thank you)[,.]?\s+/i;
 var CALL_PREFIX = /^(i'?m calling because|calling because|i wanted to (call|see|ask)|i need to (report|tell you about|let you know))\s+/i;
 var UNCERTAIN_PHRASES = /\b(i think|hopefully|maybe|probably|it sounds like|sounds like|i guess|i believe|i feel like)\b/gi;
-var SUMMARY_CONFIRMATION = "Does everything look accurate before I send this to our roofing team?";
-var POST_EDIT_CONFIRMATION = "Does everything else look accurate before I send this to our roofing team?";
+var SPOKEN_SUMMARY_CONFIRMATION = "Does everything sound correct before I send this to our roofing team?";
+var SPOKEN_POST_EDIT_CONFIRMATION = "Does everything else sound correct before I send this to our roofing team?";
 function hasText(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
@@ -715,7 +733,39 @@ function buildSpokenCallSummary(fields) {
   if (sentences.length === 0) {
     sentences.push("I have your information ready for our roofing team.");
   }
-  return `${sentences.join(" ")} ${SUMMARY_CONFIRMATION}`;
+  return `${sentences.join(" ")} ${SPOKEN_SUMMARY_CONFIRMATION}`;
+}
+function buildCrmCallSummary(fields) {
+  const content = buildProfessionalSummaryContent(fields);
+  const lines = [];
+  if (content.reason) {
+    lines.push(`Reason: ${content.reason}`);
+  }
+  if (content.contactName) {
+    lines.push(`Contact: ${content.contactName}`);
+  }
+  if (hasText(fields.callback_phone)) {
+    lines.push(`Phone: ${fields.callback_phone.trim()}`);
+  }
+  if (content.location) {
+    lines.push(`Property: ${content.location}`);
+  }
+  if (content.leak) {
+    lines.push(`Water intrusion: ${content.leak}`);
+  }
+  if (content.insurance) {
+    lines.push(`Insurance: ${content.insurance}`);
+  }
+  if (content.urgency) {
+    lines.push(`Priority: ${content.urgency}`);
+  }
+  if (content.appointment) {
+    lines.push(`Scheduling: ${content.appointment}`);
+  }
+  if (content.additionalNotes) {
+    lines.push(`Notes: ${content.additionalNotes}`);
+  }
+  return lines.join("\n");
 }
 function fieldEditLabel(field) {
   switch (field) {
@@ -774,17 +824,17 @@ function fieldUpdateDetailLine(field, fields) {
 }
 function buildSummaryFieldsUpdateReply(fields, updatedFields) {
   if (updatedFields.length === 0) {
-    return `No problem. I've updated that. ${POST_EDIT_CONFIRMATION}`;
+    return `No problem. I've updated that. ${SPOKEN_POST_EDIT_CONFIRMATION}`;
   }
   if (updatedFields.length === 1) {
-    return `No problem. ${fieldUpdateDetailLine(updatedFields[0], fields)} ${POST_EDIT_CONFIRMATION}`;
+    return `No problem. ${fieldUpdateDetailLine(updatedFields[0], fields)} ${SPOKEN_POST_EDIT_CONFIRMATION}`;
   }
   if (updatedFields.length === 2) {
-    return `No problem. I've updated both the ${fieldEditLabel(updatedFields[0])} and the ${fieldEditLabel(updatedFields[1])}. ${POST_EDIT_CONFIRMATION}`;
+    return `No problem. I've updated both the ${fieldEditLabel(updatedFields[0])} and the ${fieldEditLabel(updatedFields[1])}. ${SPOKEN_POST_EDIT_CONFIRMATION}`;
   }
   const labels = updatedFields.map(fieldEditLabel);
   const last = labels.pop();
-  return `No problem. I've updated the ${labels.join(", the ")}, and the ${last}. ${POST_EDIT_CONFIRMATION}`;
+  return `No problem. I've updated the ${labels.join(", the ")}, and the ${last}. ${SPOKEN_POST_EDIT_CONFIRMATION}`;
 }
 function buildSummaryEditValuePrompt(field) {
   switch (field) {
@@ -813,14 +863,14 @@ function buildSummaryEditValuePrompt(field) {
   }
 }
 function getSummaryConfirmationPrompt() {
-  return SUMMARY_CONFIRMATION;
+  return SPOKEN_SUMMARY_CONFIRMATION;
 }
 function getPostEditConfirmationPrompt() {
-  return POST_EDIT_CONFIRMATION;
+  return SPOKEN_POST_EDIT_CONFIRMATION;
 }
 function isPostEditAffirmation(speech) {
   const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
-  return /\b(looks? accurate|everything (else )?(is )?(correct|right|good|fine|accurate))\b/.test(
+  return /\b(sounds? correct|looks? accurate|everything (else )?(is )?(correct|right|good|fine|accurate))\b/.test(
     normalized
   ) || /\beverything else (is )?(correct|right|good|fine)\b/.test(normalized) || /\bnothing else\b/.test(normalized) || /^(that'?s all|thats all|that'?s it|thats it|we'?re good|all set)\b/.test(
     normalized
@@ -953,10 +1003,32 @@ function applyTargetedCorrection(fields, speech, currentStage, callerPhone) {
   const lower = text.toLowerCase();
   const updated = { ...fields };
   const nameMatch = text.match(
-    /(?:name is|my name is|i'?m|this is)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z'-]+){0,2})/i
+    /(?:name is|my name is|i'?m|this is|it's|it is|call me)\s+([A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,3})/i
   );
   if (nameMatch?.[1]) {
     updated.full_name = nameMatch[1].trim();
+    return { fields: updated, updated: true, field: "full_name" };
+  }
+  const firstNameMatch = text.match(
+    /\b(?:my )?first name is\s+([A-Za-z][A-Za-z'-]+)/i
+  );
+  if (firstNameMatch?.[1]) {
+    const lastName = updated.full_name?.trim().split(/\s+/).slice(1).join(" ");
+    updated.full_name = lastName ? `${firstNameMatch[1].trim()} ${lastName}` : firstNameMatch[1].trim();
+    return { fields: updated, updated: true, field: "full_name" };
+  }
+  const lastNameMatch = text.match(
+    /\b(?:my )?last name is\s+([A-Za-z][A-Za-z'-]+)/i
+  );
+  if (lastNameMatch?.[1]) {
+    const firstName = updated.full_name?.trim().split(/\s+/)[0] ?? "";
+    updated.full_name = firstName ? `${firstName} ${lastNameMatch[1].trim()}` : lastNameMatch[1].trim();
+    return { fields: updated, updated: true, field: "full_name" };
+  }
+  if (/\b(last name|surname)\b.*\b(wrong|incorrect)\b/i.test(lower)) {
+    updated.name_pending_confirmation = void 0;
+    updated.full_name = void 0;
+    updated.name_awaiting_repeat = true;
     return { fields: updated, updated: true, field: "full_name" };
   }
   const addressMatch = text.match(
@@ -1291,6 +1363,16 @@ var ROUTINE_STAGES = [
 function hasValue(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
+function getStringField(fields, fieldKey) {
+  const value = fields[fieldKey];
+  return typeof value === "string" ? value : void 0;
+}
+function setStringField(fields, fieldKey, value) {
+  return {
+    ...fields,
+    [fieldKey]: value
+  };
+}
 function fieldText(value) {
   if (typeof value !== "string" || value.trim().length === 0) {
     return null;
@@ -1339,7 +1421,8 @@ function extractStormDamage(text) {
 function getNextMissingStage(fields) {
   for (const stage of CALL_INTAKE_STAGES) {
     const fieldKey = STAGE_FIELD_KEYS2[stage];
-    if (!hasValue(fields[fieldKey])) {
+    const value = fields[fieldKey];
+    if (typeof value !== "string" || !hasValue(value)) {
       return stage;
     }
   }
@@ -1564,7 +1647,8 @@ function extractFieldsFromSpeech(text, callerPhone) {
   const damageContext = extractDamageContext(text);
   for (const [key, value] of Object.entries(damageContext)) {
     const fieldKey = key;
-    if (typeof value === "string" && !hasValue(extracted[fieldKey]) && hasValue(value)) {
+    const existingValue = extracted[fieldKey];
+    if (typeof value === "string" && !(typeof existingValue === "string" && hasValue(existingValue)) && hasValue(value)) {
       extracted[fieldKey] = value;
     }
   }
@@ -1595,13 +1679,13 @@ function mergeCallerAnswer(fields, answer, callerPhone) {
   }
   const processedAnswer = stripInterruptionPrefix(answer);
   const answeringStage = getNextMissingStage(fields);
-  const updated = { ...fields };
+  let updated = { ...fields };
   const extracted = extractFieldsFromSpeech(processedAnswer, callerPhone);
   for (const stage of CALL_INTAKE_STAGES) {
     const fieldKey = STAGE_FIELD_KEYS2[stage];
     const extractedValue = extracted[fieldKey];
-    if (!hasValue(updated[fieldKey]) && hasValue(extractedValue)) {
-      updated[fieldKey] = extractedValue;
+    if (!hasValue(getStringField(updated, fieldKey)) && typeof extractedValue === "string" && hasValue(extractedValue)) {
+      updated = setStringField(updated, fieldKey, extractedValue);
     }
   }
   if (detectEmergency(processedAnswer)) {
@@ -1609,11 +1693,11 @@ function mergeCallerAnswer(fields, answer, callerPhone) {
   }
   if (answeringStage !== "wrap_up") {
     const primaryKey = STAGE_FIELD_KEYS2[answeringStage];
-    if (!hasValue(updated[primaryKey])) {
-      updated[primaryKey] = normalizeFieldValue(
-        answeringStage,
-        processedAnswer,
-        callerPhone
+    if (!hasValue(getStringField(updated, primaryKey))) {
+      updated = setStringField(
+        updated,
+        primaryKey,
+        normalizeFieldValue(answeringStage, processedAnswer, callerPhone)
       );
     }
   }
@@ -1623,7 +1707,7 @@ function countNewlyFilledFields(before, after) {
   let count = 0;
   for (const stage of CALL_INTAKE_STAGES) {
     const fieldKey = STAGE_FIELD_KEYS2[stage];
-    if (!hasValue(before[fieldKey]) && hasValue(after[fieldKey])) {
+    if (!hasValue(getStringField(before, fieldKey)) && hasValue(getStringField(after, fieldKey))) {
       count += 1;
     }
   }
@@ -1729,13 +1813,317 @@ function buildWrapUpSummary(fields) {
   return buildSpokenCallSummary(fields);
 }
 function buildConfirmedGoodbye() {
-  return "Perfect. Everything has been sent to our roofing team. Someone will be reaching out shortly to discuss the next steps. Thank you for calling Beau's Roofing. Have a wonderful day.";
+  return "Thank you. Everything has been sent to our roofing team. Someone will reach out shortly. Thank you for calling Beau's Roofing. Have a wonderful day.";
 }
 function getRecentAssistantPhrases(transcript) {
   if (!transcript) {
     return [];
   }
   return transcript.filter((entry) => entry.role === "assistant").slice(-4).map((entry) => entry.content);
+}
+
+// ../../lib/call-name-capture.ts
+var MAX_NAME_CONFIRMATION_ATTEMPTS = 3;
+var NAME_PREFIX_PATTERN = /^(?:my name is|name is|this is|i am|i'm|it's|it is|call me)\s+/i;
+var CORRECTION_PREFIX_PATTERN2 = /^(no|actually|wait|not|correction)[,.]?\s+/i;
+function hasText2(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+function isAwaitingNameConfirmation(fields) {
+  return hasText2(fields.name_pending_confirmation) && !hasText2(fields.full_name);
+}
+function normalizePersonName(name) {
+  return name.trim().split(/\s+/).map(
+    (part) => part.split("-").map((segment) => {
+      if (!segment) {
+        return segment;
+      }
+      return segment.charAt(0).toUpperCase() + segment.slice(1).toLowerCase();
+    }).join("-")
+  ).join(" ");
+}
+function parseNameFromSpeech(text) {
+  const cleaned = stripInterruptionPrefix(text.trim()).replace(CORRECTION_PREFIX_PATTERN2, "").replace(NAME_PREFIX_PATTERN, "").trim();
+  if (!cleaned) {
+    return null;
+  }
+  const explicitMatch = cleaned.match(
+    /(?:^|\b)(?:my name is|name is|this is|i am|i'm|it's|it is|call me)\s+([A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,3})/i
+  );
+  if (explicitMatch?.[1]) {
+    return normalizePersonName(explicitMatch[1]);
+  }
+  const directMatch = cleaned.match(
+    /^([A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,3})$/
+  );
+  if (directMatch?.[1]) {
+    return normalizePersonName(directMatch[1]);
+  }
+  const looseMatch = cleaned.match(
+    /([A-Za-z]{2,}(?:['-][A-Za-z]{2,})?(?:\s+[A-Za-z]{2,}(?:['-][A-Za-z]{2,})?){0,3})/
+  );
+  if (looseMatch?.[1]) {
+    return normalizePersonName(looseMatch[1]);
+  }
+  return null;
+}
+function parseSpeechConfidence(confidence) {
+  if (!confidence) {
+    return null;
+  }
+  const parsed = Number.parseFloat(confidence);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+  return parsed;
+}
+function buildNameConfirmationPrompt(name) {
+  return `I heard ${name}. Is that correct?`;
+}
+function buildNameRepeatPrompt() {
+  return "Sorry about that. Please say your first and last name again.";
+}
+function clearNameCaptureState(fields) {
+  return {
+    ...fields,
+    name_pending_confirmation: void 0,
+    name_raw_speech: void 0,
+    name_awaiting_repeat: void 0,
+    name_confirmation_attempts: void 0
+  };
+}
+function acceptPendingName(fields) {
+  const pending = fields.name_pending_confirmation?.trim();
+  if (!pending) {
+    return fields;
+  }
+  return clearNameCaptureState({
+    ...fields,
+    full_name: pending
+  });
+}
+function beginNameConfirmation(fields, rawSpeech, parsedName) {
+  return {
+    ...fields,
+    name_pending_confirmation: parsedName,
+    name_raw_speech: rawSpeech.trim(),
+    name_awaiting_repeat: false
+  };
+}
+function incrementNameConfirmationAttempts(fields) {
+  return {
+    ...fields,
+    name_confirmation_attempts: (fields.name_confirmation_attempts ?? 0) + 1
+  };
+}
+function isNameOnlyCorrection(speech) {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  return /\b(last name|first name|surname|spelling)\b/.test(normalized) || /\bwith an? [a-z]\b/i.test(speech);
+}
+function processNameCaptureTurn(input) {
+  const speech = input.speech.trim();
+  let fields = { ...input.fields };
+  let nameCorrected = false;
+  if (isAwaitingNameConfirmation(fields)) {
+    const pendingName = fields.name_pending_confirmation?.trim() ?? "";
+    if (isConfirmationPhrase(speech) && !hasCorrectionIntent(speech) && !isCorrectionPhrase(speech)) {
+      return {
+        status: "accepted",
+        fields: acceptPendingName(fields),
+        replyText: null,
+        nameConfirmationRequested: false,
+        nameCorrected: false
+      };
+    }
+    const correction = applyTargetedCorrection(
+      fields,
+      speech,
+      "full_name"
+    );
+    if (correction.updated && correction.field === "full_name") {
+      const correctedName = normalizePersonName(
+        correction.fields.full_name ?? pendingName
+      );
+      return {
+        status: "confirm",
+        fields: beginNameConfirmation(fields, speech, correctedName),
+        replyText: buildNameConfirmationPrompt(correctedName),
+        nameConfirmationRequested: true,
+        nameCorrected: true
+      };
+    }
+    const parsedCorrection = parseNameFromSpeech(speech);
+    if (parsedCorrection && (hasCorrectionIntent(speech) || isCorrectionPhrase(speech))) {
+      nameCorrected = true;
+      return {
+        status: "confirm",
+        fields: beginNameConfirmation(fields, speech, parsedCorrection),
+        replyText: buildNameConfirmationPrompt(parsedCorrection),
+        nameConfirmationRequested: true,
+        nameCorrected: true
+      };
+    }
+    if (isCorrectionPhrase(speech) || hasCorrectionIntent(speech) || isNameOnlyCorrection(speech)) {
+      fields = incrementNameConfirmationAttempts({
+        ...clearNameCaptureState(fields),
+        name_awaiting_repeat: true
+      });
+      if ((fields.name_confirmation_attempts ?? 0) >= MAX_NAME_CONFIRMATION_ATTEMPTS) {
+        return {
+          status: "accepted",
+          fields: acceptPendingName({
+            ...fields,
+            name_pending_confirmation: pendingName
+          }),
+          replyText: null,
+          nameConfirmationRequested: false,
+          nameCorrected: false
+        };
+      }
+      return {
+        status: "repeat",
+        fields,
+        replyText: buildNameRepeatPrompt(),
+        nameConfirmationRequested: false,
+        nameCorrected: true
+      };
+    }
+    if (parsedCorrection && parsedCorrection.toLowerCase() !== pendingName.toLowerCase()) {
+      return {
+        status: "confirm",
+        fields: beginNameConfirmation(fields, speech, parsedCorrection),
+        replyText: buildNameConfirmationPrompt(parsedCorrection),
+        nameConfirmationRequested: true,
+        nameCorrected: true
+      };
+    }
+    return {
+      status: "confirm",
+      fields,
+      replyText: buildNameConfirmationPrompt(pendingName),
+      nameConfirmationRequested: true,
+      nameCorrected: false
+    };
+  }
+  const parsedName = parseNameFromSpeech(speech);
+  if (!parsedName) {
+    fields = incrementNameConfirmationAttempts({
+      ...fields,
+      name_awaiting_repeat: true
+    });
+    if ((fields.name_confirmation_attempts ?? 0) >= MAX_NAME_CONFIRMATION_ATTEMPTS) {
+      const fallbackName = normalizePersonName(speech);
+      return {
+        status: "accepted",
+        fields: clearNameCaptureState({
+          ...fields,
+          full_name: fallbackName
+        }),
+        replyText: null,
+        nameConfirmationRequested: false,
+        nameCorrected: false
+      };
+    }
+    return {
+      status: "repeat",
+      fields: clearNameCaptureState({
+        ...fields,
+        name_awaiting_repeat: true
+      }),
+      replyText: buildNameRepeatPrompt(),
+      nameConfirmationRequested: false,
+      nameCorrected: false
+    };
+  }
+  fields = beginNameConfirmation(fields, speech, parsedName);
+  return {
+    status: "confirm",
+    fields,
+    replyText: buildNameConfirmationPrompt(parsedName),
+    nameConfirmationRequested: true,
+    nameCorrected: false
+  };
+}
+
+// ../../lib/activity.ts
+async function createActivity(supabase, {
+  companyId,
+  leadId = null,
+  activityType,
+  summary,
+  actorUserId = null,
+  metadata = {}
+}) {
+  const trimmedSummary = summary.trim();
+  if (!trimmedSummary) {
+    throw new Error("Activity summary cannot be empty.");
+  }
+  const { data, error } = await supabase.from("activity_history").insert({
+    company_id: companyId,
+    lead_id: leadId,
+    activity_type: activityType,
+    summary: trimmedSummary,
+    metadata,
+    actor_user_id: actorUserId
+  }).select("*").single();
+  if (error) {
+    throw error;
+  }
+  if (!data) {
+    throw new Error("Failed to create activity record.");
+  }
+  return {
+    ...data,
+    metadata: data.metadata && typeof data.metadata === "object" ? data.metadata : {}
+  };
+}
+
+// ../../lib/business-settings.ts
+var WEEKDAYS = [
+  { key: "monday", label: "Monday" },
+  { key: "tuesday", label: "Tuesday" },
+  { key: "wednesday", label: "Wednesday" },
+  { key: "thursday", label: "Thursday" },
+  { key: "friday", label: "Friday" },
+  { key: "saturday", label: "Saturday" },
+  { key: "sunday", label: "Sunday" }
+];
+function normalizeTimeValue(value) {
+  if (/^\d{2}:\d{2}:\d{2}$/.test(value)) {
+    return value.slice(0, 5);
+  }
+  return value;
+}
+function parseBusinessHours(value) {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+  const hours = {};
+  for (const day of WEEKDAYS) {
+    const entry = value[day.key];
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const open = "open" in entry && typeof entry.open === "string" ? normalizeTimeValue(entry.open) : "";
+    const close = "close" in entry && typeof entry.close === "string" ? normalizeTimeValue(entry.close) : "";
+    if (open && close) {
+      hours[day.key] = { open, close };
+    }
+  }
+  return hours;
+}
+async function getBusinessSettingsByCompanyId(supabase, companyId) {
+  const { data, error } = await supabase.from("business_settings").select("*").eq("company_id", companyId).maybeSingle();
+  if (error) {
+    throw error;
+  }
+  if (!data) {
+    return null;
+  }
+  return {
+    ...data,
+    business_hours: parseBusinessHours(data.business_hours)
+  };
 }
 
 // ../../lib/supabase/service.ts
@@ -1752,6 +2140,1312 @@ function createServiceClient() {
       autoRefreshToken: false
     }
   });
+}
+
+// ../../lib/employee-lead-notification-content.ts
+var EMPLOYEE_PHONE_AI_LEAD_KIND = "employee_phone_ai_lead";
+function hasText3(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+function displayValue(value, fallback = "Not provided") {
+  return hasText3(value) ? value.trim() : fallback;
+}
+function isAffirmative(value) {
+  return hasText3(value) && /^(yes|yeah|yep|yup|true|correct|started|filed|active)/i.test(value.trim());
+}
+function resolveEmployeeNotificationStyle(priorityLabel) {
+  return priorityLabel === "Emergency" || priorityLabel === "High" ? "urgent" : "normal";
+}
+function buildEmployeePriorityReason(fields, priorityLabel) {
+  if (priorityLabel === "Emergency") {
+    if (fields.emergency_acknowledged) {
+      return "Emergency urgency was detected during the call.";
+    }
+    return "Caller reported an emergency roofing situation.";
+  }
+  if (priorityLabel === "High") {
+    if (isAffirmative(fields.active_leak)) {
+      return "Active water intrusion was reported.";
+    }
+    if (fields.urgency?.toLowerCase().includes("urgent")) {
+      return "Caller requested urgent attention.";
+    }
+    return "Lead was marked high priority based on urgency signals.";
+  }
+  return null;
+}
+function buildEmployeeLeadNotificationContent(input) {
+  const priorityLabel = derivePhoneLeadPriorityLabel(input.fields);
+  const style = resolveEmployeeNotificationStyle(priorityLabel);
+  const priorityReason = buildEmployeePriorityReason(
+    input.fields,
+    priorityLabel
+  );
+  const summary = input.fields.crm_summary ?? buildCrmCallSummary(input.fields);
+  const issue = displayValue(input.fields.problem_description) !== "Not provided" ? displayValue(input.fields.problem_description) : displayValue(input.fields.project_type);
+  const lines = [
+    `Customer: ${displayValue(input.lead.full_name)}`,
+    `Phone: ${displayValue(input.lead.phone)}`,
+    `Address: ${displayValue(input.lead.address_line_1)}`,
+    `Priority: ${priorityLabel}`,
+    ...priorityReason ? [`Why urgent: ${priorityReason}`] : [],
+    `Issue: ${issue}`,
+    `Active leak: ${displayValue(input.fields.active_leak)}`,
+    `Insurance: ${input.lead.insurance_claim ? "Yes" : displayValue(input.fields.insurance_claim, "No")}`,
+    `Appointment: ${displayValue(input.fields.appointment_preference)}`,
+    `Source: Phone AI`,
+    "",
+    "Summary:",
+    summary
+  ];
+  if (input.dashboardUrl) {
+    lines.push("", `View lead: ${input.dashboardUrl}`);
+  }
+  const body = lines.join("\n");
+  const smsSubjectLine = style === "urgent" ? "URGENT PHONE AI LEAD" : "New Phone AI Lead";
+  const emailSubject = style === "urgent" ? `URGENT PHONE AI LEAD \u2014 ${displayValue(input.lead.full_name)}${priorityReason ? ` \u2014 ${priorityReason}` : ""}` : `New Phone AI Lead \u2014 ${displayValue(input.lead.full_name)}`;
+  const smsBody = style === "urgent" ? `${smsSubjectLine}
+
+${body}`.slice(0, 1500) : `${smsSubjectLine}
+
+${body}`.slice(0, 1500);
+  return {
+    style,
+    priorityLabel,
+    priorityReason,
+    smsSubjectLine,
+    emailSubject,
+    smsBody,
+    emailBody: `${emailSubject}
+
+${body}`
+  };
+}
+function getLeadDashboardUrl(leadId) {
+  const configured = process.env.NEXT_PUBLIC_APP_URL?.trim() || process.env.APP_URL?.trim() || process.env.VERCEL_PROJECT_PRODUCTION_URL?.trim() || process.env.VERCEL_URL?.trim();
+  if (!configured) {
+    return null;
+  }
+  const origin = configured.startsWith("http") ? configured.replace(/\/$/, "") : `https://${configured.replace(/\/$/, "")}`;
+  return `${origin}/dashboard/leads/${leadId}`;
+}
+async function resolveEmployeeNotificationRecipients(company) {
+  const supabase = createServiceClient();
+  const settings = supabase ? await getBusinessSettingsByCompanyId(supabase, company.id) : null;
+  const smsEnabled = settings?.sms_follow_up_enabled ?? false;
+  const emailEnabled = settings?.email_follow_up_enabled ?? false;
+  const smsRecipient = hasText3(company.business_phone) ? company.business_phone.trim() : null;
+  const emailRecipient = settings?.notification_email?.trim() || company.business_email?.trim() || null;
+  return {
+    smsRecipient,
+    emailRecipient,
+    emergencySmsRecipient: smsRecipient,
+    emergencyEmailRecipient: emailRecipient,
+    smsEnabled,
+    emailEnabled
+  };
+}
+function pickSmsRecipient(recipients, style) {
+  if (!recipients.smsEnabled) {
+    return null;
+  }
+  if (style === "urgent") {
+    return recipients.emergencySmsRecipient ?? recipients.smsRecipient;
+  }
+  return recipients.smsRecipient;
+}
+function pickEmailRecipient(recipients, style) {
+  if (!recipients.emailEnabled) {
+    return null;
+  }
+  if (style === "urgent") {
+    return recipients.emergencyEmailRecipient ?? recipients.emailRecipient;
+  }
+  return recipients.emailRecipient;
+}
+
+// ../../lib/notifications.ts
+async function createEmployeeNotificationRecord(supabase, input) {
+  const { data, error } = await supabase.from("notifications").insert({
+    company_id: input.companyId,
+    lead_id: input.leadId,
+    channel: input.channel,
+    recipient: input.recipient.trim(),
+    subject: input.channel === "email" ? input.subject?.trim() || null : null,
+    message: input.message.trim(),
+    status: input.status ?? "queued",
+    sent_at: input.sentAt ?? null,
+    error_message: input.errorMessage ?? null,
+    notification_kind: input.notificationKind ?? null
+  }).select("*").single();
+  if (error) {
+    throw error;
+  }
+  if (!data) {
+    throw new Error("Failed to create notification record.");
+  }
+  return data;
+}
+async function getEmployeeNotificationForLead(supabase, leadId, channel, notificationKind) {
+  const { data, error } = await supabase.from("notifications").select("*").eq("lead_id", leadId).eq("channel", channel).eq("notification_kind", notificationKind).maybeSingle();
+  if (error) {
+    throw error;
+  }
+  return data;
+}
+
+// ../../lib/twilio/sms-outbound.ts
+import twilio from "twilio";
+function getTwilioSmsConfig() {
+  const accountSid = process.env.TWILIO_ACCOUNT_SID?.trim();
+  const authToken = process.env.TWILIO_AUTH_TOKEN?.trim();
+  const fromNumber = process.env.TWILIO_PHONE_NUMBER?.trim();
+  if (!accountSid || !authToken || !fromNumber) {
+    return null;
+  }
+  return { accountSid, authToken, fromNumber };
+}
+async function sendTwilioSms(to, body) {
+  const trimmedTo = to.trim();
+  const trimmedBody = body.trim();
+  if (!trimmedTo || !trimmedBody) {
+    return {
+      delivered: false,
+      simulated: true,
+      reason: "missing_recipient_or_body"
+    };
+  }
+  const config2 = getTwilioSmsConfig();
+  if (!config2) {
+    return {
+      delivered: false,
+      simulated: true,
+      reason: "twilio_not_configured"
+    };
+  }
+  try {
+    const client = twilio(config2.accountSid, config2.authToken);
+    const message = await client.messages.create({
+      to: trimmedTo,
+      from: config2.fromNumber,
+      body: trimmedBody
+    });
+    return {
+      delivered: true,
+      sid: message.sid,
+      simulated: false
+    };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`Twilio SMS failed: ${reason}`);
+  }
+}
+
+// ../../lib/employee-lead-notifications.ts
+var MAX_EMPLOYEE_NOTIFICATION_ATTEMPTS = 3;
+var RETRY_DELAYS_MS = [0, 750, 2e3];
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+function redactCallSid(callSid) {
+  if (callSid.length <= 8) {
+    return callSid;
+  }
+  return `${callSid.slice(0, 4)}...${callSid.slice(-4)}`;
+}
+function redactPhone(phone) {
+  const digits = phone.replace(/\D/g, "");
+  if (digits.length <= 4) {
+    return "***";
+  }
+  return `***${digits.slice(-4)}`;
+}
+async function recordEmployeeNotificationState(callSid, input) {
+  const supabase = createServiceClient();
+  if (!supabase) {
+    return;
+  }
+  await supabase.from("call_sessions").update({
+    employee_notification_status: input.status,
+    employee_notification_attempts: input.attempts,
+    employee_notification_last_error: input.error ?? null,
+    ...input.status === "sent" || input.status === "partial" ? { employee_notification_sent_at: (/* @__PURE__ */ new Date()).toISOString() } : {}
+  }).eq("twilio_call_sid", callSid);
+}
+async function logEmployeeActivity(companyId, leadId, summary, metadata) {
+  const supabase = createServiceClient();
+  if (!supabase) {
+    return;
+  }
+  try {
+    await createActivity(supabase, {
+      companyId,
+      leadId,
+      activityType: "notification_queued",
+      summary,
+      metadata
+    });
+  } catch (error) {
+    console.error("Failed to record employee notification activity:", error);
+  }
+}
+async function shouldSkipEmployeeNotification(session) {
+  return session.employee_notification_status === "sent";
+}
+async function loadCompany(companyId) {
+  const supabase = createServiceClient();
+  if (!supabase) {
+    return null;
+  }
+  const { data, error } = await supabase.from("companies").select("*").eq("id", companyId).maybeSingle();
+  if (error) {
+    throw error;
+  }
+  return data;
+}
+async function loadLead(leadId, companyId) {
+  const supabase = createServiceClient();
+  if (!supabase) {
+    return null;
+  }
+  const { data, error } = await supabase.from("leads").select("*").eq("id", leadId).eq("company_id", companyId).maybeSingle();
+  if (error) {
+    throw error;
+  }
+  return data;
+}
+async function deliverEmployeeChannelNotification(input) {
+  const supabase = createServiceClient();
+  if (!supabase) {
+    return {
+      channel: input.channel,
+      ok: false,
+      error: "Supabase service client is not configured."
+    };
+  }
+  const existing = await getEmployeeNotificationForLead(
+    supabase,
+    input.leadId,
+    input.channel,
+    EMPLOYEE_PHONE_AI_LEAD_KIND
+  );
+  if (existing) {
+    if (existing.status === "sent" || existing.status === "simulated") {
+      return { channel: input.channel, ok: true };
+    }
+    if (input.channel === "sms") {
+      try {
+        const smsResult = await sendTwilioSms(input.recipient, input.message);
+        const status = smsResult.delivered ? "sent" : "simulated";
+        await supabase.from("notifications").update({
+          message: input.message,
+          status,
+          sent_at: smsResult.delivered ? (/* @__PURE__ */ new Date()).toISOString() : null,
+          error_message: smsResult.delivered ? null : smsResult.reason
+        }).eq("id", existing.id);
+        await logEmployeeActivity(
+          input.companyId,
+          input.leadId,
+          input.isRetry ? "Employee notification retry succeeded" : "Employee SMS sent",
+          {
+            channel: "sms",
+            recipient: redactPhone(input.recipient),
+            delivery: status,
+            notification_kind: EMPLOYEE_PHONE_AI_LEAD_KIND
+          }
+        );
+        return { channel: "sms", ok: true };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await supabase.from("notifications").update({
+          status: "failed",
+          error_message: message
+        }).eq("id", existing.id);
+        return { channel: "sms", ok: false, error: message };
+      }
+    }
+    await supabase.from("notifications").update({
+      subject: input.subject,
+      message: input.message,
+      status: "queued",
+      error_message: null
+    }).eq("id", existing.id);
+    await logEmployeeActivity(
+      input.companyId,
+      input.leadId,
+      input.isRetry ? "Employee notification retry succeeded" : "Employee email sent",
+      {
+        channel: "email",
+        recipient: input.recipient.replace(/(.{2}).+(@.+)/, "$1***$2"),
+        delivery: "queued",
+        notification_kind: EMPLOYEE_PHONE_AI_LEAD_KIND
+      }
+    );
+    return { channel: "email", ok: true };
+  }
+  if (input.channel === "sms") {
+    try {
+      const smsResult = await sendTwilioSms(input.recipient, input.message);
+      const status = smsResult.delivered ? "sent" : "simulated";
+      await createEmployeeNotificationRecord(supabase, {
+        companyId: input.companyId,
+        leadId: input.leadId,
+        channel: "sms",
+        recipient: input.recipient,
+        message: input.message,
+        notificationKind: EMPLOYEE_PHONE_AI_LEAD_KIND,
+        status,
+        sentAt: smsResult.delivered ? (/* @__PURE__ */ new Date()).toISOString() : null,
+        errorMessage: smsResult.delivered ? null : smsResult.reason
+      });
+      await logEmployeeActivity(
+        input.companyId,
+        input.leadId,
+        input.isRetry ? "Employee notification retry succeeded" : "Employee SMS sent",
+        {
+          channel: "sms",
+          recipient: redactPhone(input.recipient),
+          delivery: status,
+          notification_kind: EMPLOYEE_PHONE_AI_LEAD_KIND
+        }
+      );
+      return { channel: "sms", ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      try {
+        await createEmployeeNotificationRecord(supabase, {
+          companyId: input.companyId,
+          leadId: input.leadId,
+          channel: "sms",
+          recipient: input.recipient,
+          message: input.message,
+          notificationKind: EMPLOYEE_PHONE_AI_LEAD_KIND,
+          status: "failed",
+          errorMessage: message
+        });
+      } catch {
+      }
+      return { channel: "sms", ok: false, error: message };
+    }
+  }
+  try {
+    await createEmployeeNotificationRecord(supabase, {
+      companyId: input.companyId,
+      leadId: input.leadId,
+      channel: "email",
+      recipient: input.recipient,
+      subject: input.subject,
+      message: input.message,
+      notificationKind: EMPLOYEE_PHONE_AI_LEAD_KIND,
+      status: "queued"
+    });
+    await logEmployeeActivity(
+      input.companyId,
+      input.leadId,
+      input.isRetry ? "Employee notification retry succeeded" : "Employee email sent",
+      {
+        channel: "email",
+        recipient: input.recipient.replace(/(.{2}).+(@.+)/, "$1***$2"),
+        delivery: "queued",
+        notification_kind: EMPLOYEE_PHONE_AI_LEAD_KIND
+      }
+    );
+    return { channel: "email", ok: true };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { channel: "email", ok: false, error: message };
+  }
+}
+async function notifyEmployeesOfPhoneAiLead(input) {
+  const session = input.session;
+  const leadId = input.leadId;
+  if (!leadId || !session.company_id) {
+    return { status: "skipped", reason: "Missing lead or company context." };
+  }
+  if (await shouldSkipEmployeeNotification(session)) {
+    return { status: "already_sent", channels: [] };
+  }
+  const company = await loadCompany(session.company_id);
+  if (!company) {
+    return { status: "skipped", reason: "Company not found." };
+  }
+  const lead = await loadLead(leadId, session.company_id);
+  if (!lead) {
+    return { status: "skipped", reason: "Lead not found." };
+  }
+  const fields = input.fields ?? session.collected_fields ?? {};
+  const recipients = await resolveEmployeeNotificationRecipients(company);
+  const content = buildEmployeeLeadNotificationContent({
+    lead,
+    fields,
+    callSid: session.twilio_call_sid,
+    conversationId: session.id,
+    dashboardUrl: getLeadDashboardUrl(leadId)
+  });
+  const smsRecipient = pickSmsRecipient(recipients, content.style);
+  const emailRecipient = pickEmailRecipient(recipients, content.style);
+  if (!smsRecipient && !emailRecipient) {
+    await recordEmployeeNotificationState(session.twilio_call_sid, {
+      status: "skipped",
+      attempts: session.employee_notification_attempts ?? 0,
+      error: "No enabled employee notification recipients configured."
+    });
+    return {
+      status: "skipped",
+      reason: "No enabled employee notification recipients configured."
+    };
+  }
+  const startingAttempts = session.employee_notification_attempts ?? 0;
+  const isRetry = startingAttempts > 0;
+  let lastError = "Employee notification failed.";
+  for (let attempt = 1; attempt <= MAX_EMPLOYEE_NOTIFICATION_ATTEMPTS; attempt += 1) {
+    const totalAttempts = startingAttempts + attempt;
+    const delayMs = RETRY_DELAYS_MS[attempt - 1] ?? 2e3;
+    if (delayMs > 0) {
+      await sleep(delayMs);
+    }
+    await recordEmployeeNotificationState(session.twilio_call_sid, {
+      status: "pending",
+      attempts: totalAttempts,
+      error: null
+    });
+    if (attempt === 1 && !isRetry) {
+      await logEmployeeActivity(session.company_id, leadId, "Employee notification queued", {
+        callSid: redactCallSid(session.twilio_call_sid),
+        conversationId: session.id,
+        priority: content.priorityLabel,
+        style: content.style,
+        notification_kind: EMPLOYEE_PHONE_AI_LEAD_KIND
+      });
+    }
+    const deliveries = [];
+    const errors = [];
+    if (smsRecipient) {
+      deliveries.push(
+        deliverEmployeeChannelNotification({
+          companyId: session.company_id,
+          leadId,
+          channel: "sms",
+          recipient: smsRecipient,
+          subject: null,
+          message: content.smsBody,
+          isRetry
+        })
+      );
+    }
+    if (emailRecipient) {
+      deliveries.push(
+        deliverEmployeeChannelNotification({
+          companyId: session.company_id,
+          leadId,
+          channel: "email",
+          recipient: emailRecipient,
+          subject: content.emailSubject,
+          message: content.emailBody,
+          isRetry
+        })
+      );
+    }
+    const results = await Promise.all(deliveries);
+    const successfulChannels = results.filter((result) => result.ok).map((r) => r.channel);
+    const failed = results.filter((result) => !result.ok);
+    if (failed.length === 0) {
+      await recordEmployeeNotificationState(session.twilio_call_sid, {
+        status: "sent",
+        attempts: totalAttempts,
+        error: null
+      });
+      console.info(
+        JSON.stringify({
+          event: "employee_notification_sent",
+          callSid: redactCallSid(session.twilio_call_sid),
+          leadId,
+          channels: successfulChannels,
+          style: content.style
+        })
+      );
+      return { status: "sent", channels: successfulChannels };
+    }
+    if (successfulChannels.length > 0) {
+      lastError = failed.map((item) => item.error).filter(Boolean).join("; ");
+      await recordEmployeeNotificationState(session.twilio_call_sid, {
+        status: "partial",
+        attempts: totalAttempts,
+        error: lastError
+      });
+      await logEmployeeActivity(
+        session.company_id,
+        leadId,
+        "Employee notification failed",
+        {
+          callSid: redactCallSid(session.twilio_call_sid),
+          failed_channels: failed.map((item) => item.channel),
+          notification_kind: EMPLOYEE_PHONE_AI_LEAD_KIND
+        }
+      );
+      return {
+        status: "partial",
+        channels: successfulChannels,
+        error: lastError
+      };
+    }
+    lastError = failed.map((item) => item.error).filter(Boolean).join("; ") || "Employee notification failed.";
+    console.error(
+      JSON.stringify({
+        event: "employee_notification_failed",
+        callSid: redactCallSid(session.twilio_call_sid),
+        leadId,
+        attempt: totalAttempts,
+        errorMessage: lastError
+      })
+    );
+  }
+  await recordEmployeeNotificationState(session.twilio_call_sid, {
+    status: "failed",
+    attempts: startingAttempts + MAX_EMPLOYEE_NOTIFICATION_ATTEMPTS,
+    error: lastError
+  });
+  await logEmployeeActivity(session.company_id, leadId, "Employee notification failed", {
+    callSid: redactCallSid(session.twilio_call_sid),
+    errorMessage: lastError,
+    notification_kind: EMPLOYEE_PHONE_AI_LEAD_KIND
+  });
+  return {
+    status: "failed",
+    error: lastError,
+    attempts: startingAttempts + MAX_EMPLOYEE_NOTIFICATION_ATTEMPTS
+  };
+}
+async function notifyEmployeesOfPhoneAiLeadIfNeeded(input) {
+  if (input.session.employee_notification_status === "sent" || input.session.employee_notification_status === "skipped") {
+    return { status: "already_sent", channels: [] };
+  }
+  return notifyEmployeesOfPhoneAiLead(input);
+}
+
+// ../../lib/intake.ts
+function normalizePhoneDigits(phone) {
+  return phone.replace(/\D/g, "");
+}
+function isValidIntakePhone(phone) {
+  const digits = normalizePhoneDigits(phone);
+  return digits.length >= 10 && digits.length <= 15;
+}
+
+// ../../lib/customer-confirmation-content.ts
+function hasText4(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+function formatPhoneForTwilioSms(phone) {
+  const digits = normalizePhoneDigits(phone);
+  if (digits.length === 10) {
+    return `+1${digits}`;
+  }
+  if (digits.length === 11 && digits.startsWith("1")) {
+    return `+${digits}`;
+  }
+  if (digits.length >= 10 && digits.length <= 15) {
+    return `+${digits}`;
+  }
+  return null;
+}
+function resolveCustomerPhone(lead, fields, callerPhone) {
+  const candidates = [
+    lead.phone,
+    fields.callback_phone,
+    callerPhone
+  ].filter(hasText4);
+  for (const candidate of candidates) {
+    if (!isValidIntakePhone(candidate)) {
+      continue;
+    }
+    const formatted = formatPhoneForTwilioSms(candidate);
+    if (formatted) {
+      return formatted;
+    }
+  }
+  return null;
+}
+function formatCustomerDisplayName(fullName) {
+  const trimmed = fullName?.trim();
+  if (!trimmed || /^unknown caller$/i.test(trimmed)) {
+    return "there";
+  }
+  return trimmed.split(/\s+/)[0] ?? trimmed;
+}
+function buildCustomerConfirmationSms(input) {
+  const customerName = formatCustomerDisplayName(input.lead.full_name);
+  const companyName = input.company.company_name.trim() || "our roofing team";
+  const priorityLabel = derivePhoneLeadPriorityLabel(input.fields);
+  const lines = [
+    `Hi ${customerName},`,
+    "",
+    `Thanks for contacting ${companyName}.`,
+    "",
+    "We've received your roofing request and someone from our team will review it shortly.",
+    "",
+    "If this is an emergency involving active water intrusion or immediate safety concerns, please call us immediately."
+  ];
+  if (hasText4(input.fields.appointment_preference)) {
+    lines.push(
+      "",
+      "Requested appointment:",
+      input.fields.appointment_preference.trim()
+    );
+  }
+  if (priorityLabel === "Emergency") {
+    lines.push(
+      "",
+      "Our team has marked your request as HIGH PRIORITY and will reach out as quickly as possible."
+    );
+  }
+  lines.push("", "Thank you!");
+  return lines.join("\n").slice(0, 1500);
+}
+function isCustomerConfirmationEnabled(smsFollowUpEnabled) {
+  return smsFollowUpEnabled;
+}
+
+// ../../lib/customer-confirmation-sms.ts
+var CUSTOMER_PHONE_AI_CONFIRMATION_KIND = "customer_phone_ai_confirmation";
+var MAX_CUSTOMER_CONFIRMATION_ATTEMPTS = 3;
+var RETRY_DELAYS_MS2 = [0, 750, 2e3];
+function sleep2(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+function redactCallSid2(callSid) {
+  if (callSid.length <= 8) {
+    return callSid;
+  }
+  return `${callSid.slice(0, 4)}...${callSid.slice(-4)}`;
+}
+function redactPhone2(phone) {
+  const digits = phone.replace(/\D/g, "");
+  if (digits.length <= 4) {
+    return "***";
+  }
+  return `***${digits.slice(-4)}`;
+}
+async function recordCustomerConfirmationState(callSid, input) {
+  const supabase = createServiceClient();
+  if (!supabase) {
+    return;
+  }
+  await supabase.from("call_sessions").update({
+    customer_confirmation_status: input.status,
+    customer_confirmation_attempts: input.attempts,
+    customer_confirmation_last_error: input.error ?? null,
+    ...input.status === "sent" ? { customer_confirmation_sent_at: (/* @__PURE__ */ new Date()).toISOString() } : {}
+  }).eq("twilio_call_sid", callSid);
+}
+async function logCustomerConfirmationActivity(companyId, leadId, summary, metadata) {
+  const supabase = createServiceClient();
+  if (!supabase) {
+    return;
+  }
+  try {
+    await createActivity(supabase, {
+      companyId,
+      leadId,
+      activityType: "notification_queued",
+      summary,
+      metadata
+    });
+  } catch (error) {
+    console.error("Failed to record customer confirmation activity:", error);
+  }
+}
+async function loadCompany2(companyId) {
+  const supabase = createServiceClient();
+  if (!supabase) {
+    return null;
+  }
+  const { data, error } = await supabase.from("companies").select("*").eq("id", companyId).maybeSingle();
+  if (error) {
+    throw error;
+  }
+  return data;
+}
+async function loadLead2(leadId, companyId) {
+  const supabase = createServiceClient();
+  if (!supabase) {
+    return null;
+  }
+  const { data, error } = await supabase.from("leads").select("*").eq("id", leadId).eq("company_id", companyId).maybeSingle();
+  if (error) {
+    throw error;
+  }
+  return data;
+}
+async function sendCustomerConfirmationSmsIfNeeded(input) {
+  const session = input.session;
+  const leadId = input.leadId;
+  if (!leadId || !session.company_id) {
+    return { status: "skipped", reason: "Missing lead or company context." };
+  }
+  if (session.customer_confirmation_status === "sent") {
+    return { status: "already_sent" };
+  }
+  const supabase = createServiceClient();
+  if (!supabase) {
+    return {
+      status: "failed",
+      error: "Supabase service client is not configured.",
+      attempts: 0
+    };
+  }
+  const existing = await getEmployeeNotificationForLead(
+    supabase,
+    leadId,
+    "sms",
+    CUSTOMER_PHONE_AI_CONFIRMATION_KIND
+  );
+  if (existing && (existing.status === "sent" || existing.status === "simulated")) {
+    await recordCustomerConfirmationState(session.twilio_call_sid, {
+      status: "sent",
+      attempts: session.customer_confirmation_attempts ?? 0,
+      error: null
+    });
+    return { status: "already_sent" };
+  }
+  const company = await loadCompany2(session.company_id);
+  if (!company) {
+    return { status: "skipped", reason: "Company not found." };
+  }
+  const settings = await getBusinessSettingsByCompanyId(supabase, company.id);
+  if (!isCustomerConfirmationEnabled(settings?.sms_follow_up_enabled ?? false)) {
+    await recordCustomerConfirmationState(session.twilio_call_sid, {
+      status: "skipped",
+      attempts: session.customer_confirmation_attempts ?? 0,
+      error: "Customer confirmation SMS is disabled in business settings."
+    });
+    return {
+      status: "skipped",
+      reason: "Customer confirmation SMS is disabled in business settings."
+    };
+  }
+  const lead = await loadLead2(leadId, session.company_id);
+  if (!lead) {
+    return { status: "skipped", reason: "Lead not found." };
+  }
+  const fields = input.fields ?? session.collected_fields ?? {};
+  const customerPhone = resolveCustomerPhone(
+    lead,
+    fields,
+    session.caller_phone
+  );
+  if (!customerPhone) {
+    await recordCustomerConfirmationState(session.twilio_call_sid, {
+      status: "skipped",
+      attempts: session.customer_confirmation_attempts ?? 0,
+      error: "No valid customer phone number available."
+    });
+    return {
+      status: "skipped",
+      reason: "No valid customer phone number available."
+    };
+  }
+  const message = buildCustomerConfirmationSms({
+    lead,
+    company,
+    fields
+  });
+  const startingAttempts = session.customer_confirmation_attempts ?? 0;
+  const isRetry = startingAttempts > 0;
+  let lastError = "Customer confirmation SMS failed.";
+  for (let attempt = 1; attempt <= MAX_CUSTOMER_CONFIRMATION_ATTEMPTS; attempt += 1) {
+    const totalAttempts = startingAttempts + attempt;
+    const delayMs = RETRY_DELAYS_MS2[attempt - 1] ?? 2e3;
+    if (delayMs > 0) {
+      await sleep2(delayMs);
+    }
+    const existingNotification = await getEmployeeNotificationForLead(
+      supabase,
+      leadId,
+      "sms",
+      CUSTOMER_PHONE_AI_CONFIRMATION_KIND
+    );
+    if (existingNotification && (existingNotification.status === "sent" || existingNotification.status === "simulated")) {
+      await recordCustomerConfirmationState(session.twilio_call_sid, {
+        status: "sent",
+        attempts: totalAttempts,
+        error: null
+      });
+      return { status: "already_sent" };
+    }
+    await recordCustomerConfirmationState(session.twilio_call_sid, {
+      status: "pending",
+      attempts: totalAttempts,
+      error: null
+    });
+    if (attempt === 1 && !isRetry) {
+      await logCustomerConfirmationActivity(
+        session.company_id,
+        leadId,
+        "Customer confirmation queued",
+        {
+          callSid: redactCallSid2(session.twilio_call_sid),
+          conversationId: session.id,
+          notification_kind: CUSTOMER_PHONE_AI_CONFIRMATION_KIND
+        }
+      );
+    }
+    try {
+      const smsResult = await sendTwilioSms(customerPhone, message);
+      const status = smsResult.delivered ? "sent" : "simulated";
+      if (existingNotification) {
+        await supabase.from("notifications").update({
+          recipient: customerPhone,
+          message,
+          status,
+          sent_at: smsResult.delivered ? (/* @__PURE__ */ new Date()).toISOString() : null,
+          error_message: smsResult.delivered ? null : smsResult.reason
+        }).eq("id", existingNotification.id);
+      } else {
+        await createEmployeeNotificationRecord(supabase, {
+          companyId: session.company_id,
+          leadId,
+          channel: "sms",
+          recipient: customerPhone,
+          message,
+          notificationKind: CUSTOMER_PHONE_AI_CONFIRMATION_KIND,
+          status,
+          sentAt: smsResult.delivered ? (/* @__PURE__ */ new Date()).toISOString() : null,
+          errorMessage: smsResult.delivered ? null : smsResult.reason
+        });
+      }
+      await recordCustomerConfirmationState(session.twilio_call_sid, {
+        status: "sent",
+        attempts: totalAttempts,
+        error: null
+      });
+      await logCustomerConfirmationActivity(
+        session.company_id,
+        leadId,
+        isRetry ? "Customer confirmation retry succeeded" : "Customer confirmation sent",
+        {
+          callSid: redactCallSid2(session.twilio_call_sid),
+          recipient: redactPhone2(customerPhone),
+          delivery: status,
+          notification_kind: CUSTOMER_PHONE_AI_CONFIRMATION_KIND
+        }
+      );
+      console.info(
+        JSON.stringify({
+          event: "customer_confirmation_sent",
+          callSid: redactCallSid2(session.twilio_call_sid),
+          leadId,
+          delivery: status
+        })
+      );
+      return { status: "sent" };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+      try {
+        if (existingNotification) {
+          await supabase.from("notifications").update({
+            recipient: customerPhone,
+            message,
+            status: "failed",
+            error_message: lastError
+          }).eq("id", existingNotification.id);
+        } else {
+          await createEmployeeNotificationRecord(supabase, {
+            companyId: session.company_id,
+            leadId,
+            channel: "sms",
+            recipient: customerPhone,
+            message,
+            notificationKind: CUSTOMER_PHONE_AI_CONFIRMATION_KIND,
+            status: "failed",
+            errorMessage: lastError
+          });
+        }
+      } catch {
+      }
+      console.error(
+        JSON.stringify({
+          event: "customer_confirmation_failed",
+          callSid: redactCallSid2(session.twilio_call_sid),
+          leadId,
+          attempt: totalAttempts,
+          errorMessage: lastError
+        })
+      );
+    }
+  }
+  await recordCustomerConfirmationState(session.twilio_call_sid, {
+    status: "failed",
+    attempts: startingAttempts + MAX_CUSTOMER_CONFIRMATION_ATTEMPTS,
+    error: lastError
+  });
+  await logCustomerConfirmationActivity(
+    session.company_id,
+    leadId,
+    "Customer confirmation failed",
+    {
+      callSid: redactCallSid2(session.twilio_call_sid),
+      errorMessage: lastError,
+      notification_kind: CUSTOMER_PHONE_AI_CONFIRMATION_KIND
+    }
+  );
+  return {
+    status: "failed",
+    error: lastError,
+    attempts: startingAttempts + MAX_CUSTOMER_CONFIRMATION_ATTEMPTS
+  };
+}
+
+// ../../lib/call-lead-crm.ts
+var MAX_CRM_LEAD_ATTEMPTS = 3;
+var RETRY_DELAYS_MS3 = [0, 500, 1500];
+function sleep3(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+function hasText5(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+function isAffirmative2(value) {
+  return hasText5(value) && /^(yes|yeah|yep|yup|true|correct|started|filed|active)/i.test(value.trim());
+}
+function shouldCreateCrmLeadFromSession(session) {
+  if (session.status !== "completed") {
+    return false;
+  }
+  if (session.lead_id) {
+    return false;
+  }
+  const fields = session.collected_fields ?? {};
+  return fields.summary_confirmed === true;
+}
+function derivePhoneLeadPriorityLabel(fields) {
+  const urgency = fields.urgency?.toLowerCase() ?? "";
+  if (fields.emergency_acknowledged === true || urgency.includes("emergency") || urgency.includes("asap")) {
+    return "Emergency";
+  }
+  if (isAffirmative2(fields.active_leak) || urgency.includes("urgent") || urgency.includes("today") || urgency.includes("right away")) {
+    return "High";
+  }
+  if (isAffirmative2(fields.storm_damage) || fields.project_type?.toLowerCase().includes("storm") || isAffirmative2(fields.insurance_claim)) {
+    return "Medium";
+  }
+  return "Low";
+}
+function mapCallProjectType(value) {
+  if (!hasText5(value)) {
+    return null;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized.includes("storm")) {
+    return "storm_damage";
+  }
+  if (normalized.includes("repair")) {
+    return "repair";
+  }
+  if (normalized.includes("replace")) {
+    return "replacement";
+  }
+  if (normalized.includes("inspect")) {
+    return "inspection";
+  }
+  if (normalized === "repair" || normalized === "replacement" || normalized === "inspection" || normalized === "storm_damage" || normalized === "other") {
+    return normalized;
+  }
+  return "other";
+}
+function parseCallInsuranceClaim(value) {
+  if (!hasText5(value)) {
+    return false;
+  }
+  return isAffirmative2(value);
+}
+function buildPhoneLeadDescription(session, fields) {
+  const summary = buildCrmCallSummary(fields);
+  const priorityLabel = derivePhoneLeadPriorityLabel(fields);
+  const lines = [summary];
+  if (hasText5(fields.appointment_preference)) {
+    lines.push(`Requested appointment: ${fields.appointment_preference.trim()}`);
+  }
+  lines.push(
+    `[Priority: ${priorityLabel}]`,
+    "[Source: Phone AI]",
+    `[CallSid: ${session.twilio_call_sid}]`,
+    `[ConversationId: ${session.id}]`
+  );
+  return lines.filter(Boolean).join("\n");
+}
+function prepareCallSessionFieldsForCrm(session) {
+  const fields = { ...session.collected_fields ?? {} };
+  const priorityLabel = derivePhoneLeadPriorityLabel(fields);
+  return {
+    ...fields,
+    priority_label: priorityLabel,
+    crm_summary: buildCrmCallSummary(fields)
+  };
+}
+function redactCallSid3(callSid) {
+  if (callSid.length <= 8) {
+    return callSid;
+  }
+  return `${callSid.slice(0, 4)}...${callSid.slice(-4)}`;
+}
+async function recordCrmLeadAttempt(callSid, input) {
+  const supabase = createServiceClient();
+  if (!supabase) {
+    return;
+  }
+  await supabase.from("call_sessions").update({
+    crm_lead_status: input.status,
+    crm_lead_attempts: input.attempts,
+    crm_lead_last_error: input.error ?? null,
+    ...input.leadId ? {
+      lead_id: input.leadId,
+      crm_lead_created_at: (/* @__PURE__ */ new Date()).toISOString()
+    } : {}
+  }).eq("twilio_call_sid", callSid);
+}
+async function createLeadViaRpc(callSid) {
+  const supabase = createServiceClient();
+  if (!supabase) {
+    throw new Error("Supabase service client is not configured.");
+  }
+  const { data, error } = await supabase.rpc(
+    "create_phone_ai_lead_from_call_session",
+    {
+      p_twilio_call_sid: callSid
+    }
+  );
+  if (error) {
+    throw error;
+  }
+  return data ?? null;
+}
+async function createLeadViaDirectInsert(session) {
+  const supabase = createServiceClient();
+  if (!supabase) {
+    throw new Error("Supabase service client is not configured.");
+  }
+  const fields = prepareCallSessionFieldsForCrm(session);
+  const description = buildPhoneLeadDescription(session, fields);
+  const fullName = fields.full_name?.trim() || "Unknown caller";
+  const phone = fields.callback_phone?.trim() || session.caller_phone?.trim() || null;
+  const { data: lead, error: leadError } = await supabase.from("leads").insert({
+    company_id: session.company_id,
+    full_name: fullName,
+    phone,
+    email: null,
+    address_line_1: fields.address?.trim() || null,
+    city: null,
+    state: null,
+    postal_code: null,
+    source: "ai_phone",
+    status: "new",
+    project_type: mapCallProjectType(fields.project_type),
+    description,
+    insurance_claim: parseCallInsuranceClaim(fields.insurance_claim),
+    appointment_at: null
+  }).select("id").single();
+  if (leadError || !lead) {
+    throw leadError ?? new Error("Lead insert returned no data.");
+  }
+  const transcript = session.transcript ?? [];
+  const { error: transcriptError } = await supabase.from("phone_call_transcripts").upsert(
+    {
+      call_session_id: session.id,
+      lead_id: lead.id,
+      company_id: session.company_id,
+      twilio_call_sid: session.twilio_call_sid,
+      transcript,
+      ai_summary: fields.crm_summary ?? buildCrmCallSummary(fields),
+      metadata: {
+        priority_label: fields.priority_label,
+        conversation_id: session.id,
+        source: "Phone AI"
+      }
+    },
+    { onConflict: "call_session_id" }
+  );
+  if (transcriptError) {
+    console.error("Failed to store phone call transcript:", transcriptError.message);
+  }
+  const activityRows = [
+    {
+      company_id: session.company_id,
+      lead_id: lead.id,
+      activity_type: "call_received",
+      summary: "Incoming AI Phone Call",
+      metadata: {
+        twilio_call_sid: session.twilio_call_sid,
+        conversation_id: session.id,
+        source: "Phone AI"
+      }
+    },
+    {
+      company_id: session.company_id,
+      lead_id: lead.id,
+      activity_type: "lead_created",
+      summary: "Lead Created",
+      metadata: {
+        source: "ai_phone",
+        twilio_call_sid: session.twilio_call_sid,
+        conversation_id: session.id
+      }
+    },
+    {
+      company_id: session.company_id,
+      lead_id: lead.id,
+      activity_type: "call_received",
+      summary: "Summary Generated",
+      metadata: {
+        twilio_call_sid: session.twilio_call_sid,
+        conversation_id: session.id,
+        event: "summary_generated"
+      }
+    },
+    {
+      company_id: session.company_id,
+      lead_id: lead.id,
+      activity_type: "call_received",
+      summary: "Customer Confirmed",
+      metadata: {
+        twilio_call_sid: session.twilio_call_sid,
+        conversation_id: session.id,
+        event: "customer_confirmed"
+      }
+    }
+  ];
+  if (hasText5(fields.appointment_preference)) {
+    activityRows.push({
+      company_id: session.company_id,
+      lead_id: lead.id,
+      activity_type: "appointment_booked",
+      summary: "Appointment Requested",
+      metadata: {
+        appointment_preference: fields.appointment_preference.trim(),
+        twilio_call_sid: session.twilio_call_sid,
+        conversation_id: session.id
+      }
+    });
+  }
+  const { error: activityError } = await supabase.from("activity_history").insert(activityRows);
+  if (activityError) {
+    console.error("Failed to create lead activities:", activityError.message);
+  }
+  await supabase.from("call_sessions").update({
+    lead_id: lead.id,
+    crm_lead_status: "created",
+    crm_lead_created_at: (/* @__PURE__ */ new Date()).toISOString(),
+    crm_lead_last_error: null
+  }).eq("twilio_call_sid", session.twilio_call_sid);
+  return lead.id;
+}
+async function runPostLeadAutomations(session, leadId) {
+  const refreshedSession = await getCallSessionBySid(session.twilio_call_sid);
+  const workingSession = refreshedSession ?? { ...session, lead_id: leadId };
+  try {
+    await notifyEmployeesOfPhoneAiLeadIfNeeded({
+      session: workingSession,
+      leadId
+    });
+  } catch (notificationError) {
+    console.error("Employee notification after CRM lead creation failed:", notificationError);
+  }
+  try {
+    await sendCustomerConfirmationSmsIfNeeded({
+      session: workingSession,
+      leadId
+    });
+  } catch (confirmationError) {
+    console.error("Customer confirmation SMS after CRM lead creation failed:", confirmationError);
+  }
+}
+async function createCrmLeadFromCallSession(session) {
+  if (!shouldCreateCrmLeadFromSession(session)) {
+    await recordCrmLeadAttempt(session.twilio_call_sid, {
+      status: "skipped",
+      attempts: session.crm_lead_attempts ?? 0
+    });
+    return {
+      status: "skipped",
+      reason: "Call was not confirmed or is not eligible for CRM lead creation."
+    };
+  }
+  if (session.lead_id) {
+    await runPostLeadAutomations(session, session.lead_id);
+    return { status: "already_created", leadId: session.lead_id };
+  }
+  const preparedFields = prepareCallSessionFieldsForCrm(session);
+  const preparedSession = {
+    ...session,
+    collected_fields: preparedFields
+  };
+  await updateCallSession({
+    callSid: session.twilio_call_sid,
+    collectedFields: preparedFields
+  });
+  let lastError = "Unknown CRM lead creation error.";
+  const startingAttempts = session.crm_lead_attempts ?? 0;
+  for (let attempt = 1; attempt <= MAX_CRM_LEAD_ATTEMPTS; attempt += 1) {
+    const totalAttempts = startingAttempts + attempt;
+    const delayMs = RETRY_DELAYS_MS3[attempt - 1] ?? 1500;
+    if (delayMs > 0) {
+      await sleep3(delayMs);
+    }
+    try {
+      await recordCrmLeadAttempt(session.twilio_call_sid, {
+        status: "pending",
+        attempts: totalAttempts,
+        error: null
+      });
+      let leadId = null;
+      try {
+        leadId = await createLeadViaRpc(session.twilio_call_sid);
+      } catch (rpcError) {
+        const message = rpcError instanceof Error ? rpcError.message : String(rpcError);
+        if (message.includes("Could not find the function")) {
+          leadId = await createLeadViaDirectInsert(preparedSession);
+        } else {
+          throw rpcError;
+        }
+      }
+      if (!leadId) {
+        return {
+          status: "skipped",
+          reason: "CRM lead creation skipped by database rules."
+        };
+      }
+      console.info(
+        JSON.stringify({
+          event: "crm_lead_created",
+          callSid: redactCallSid3(session.twilio_call_sid),
+          leadId,
+          attempts: totalAttempts
+        })
+      );
+      await runPostLeadAutomations(session, leadId);
+      return { status: "created", leadId };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+      console.error(
+        JSON.stringify({
+          event: "crm_lead_creation_failed",
+          callSid: redactCallSid3(session.twilio_call_sid),
+          attempt: totalAttempts,
+          errorMessage: lastError
+        })
+      );
+      await recordCrmLeadAttempt(session.twilio_call_sid, {
+        status: "failed",
+        attempts: totalAttempts,
+        error: lastError
+      });
+    }
+  }
+  return {
+    status: "failed",
+    error: lastError,
+    attempts: startingAttempts + MAX_CRM_LEAD_ATTEMPTS
+  };
 }
 
 // ../../lib/twilio/company.ts
@@ -1973,15 +3667,68 @@ async function completeCallSession(callSid, status = "completed") {
     console.error("Failed to complete call session:", error.message);
     return null;
   }
-  return data;
+  const session = data;
+  if (status === "completed" && shouldCreateCrmLeadFromSession(session) && !session.lead_id && session.crm_lead_status !== "created") {
+    try {
+      const result = await createCrmLeadFromCallSession(session);
+      if (result.status === "failed") {
+        console.error(
+          JSON.stringify({
+            event: "crm_lead_creation_exhausted_retries",
+            callSid,
+            attempts: result.attempts,
+            errorMessage: result.error
+          })
+        );
+      }
+    } catch (crmError) {
+      console.error("Unexpected CRM lead creation error:", crmError);
+    }
+  }
+  return session;
 }
 
 // ../../lib/call-turn-processor.ts
+function getEffectiveGatherStage(fields) {
+  if (isAwaitingNameConfirmation(fields)) {
+    return "full_name";
+  }
+  return getNextMissingStage(fields);
+}
+function isNameCaptureTurn(fields) {
+  if (isAwaitingNameConfirmation(fields) || fields.name_awaiting_repeat === true) {
+    return true;
+  }
+  return getNextMissingStage(fields) === "full_name";
+}
+async function persistTurn(callSid, input) {
+  const session = await updateCallSession({
+    callSid,
+    collectedFields: input.collectedFields,
+    currentQuestion: input.currentQuestion ?? null,
+    transcriptEntry: createTranscriptEntry("caller", input.callerSpeech),
+    attemptCount: input.attemptCount
+  }) ?? null;
+  await updateCallSession({
+    callSid,
+    transcriptEntry: createTranscriptEntry("assistant", input.assistantReply)
+  });
+  return session;
+}
 function getNoInputRetryPrompt(session, callerPhone, isInitial) {
   if (!session) {
     return OPENING_RETRY_PROMPT;
   }
   const fields = session.collected_fields ?? {};
+  if (isAwaitingNameConfirmation(fields)) {
+    const pending = fields.name_pending_confirmation?.trim();
+    if (pending) {
+      return `I didn't catch that. ${buildNameConfirmationPrompt(pending)}`;
+    }
+  }
+  if (fields.name_awaiting_repeat) {
+    return `I didn't catch that. ${buildNameRepeatPrompt()}`;
+  }
   if (isAwaitingSummaryConfirmation(fields)) {
     if (isAwaitingSummaryEditValue(fields)) {
       return `I didn't catch that. ${buildSummaryEditValuePrompt(
@@ -2006,8 +3753,17 @@ function buildResumeReply(fields, callerPhone, session, prefix) {
   return buildCombinedResponse([prefix], question);
 }
 async function processCallerTurn(input) {
-  const { callSid, callerPhone, speechResult, attempt, isInitial } = input;
+  const {
+    callSid,
+    callerPhone,
+    speechResult,
+    speechConfidence,
+    attempt,
+    isInitial
+  } = input;
   let session = input.session;
+  let nameConfirmationRequested = false;
+  let nameCorrected = false;
   if (!speechResult.trim()) {
     if (callSid) {
       await updateCallSession({
@@ -2015,7 +3771,7 @@ async function processCallerTurn(input) {
         attemptCount: attempt
       });
     }
-    if (attempt >= 2) {
+    if (attempt >= MAX_SPEECH_NO_INPUT_ATTEMPTS) {
       if (callSid) {
         await completeCallSession(callSid, "failed");
       }
@@ -2029,7 +3785,8 @@ async function processCallerTurn(input) {
     return {
       kind: "speak_continue",
       replyText: getNoInputRetryPrompt(session, callerPhone, isInitial),
-      session
+      session,
+      gatherStage: session ? getEffectiveGatherStage(session.collected_fields ?? {}) : null
     };
   }
   if (isGoodbyePhrase(speechResult)) {
@@ -2189,6 +3946,76 @@ async function processCallerTurn(input) {
     });
     return { kind: "speak_continue", replyText: reply2, session };
   }
+  if (isNameCaptureTurn(fieldsBefore)) {
+    const nameOutcome = processNameCaptureTurn({
+      fields: fieldsBefore,
+      speech: speechResult,
+      confidence: parseSpeechConfidence(speechConfidence)
+    });
+    nameConfirmationRequested = nameOutcome.nameConfirmationRequested;
+    nameCorrected = nameOutcome.nameCorrected;
+    if (nameOutcome.status === "confirm" || nameOutcome.status === "repeat") {
+      session = await persistTurn(callSid, {
+        collectedFields: nameOutcome.fields,
+        currentQuestion: nameOutcome.replyText,
+        callerSpeech: speechResult,
+        assistantReply: nameOutcome.replyText,
+        attemptCount: 1
+      }) ?? session;
+      return {
+        kind: "speak_continue",
+        replyText: nameOutcome.replyText,
+        session,
+        nameConfirmationRequested,
+        nameCorrected,
+        gatherStage: "full_name"
+      };
+    }
+    const confirmedFields = nameOutcome.fields;
+    const answeredStage2 = "full_name";
+    const nextStage2 = getNextMissingStage(confirmedFields);
+    if (nextStage2 === "wrap_up") {
+      const summary = buildWrapUpSummary(confirmedFields);
+      session = await persistTurn(callSid, {
+        collectedFields: {
+          ...confirmedFields,
+          summary_delivered: true
+        },
+        currentQuestion: getSummaryConfirmationPrompt(),
+        callerSpeech: speechResult,
+        assistantReply: summary
+      }) ?? session;
+      return {
+        kind: "speak_continue",
+        replyText: summary,
+        session,
+        nameConfirmationRequested,
+        nameCorrected,
+        gatherStage: "wrap_up"
+      };
+    }
+    const reply2 = buildIntakeResponse(confirmedFields, answeredStage2, {
+      callerPhone,
+      turnIndex,
+      fieldsBefore,
+      callerAnswer: speechResult,
+      priorPhrases
+    });
+    session = await persistTurn(callSid, {
+      collectedFields: confirmedFields,
+      currentQuestion: getStageQuestion(nextStage2, confirmedFields, callerPhone),
+      callerSpeech: speechResult,
+      assistantReply: reply2
+    }) ?? session;
+    return {
+      kind: "speak_continue",
+      replyText: reply2,
+      session,
+      nameConfirmationRequested,
+      nameCorrected,
+      gatherStage: nextStage2
+    };
+  }
   const answeredStage = getNextMissingStage(fieldsBefore);
   let updatedFields = mergeCallerAnswer(
     fieldsBefore,
@@ -2202,25 +4029,25 @@ async function processCallerTurn(input) {
       emergency_acknowledged: true
     };
   }
-  session = await updateCallSession({
-    callSid,
-    collectedFields: updatedFields,
-    transcriptEntry: createTranscriptEntry("caller", speechResult),
-    attemptCount: 1
-  }) ?? session;
   const nextStage = getNextMissingStage(updatedFields);
   if (nextStage === "wrap_up") {
     const summary = buildWrapUpSummary(updatedFields);
-    await updateCallSession({
-      callSid,
+    session = await persistTurn(callSid, {
       collectedFields: {
         ...updatedFields,
         summary_delivered: true
       },
       currentQuestion: getSummaryConfirmationPrompt(),
-      transcriptEntry: createTranscriptEntry("assistant", summary)
-    });
-    return { kind: "speak_continue", replyText: summary, session };
+      callerSpeech: speechResult,
+      assistantReply: summary,
+      attemptCount: 1
+    }) ?? session;
+    return {
+      kind: "speak_continue",
+      replyText: summary,
+      session,
+      gatherStage: "wrap_up"
+    };
   }
   const reply = buildIntakeResponse(updatedFields, answeredStage, {
     callerPhone,
@@ -2229,12 +4056,19 @@ async function processCallerTurn(input) {
     callerAnswer: speechResult,
     priorPhrases
   });
-  await updateCallSession({
-    callSid,
+  session = await persistTurn(callSid, {
+    collectedFields: updatedFields,
     currentQuestion: getStageQuestion(nextStage, updatedFields, callerPhone),
-    transcriptEntry: createTranscriptEntry("assistant", reply)
-  });
-  return { kind: "speak_continue", replyText: reply, session };
+    callerSpeech: speechResult,
+    assistantReply: reply,
+    attemptCount: 1
+  }) ?? session;
+  return {
+    kind: "speak_continue",
+    replyText: reply,
+    session,
+    gatherStage: nextStage
+  };
 }
 
 // src/orchestrator/session-orchestrator.ts

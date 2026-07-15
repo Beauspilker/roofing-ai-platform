@@ -1,0 +1,32 @@
+# Roofing AI Platform — OpenAI Realtime bridge (Phase 15D)
+# Deploy from repository root:
+#   fly launch --no-deploy --copy-config --name roofing-realtime-bridge
+#   fly secrets set OPENAI_API_KEY=... REALTIME_BRIDGE_SIGNING_SECRET=... \
+#     NEXT_PUBLIC_SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=...
+#   fly deploy
+
+app = "roofing-realtime-bridge"
+primary_region = "dfw"
+
+[build]
+  dockerfile = "services/realtime-bridge/Dockerfile"
+
+[env]
+  PORT = "8080"
+  REALTIME_MEDIA_PATH = "/media"
+  OPENAI_REALTIME_VOICE = "echo"
+  REALTIME_BARGE_IN_ENABLED = "true"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/health"

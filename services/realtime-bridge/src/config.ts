@@ -1,3 +1,9 @@
+import {
+  DEFAULT_OPENAI_REALTIME_MODEL,
+  DEFAULT_OPENAI_REALTIME_VOICE,
+  isRealtimeBargeInEnabled,
+} from "../../../lib/twilio/voice-mode.js";
+
 export function getConfig() {
   const openAiApiKey = process.env.OPENAI_API_KEY?.trim() ?? "";
   const signingSecret = process.env.REALTIME_BRIDGE_SIGNING_SECRET?.trim() ?? "";
@@ -10,8 +16,9 @@ export function getConfig() {
     mediaPath: process.env.REALTIME_MEDIA_PATH?.trim() || "/media",
     openAiApiKey,
     openAiRealtimeModel:
-      process.env.OPENAI_REALTIME_MODEL?.trim() || "gpt-4o-realtime-preview",
-    openAiRealtimeVoice: process.env.OPENAI_REALTIME_VOICE?.trim() || "alloy",
+      process.env.OPENAI_REALTIME_MODEL?.trim() || DEFAULT_OPENAI_REALTIME_MODEL,
+    openAiRealtimeVoice:
+      process.env.OPENAI_REALTIME_VOICE?.trim() || DEFAULT_OPENAI_REALTIME_VOICE,
     signingSecret,
     supabaseUrl,
     supabaseServiceRoleKey,
@@ -19,8 +26,7 @@ export function getConfig() {
       process.env.MAX_CALL_DURATION_SECONDS ?? "900",
       10,
     ),
-    bargeInEnabled:
-      process.env.REALTIME_BARGE_IN_ENABLED?.trim().toLowerCase() === "true",
+    bargeInEnabled: isRealtimeBargeInEnabled(),
   };
 }
 

@@ -1,0 +1,8 @@
+.git
+.next
+node_modules
+services/realtime-bridge/node_modules
+*.md
+.env*
+!.env.example
+!services/realtime-bridge/.env.example

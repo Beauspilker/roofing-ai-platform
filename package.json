@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "build:bridge": "npm run check --prefix services/realtime-bridge",
     "start": "next start",
     "lint": "eslint"
   },

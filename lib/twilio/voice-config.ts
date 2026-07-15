@@ -48,10 +48,11 @@ export const TWILIO_VOICE = resolveTwilioVoice(process.env.TWILIO_VOICE);
 export const SPEECH_GATHER_OPTIONS = {
   enhanced: true,
   language: TWILIO_LANGUAGE,
-  speechTimeout: "auto" as const,
-  timeout: 4,
+  speechModel: "phone_call" as const,
+  speechTimeout: "4",
+  timeout: 10,
   hints:
-    "roof, hail, shingles, leak, insurance, inspection, appointment, address, storm, damage, roofing",
+    "roof, hail, shingles, leak, insurance, inspection, appointment, address, storm, damage, roofing, name, phone number, street, city, zip code",
 };
 
 export function getSayVoiceAttributes(): {

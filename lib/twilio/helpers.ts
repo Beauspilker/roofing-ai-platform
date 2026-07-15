@@ -22,6 +22,9 @@ export const NO_INPUT_FOLLOW_UP_PROMPT = "I didn't catch that. Please go ahead."
 export const NO_INPUT_GOODBYE =
   "Sorry, I couldn't hear you. Please call back when you're ready. Goodbye.";
 
+/** Empty SpeechResult retries before ending the call (attempt 1 is the first miss). */
+export const MAX_SPEECH_NO_INPUT_ATTEMPTS = 4;
+
 export const CALLER_GOODBYE =
   "Thank you for calling Beau's Roofing. Have a wonderful day.";
 
@@ -53,6 +56,43 @@ export function getRequestOrigin(request: Request): string {
 
 export function getSpeechResult(formData: FormData): string {
   return formData.get("SpeechResult")?.toString().trim() ?? "";
+}
+
+export function getSpeechConfidence(formData: FormData): string | null {
+  const confidence = formData.get("Confidence")?.toString().trim();
+  return confidence || null;
+}
+
+export function redactCallSid(callSid: string): string {
+  if (callSid.length <= 8) {
+    return callSid;
+  }
+
+  return `${callSid.slice(0, 4)}...${callSid.slice(-4)}`;
+}
+
+export function logSpeechGatherTurn(input: {
+  callSid: string;
+  attempt: number;
+  isInitial: boolean;
+  hasSpeechResult: boolean;
+  confidence: string | null;
+  stage: string | null;
+  outcome: "empty" | "received" | "continue" | "hangup";
+}): void {
+  console.info(
+    JSON.stringify({
+      event: "twilio_speech_gather",
+      callSid: redactCallSid(input.callSid),
+      attempt: input.attempt,
+      isInitial: input.isInitial,
+      hasSpeechResult: input.hasSpeechResult,
+      confidence: input.confidence,
+      stage: input.stage,
+      outcome: input.outcome,
+      voicePath: "legacy_gather",
+    }),
+  );
 }
 
 export function getTwilioCallContext(formData: FormData): {
@@ -121,6 +161,7 @@ export function appendSpeechGather(
     action: `${origin}/api/twilio/conversation?${params.toString()}`,
     method: "POST",
     actionOnEmptyResult: true,
+    bargeIn: true,
     ...SPEECH_GATHER_OPTIONS,
   });
 

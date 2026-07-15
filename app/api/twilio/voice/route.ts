@@ -11,7 +11,6 @@ import {
   OPENING_QUESTION,
   twimlResponse,
 } from "@/lib/twilio/helpers";
-import { appendSpokenSay } from "@/lib/twilio/speech";
 import { validateTwilioRequest } from "@/lib/twilio/signature";
 import { buildMediaStreamConnectTwiml } from "@/lib/twilio/stream-twiml";
 import { hasStreamSigningSecret } from "@/lib/twilio/stream-auth";
@@ -25,10 +24,10 @@ function buildLegacyVoiceTwiml(
   message: string,
 ): twilio.twiml.VoiceResponse {
   const twiml = new twilio.twiml.VoiceResponse();
-  appendSpokenSay(twiml, message);
   appendSpeechGather(twiml, request, {
     attempt: 1,
     initial: true,
+    prompt: message,
   });
   return twiml;
 }

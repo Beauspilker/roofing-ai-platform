@@ -41,6 +41,7 @@ import {
 } from "@/lib/call-sessions";
 import {
   CALLER_GOODBYE,
+  MAX_SPEECH_NO_INPUT_ATTEMPTS,
   NO_INPUT_FOLLOW_UP_PROMPT,
   NO_INPUT_GOODBYE,
   OPENING_RETRY_PROMPT,
@@ -136,7 +137,7 @@ export async function processCallerTurn(
       });
     }
 
-    if (attempt >= 2) {
+    if (attempt >= MAX_SPEECH_NO_INPUT_ATTEMPTS) {
       if (callSid) {
         await completeCallSession(callSid, "failed");
       }

@@ -1,32 +1,38 @@
-# Roofing AI Platform — OpenAI Realtime bridge (Phase 15D)
-# Deploy from repository root:
-#   fly launch --no-deploy --copy-config --name roofing-realtime-bridge
-#   fly secrets set OPENAI_API_KEY=... REALTIME_BRIDGE_SIGNING_SECRET=... \
-#     NEXT_PUBLIC_SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=...
-#   fly deploy
+# fly.toml app configuration file generated for roofing-realtime-bridge on 2026-07-15T18:31:22-05:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
 
-app = "roofing-realtime-bridge"
-primary_region = "dfw"
+app = 'roofing-realtime-bridge'
+primary_region = 'dfw'
 
 [build]
-  dockerfile = "services/realtime-bridge/Dockerfile"
+  dockerfile = 'services/realtime-bridge/Dockerfile'
 
 [env]
-  PORT = "8080"
-  REALTIME_MEDIA_PATH = "/media"
-  OPENAI_REALTIME_VOICE = "echo"
-  REALTIME_BARGE_IN_ENABLED = "true"
+  NEXT_PUBLIC_SUPABASE_URL = 'https://ypaxujvzkdntgblaocdg.supabase.co'
+  OPENAI_REALTIME_VOICE = 'echo'
+  PORT = '8080'
+  REALTIME_BARGE_IN_ENABLED = 'true'
+  REALTIME_MEDIA_PATH = '/media'
+  REALTIME_SILENCE_DURATION_MS = '300'
+  REALTIME_PREFIX_PADDING_MS = '200'
 
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = true
+  auto_stop_machines = 'stop'
   auto_start_machines = true
-  min_machines_running = 0
+  min_machines_running = 1
 
   [[http_service.checks]]
-    interval = "15s"
-    timeout = "2s"
-    grace_period = "10s"
-    method = "GET"
-    path = "/health"
+    interval = '15s'
+    timeout = '2s'
+    grace_period = '10s'
+    method = 'GET'
+    path = '/health'
+
+[[vm]]
+  memory = '1gb'
+  cpus = 1
+  memory_mb = 1024

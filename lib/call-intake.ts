@@ -1,4 +1,4 @@
-import { OPENING_GREETING } from "@/lib/twilio/helpers";
+import { OPENING_GREETING } from "@/lib/twilio/voice-phrases";
 import {
   applyTargetedCorrection,
   buildCombinedResponse,

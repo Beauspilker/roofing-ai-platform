@@ -2,6 +2,7 @@ import type WebSocket from "ws";
 import type { BridgeConfig } from "../config.js";
 import { verifyStreamAuthToken } from "../auth/stream-token.js";
 import { BargeInController } from "../bridge/barge-in.js";
+import { CallTimingTracker } from "../bridge/call-timing.js";
 import { PlaybackTracker } from "../bridge/playback-tracker.js";
 import { logError, logInfo, logWarn } from "../logger.js";
 import { OpenAiRealtimeSession } from "../openai/realtime-session.js";
@@ -11,6 +12,8 @@ import {
   buildTwilioMediaMessage,
   parseTwilioStreamEvent,
 } from "../twilio/messages.js";
+
+const CLOSING_MARK_NAME = "closing-final";
 
 type CallBridgeParams = {
   twilioSocket: WebSocket;
@@ -27,8 +30,12 @@ export class CallBridge {
   private callTimeout: NodeJS.Timeout | null = null;
   private orchestrator: SessionOrchestrator | null = null;
   private readonly playbackTracker = new PlaybackTracker();
+  private readonly callTiming = new CallTimingTracker();
   private openAi: OpenAiRealtimeSession | null = null;
   private bargeIn: BargeInController | null = null;
+  private openingGreetingSent = false;
+  private awaitingClosingMark = false;
+  private activeResponseUsesClosingMark = false;
 
   constructor(private readonly params: CallBridgeParams) {}
 
@@ -71,7 +78,7 @@ export class CallBridge {
         this.handleStreamMedia(event.media.payload);
         break;
       case "mark":
-        logInfo("twilio_mark_received", { mark: event.mark.name });
+        this.handleTwilioMark(event.mark.name);
         break;
       case "stop":
         logInfo("twilio_stream_stopped");
@@ -107,6 +114,8 @@ export class CallBridge {
       return;
     }
 
+    this.callTiming.record("twilio_stream_started", start.callSid);
+
     logInfo("twilio_stream_started", {
       callSid: start.callSid,
       streamSid: start.streamSid,
@@ -141,13 +150,33 @@ export class CallBridge {
     }, this.params.config.maxCallDurationSeconds * 1000);
 
     try {
-      await this.openAi.connect();
-      const openingLine = await this.orchestrator.initialize();
-      this.openAi.speakExactText(openingLine);
+      const connectPromise = this.openAi.connect().then(() => {
+        this.callTiming.record("openai_connected", this.callSid ?? undefined);
+      });
+      const initPromise = this.orchestrator.initialize();
+      const sessionReadyPromise = connectPromise.then(() =>
+        this.openAi!.waitForSessionReady(),
+      );
+
+      const [openingLine] = await Promise.all([initPromise, sessionReadyPromise]);
+
+      this.maybeSendOpeningGreeting(openingLine);
     } catch (error) {
       logError("stream_start_setup_failed", { callSid: start.callSid }, error);
       this.cleanup("stream_start_setup_failed");
     }
+  }
+
+  private maybeSendOpeningGreeting(openingLine: string): void {
+    if (this.openingGreetingSent || !this.openAi) {
+      return;
+    }
+
+    this.openingGreetingSent = true;
+    this.callTiming.record("opening_response_requested", this.callSid ?? undefined);
+    this.playbackTracker.reset();
+    this.activeResponseUsesClosingMark = false;
+    this.openAi.speakExactText(openingLine);
   }
 
   private handleStreamMedia(payload: string): void {
@@ -161,7 +190,9 @@ export class CallBridge {
   private handleOpenAiEvent(event: { type: string; [key: string]: unknown }): void {
     switch (event.type) {
       case "session.created":
+        break;
       case "session.updated":
+        this.callTiming.record("openai_session_ready", this.callSid ?? undefined);
         logInfo("openai_session_ready", { type: event.type });
         break;
       case "input_audio_buffer.speech_started":
@@ -183,13 +214,22 @@ export class CallBridge {
         }
         break;
       }
-      case "response.audio.delta": {
+      case "response.output_audio.delta": {
         const delta = String(event.delta ?? "");
         this.forwardAssistantAudio(delta);
         break;
       }
-      case "response.audio.done":
-        logInfo("response_audio_done");
+      case "response.output_audio.done":
+        logInfo("response_output_audio_done");
+        if (this.awaitingClosingMark && this.streamSid) {
+          this.sendTwilioJson(
+            buildTwilioMarkMessage(this.streamSid, CLOSING_MARK_NAME) as unknown as Record<
+              string,
+              unknown
+            >,
+          );
+          this.awaitingClosingMark = false;
+        }
         break;
       case "response.done":
         this.bargeIn?.handleResponseCompleted();
@@ -197,6 +237,7 @@ export class CallBridge {
       case "response.cancelled":
       case "response.canceled":
         this.bargeIn?.handleResponseCancelled();
+        this.awaitingClosingMark = false;
         break;
       case "error":
         logError("openai_event_error", {
@@ -233,10 +274,12 @@ export class CallBridge {
     }
 
     this.playbackTracker.reset();
+    this.activeResponseUsesClosingMark = result.hangupAfterMark;
+    this.awaitingClosingMark = result.hangupAfterMark;
     this.openAi.speakExactText(result.replyText);
 
-    if (result.hangup) {
-      setTimeout(() => this.cleanup("call_completed"), 1500);
+    if (result.hangup && !result.hangupAfterMark) {
+      this.cleanup("call_completed");
     }
   }
 
@@ -255,13 +298,26 @@ export class CallBridge {
       >,
     );
 
-    this.markCounter += 1;
-    this.sendTwilioJson(
-      buildTwilioMarkMessage(
-        this.streamSid,
-        `assistant-${this.markCounter}`,
-      ) as unknown as Record<string, unknown>,
-    );
+    this.callTiming.record("first_audio_sent_to_twilio", this.callSid ?? undefined);
+
+    if (!this.activeResponseUsesClosingMark) {
+      this.markCounter += 1;
+      this.sendTwilioJson(
+        buildTwilioMarkMessage(
+          this.streamSid,
+          `assistant-${this.markCounter}`,
+        ) as unknown as Record<string, unknown>,
+      );
+    }
+  }
+
+  private handleTwilioMark(name: string): void {
+    logInfo("twilio_mark_received", { mark: name });
+
+    if (name === CLOSING_MARK_NAME) {
+      logInfo("closing_mark_played", { callSid: this.callSid ?? undefined });
+      this.cleanup("call_completed");
+    }
   }
 
   private sendTwilioJson(payload: Record<string, unknown>): void {

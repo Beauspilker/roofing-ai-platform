@@ -55,7 +55,7 @@ import {
   OPENING_RETRY_PROMPT,
   isConfirmationPhrase,
   isGoodbyePhrase,
-} from "@/lib/twilio/helpers";
+} from "@/lib/twilio/voice-phrases";
 
 export type TurnOutcome =
   | {

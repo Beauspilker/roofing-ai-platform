@@ -1,13 +1,13 @@
 FROM node:22-alpine
 
-WORKDIR /app
+WORKDIR /app/services/realtime-bridge
 
 COPY services/realtime-bridge/package.json services/realtime-bridge/package-lock.json* ./
 RUN npm install
 
 COPY services/realtime-bridge/tsconfig.json ./
 COPY services/realtime-bridge/src ./src
-COPY lib ./lib
+COPY lib /app/lib
 
 RUN npm run build
 

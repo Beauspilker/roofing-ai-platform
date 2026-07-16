@@ -3,10 +3,10 @@ import type { BridgeConfig } from "../config.js";
 import { logError, logInfo, logWarn } from "../logger.js";
 
 const REALTIME_INSTRUCTIONS =
-  "You are the voice interface for Beau's Roofing phone receptionist. " +
-  "You must speak only the exact text provided in each response instruction. " +
-  "Never invent intake questions, never reorder required fields, and never confirm data " +
-  "that was not supplied by the server. Use natural phone prosody and contractions.";
+  "You are a warm, professional roofing receptionist on a live phone call for Beau's Roofing. " +
+  "Speak naturally with contractions, brief pauses, and confident phone energy. " +
+  "Follow each response script faithfully — same facts and questions — in one or two short sentences unless the script is longer. " +
+  "Never invent intake questions or confirm details that were not provided by the server.";
 
 export type RealtimeServerEvent = {
   type: string;
@@ -17,6 +17,8 @@ export class OpenAiRealtimeSession {
   private socket: WebSocket | null = null;
   private connected = false;
   private connectPromise: Promise<void> | null = null;
+  private sessionReadyPromise: Promise<void> | null = null;
+  private sessionReadyResolve: (() => void) | null = null;
   private activeResponseId: string | null = null;
   private activeItemId: string | null = null;
 
@@ -25,6 +27,16 @@ export class OpenAiRealtimeSession {
     private readonly onEvent: (event: RealtimeServerEvent) => void,
     private readonly onDisconnect: (reason: string) => void,
   ) {}
+
+  private resetSessionReady(): void {
+    this.sessionReadyPromise = new Promise<void>((resolve) => {
+      this.sessionReadyResolve = resolve;
+    });
+  }
+
+  waitForSessionReady(): Promise<void> {
+    return this.sessionReadyPromise ?? Promise.resolve();
+  }
 
   async connect(): Promise<void> {
     if (this.connected && this.socket && this.socket.readyState === WebSocket.OPEN) {
@@ -35,13 +47,14 @@ export class OpenAiRealtimeSession {
       return this.connectPromise;
     }
 
+    this.resetSessionReady();
+
     this.connectPromise = new Promise<void>((resolve, reject) => {
       const url = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(this.config.openAiRealtimeModel)}`;
 
       const socket = new WebSocket(url, {
         headers: {
           Authorization: `Bearer ${this.config.openAiApiKey}`,
-          "OpenAI-Beta": "realtime=v1",
         },
       });
 
@@ -68,6 +81,8 @@ export class OpenAiRealtimeSession {
       socket.on("close", (code, reasonBuffer) => {
         this.connected = false;
         this.connectPromise = null;
+        this.sessionReadyPromise = null;
+        this.sessionReadyResolve = null;
         const reason = reasonBuffer.toString() || String(code);
         logWarn("openai_disconnected", { code, reason });
         this.onDisconnect(reason);
@@ -81,20 +96,27 @@ export class OpenAiRealtimeSession {
     this.send({
       type: "session.update",
       session: {
-        modalities: ["text", "audio"],
+        type: "realtime",
         instructions: REALTIME_INSTRUCTIONS,
-        voice: this.config.openAiRealtimeVoice,
-        input_audio_format: "g711_ulaw",
-        output_audio_format: "g711_ulaw",
-        input_audio_transcription: {
-          model: "whisper-1",
-        },
-        turn_detection: {
-          type: "server_vad",
-          threshold: 0.5,
-          prefix_padding_ms: 300,
-          silence_duration_ms: 500,
-          create_response: false,
+        output_modalities: ["audio"],
+        audio: {
+          input: {
+            format: { type: "audio/pcmu" },
+            transcription: {
+              model: "whisper-1",
+            },
+            turn_detection: {
+              type: "server_vad",
+              threshold: this.config.turnDetectionThreshold,
+              prefix_padding_ms: this.config.turnDetectionPrefixPaddingMs,
+              silence_duration_ms: this.config.turnDetectionSilenceDurationMs,
+              create_response: false,
+            },
+          },
+          output: {
+            format: { type: "audio/pcmu" },
+            voice: this.config.openAiRealtimeVoice,
+          },
         },
       },
     });
@@ -108,6 +130,11 @@ export class OpenAiRealtimeSession {
     } catch {
       logWarn("openai_malformed_event");
       return;
+    }
+
+    if (event.type === "session.updated") {
+      this.sessionReadyResolve?.();
+      this.sessionReadyResolve = null;
     }
 
     if (event.type === "response.created") {
@@ -173,10 +200,11 @@ export class OpenAiRealtimeSession {
     this.send({
       type: "response.create",
       response: {
-        modalities: ["text", "audio"],
+        output_modalities: ["audio"],
         instructions:
-          "Speak the following text exactly word-for-word with natural phone prosody. " +
-          "Do not add, remove, or change any words:\n\n" +
+          "Deliver this as a natural live phone response for Beau's Roofing. " +
+          "Use contractions, warm professional tone, and concise pacing. " +
+          "Keep the same facts and questions as the script below:\n\n" +
           trimmed,
       },
     });
@@ -210,6 +238,8 @@ export class OpenAiRealtimeSession {
     this.socket = null;
     this.connected = false;
     this.connectPromise = null;
+    this.sessionReadyPromise = null;
+    this.sessionReadyResolve = null;
     this.activeResponseId = null;
     this.activeItemId = null;
   }

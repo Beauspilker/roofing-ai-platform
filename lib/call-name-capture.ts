@@ -4,7 +4,7 @@ import {
   hasCorrectionIntent,
   stripInterruptionPrefix,
 } from "@/lib/call-intelligence";
-import { isConfirmationPhrase, isCorrectionPhrase } from "@/lib/twilio/helpers";
+import { isConfirmationPhrase, isCorrectionPhrase } from "@/lib/twilio/voice-phrases";
 
 export const MAX_NAME_CONFIRMATION_ATTEMPTS = 3;
 export const LOW_SPEECH_CONFIDENCE_THRESHOLD = 0.72;

@@ -27,6 +27,17 @@ export function getConfig() {
       10,
     ),
     bargeInEnabled: isRealtimeBargeInEnabled(),
+    turnDetectionSilenceDurationMs: Number.parseInt(
+      process.env.REALTIME_SILENCE_DURATION_MS ?? "300",
+      10,
+    ),
+    turnDetectionPrefixPaddingMs: Number.parseInt(
+      process.env.REALTIME_PREFIX_PADDING_MS ?? "200",
+      10,
+    ),
+    turnDetectionThreshold: Number.parseFloat(
+      process.env.REALTIME_VAD_THRESHOLD ?? "0.5",
+    ),
   };
 }
 

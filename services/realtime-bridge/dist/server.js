@@ -32,7 +32,18 @@ function getConfig() {
       process.env.MAX_CALL_DURATION_SECONDS ?? "900",
       10
     ),
-    bargeInEnabled: isRealtimeBargeInEnabled()
+    bargeInEnabled: isRealtimeBargeInEnabled(),
+    turnDetectionSilenceDurationMs: Number.parseInt(
+      process.env.REALTIME_SILENCE_DURATION_MS ?? "300",
+      10
+    ),
+    turnDetectionPrefixPaddingMs: Number.parseInt(
+      process.env.REALTIME_PREFIX_PADDING_MS ?? "200",
+      10
+    ),
+    turnDetectionThreshold: Number.parseFloat(
+      process.env.REALTIME_VAD_THRESHOLD ?? "0.5"
+    )
   };
 }
 function assertBridgeConfig(config2) {
@@ -224,6 +235,35 @@ var BargeInController = class {
   }
 };
 
+// src/bridge/call-timing.ts
+var CallTimingTracker = class {
+  startedAt = Date.now();
+  marks = /* @__PURE__ */ new Map();
+  record(milestone, callSid) {
+    if (this.marks.has(milestone)) {
+      return;
+    }
+    const now = Date.now();
+    this.marks.set(milestone, now);
+    logInfo("call_timing", {
+      callSid,
+      milestone,
+      elapsedMs: now - this.startedAt,
+      sinceTwilioStartedMs: this.delta("twilio_stream_started", milestone),
+      sinceOpenAiConnectedMs: this.delta("openai_connected", milestone),
+      sinceSessionReadyMs: this.delta("openai_session_ready", milestone)
+    });
+  }
+  delta(from, to) {
+    const fromMs = this.marks.get(from);
+    const toMs = this.marks.get(to);
+    if (fromMs === void 0 || toMs === void 0) {
+      return void 0;
+    }
+    return toMs - fromMs;
+  }
+};
+
 // src/bridge/playback-tracker.ts
 var PlaybackTracker = class {
   bytesSent = 0;
@@ -243,7 +283,7 @@ var PlaybackTracker = class {
 
 // src/openai/realtime-session.ts
 import WebSocket from "ws";
-var REALTIME_INSTRUCTIONS = "You are the voice interface for Beau's Roofing phone receptionist. You must speak only the exact text provided in each response instruction. Never invent intake questions, never reorder required fields, and never confirm data that was not supplied by the server. Use natural phone prosody and contractions.";
+var REALTIME_INSTRUCTIONS = "You are a warm, professional roofing receptionist on a live phone call for Beau's Roofing. Speak naturally with contractions, brief pauses, and confident phone energy. Follow each response script faithfully \u2014 same facts and questions \u2014 in one or two short sentences unless the script is longer. Never invent intake questions or confirm details that were not provided by the server.";
 var OpenAiRealtimeSession = class {
   constructor(config2, onEvent, onDisconnect) {
     this.config = config2;
@@ -253,8 +293,18 @@ var OpenAiRealtimeSession = class {
   socket = null;
   connected = false;
   connectPromise = null;
+  sessionReadyPromise = null;
+  sessionReadyResolve = null;
   activeResponseId = null;
   activeItemId = null;
+  resetSessionReady() {
+    this.sessionReadyPromise = new Promise((resolve) => {
+      this.sessionReadyResolve = resolve;
+    });
+  }
+  waitForSessionReady() {
+    return this.sessionReadyPromise ?? Promise.resolve();
+  }
   async connect() {
     if (this.connected && this.socket && this.socket.readyState === WebSocket.OPEN) {
       return;
@@ -262,12 +312,12 @@ var OpenAiRealtimeSession = class {
     if (this.connectPromise) {
       return this.connectPromise;
     }
+    this.resetSessionReady();
     this.connectPromise = new Promise((resolve, reject) => {
       const url = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(this.config.openAiRealtimeModel)}`;
       const socket = new WebSocket(url, {
         headers: {
-          Authorization: `Bearer ${this.config.openAiApiKey}`,
-          "OpenAI-Beta": "realtime=v1"
+          Authorization: `Bearer ${this.config.openAiApiKey}`
         }
       });
       this.socket = socket;
@@ -289,6 +339,8 @@ var OpenAiRealtimeSession = class {
       socket.on("close", (code, reasonBuffer) => {
         this.connected = false;
         this.connectPromise = null;
+        this.sessionReadyPromise = null;
+        this.sessionReadyResolve = null;
         const reason = reasonBuffer.toString() || String(code);
         logWarn("openai_disconnected", { code, reason });
         this.onDisconnect(reason);
@@ -300,20 +352,27 @@ var OpenAiRealtimeSession = class {
     this.send({
       type: "session.update",
       session: {
-        modalities: ["text", "audio"],
+        type: "realtime",
         instructions: REALTIME_INSTRUCTIONS,
-        voice: this.config.openAiRealtimeVoice,
-        input_audio_format: "g711_ulaw",
-        output_audio_format: "g711_ulaw",
-        input_audio_transcription: {
-          model: "whisper-1"
-        },
-        turn_detection: {
-          type: "server_vad",
-          threshold: 0.5,
-          prefix_padding_ms: 300,
-          silence_duration_ms: 500,
-          create_response: false
+        output_modalities: ["audio"],
+        audio: {
+          input: {
+            format: { type: "audio/pcmu" },
+            transcription: {
+              model: "whisper-1"
+            },
+            turn_detection: {
+              type: "server_vad",
+              threshold: this.config.turnDetectionThreshold,
+              prefix_padding_ms: this.config.turnDetectionPrefixPaddingMs,
+              silence_duration_ms: this.config.turnDetectionSilenceDurationMs,
+              create_response: false
+            }
+          },
+          output: {
+            format: { type: "audio/pcmu" },
+            voice: this.config.openAiRealtimeVoice
+          }
         }
       }
     });
@@ -325,6 +384,10 @@ var OpenAiRealtimeSession = class {
     } catch {
       logWarn("openai_malformed_event");
       return;
+    }
+    if (event.type === "session.updated") {
+      this.sessionReadyResolve?.();
+      this.sessionReadyResolve = null;
     }
     if (event.type === "response.created") {
       const response = event.response;
@@ -373,8 +436,8 @@ var OpenAiRealtimeSession = class {
     this.send({
       type: "response.create",
       response: {
-        modalities: ["text", "audio"],
-        instructions: "Speak the following text exactly word-for-word with natural phone prosody. Do not add, remove, or change any words:\n\n" + trimmed
+        output_modalities: ["audio"],
+        instructions: "Deliver this as a natural live phone response for Beau's Roofing. Use contractions, warm professional tone, and concise pacing. Keep the same facts and questions as the script below:\n\n" + trimmed
       }
     });
   }
@@ -401,102 +464,19 @@ var OpenAiRealtimeSession = class {
     this.socket = null;
     this.connected = false;
     this.connectPromise = null;
+    this.sessionReadyPromise = null;
+    this.sessionReadyResolve = null;
     this.activeResponseId = null;
     this.activeItemId = null;
   }
 };
 
-// ../../lib/twilio/helpers.ts
-import { NextResponse } from "next/server";
-
-// ../../lib/twilio/voice-config.ts
-var DEFAULT_TWILIO_VOICE = "Polly.Joanna";
-var ALLOWED_TWILIO_VOICES = /* @__PURE__ */ new Set([
-  "Polly.Joanna",
-  "Polly.Matthew",
-  "Polly.Joanna-Neural",
-  "Polly.Matthew-Neural",
-  "Polly.Kendra",
-  "Polly.Kimberly",
-  "Polly.Salli",
-  "Polly.Ivy",
-  "man",
-  "woman",
-  "alice"
-]);
-function resolveTwilioVoice(configured) {
-  const trimmed = configured?.trim();
-  if (trimmed && ALLOWED_TWILIO_VOICES.has(trimmed)) {
-    return trimmed;
-  }
-  return DEFAULT_TWILIO_VOICE;
-}
-var TWILIO_VOICE = resolveTwilioVoice(process.env.TWILIO_VOICE);
-
-// ../../lib/twilio/helpers.ts
-var OPENING_QUESTION = "What's going on with the roof?";
-var OPENING_GREETING = "Hi, thanks for calling Beau's Roofing. I'm the AI assistant here to help. " + OPENING_QUESTION;
-var OPENING_RETRY_PROMPT = `I didn't catch that. ${OPENING_QUESTION}`;
-var NO_INPUT_FOLLOW_UP_PROMPT = "I didn't catch that. Please go ahead.";
-var NO_INPUT_GOODBYE = "Sorry, I couldn't hear you. Please call back when you're ready. Goodbye.";
-var MAX_SPEECH_NO_INPUT_ATTEMPTS = 4;
-var CALLER_GOODBYE = "Thank you for calling Beau's Roofing. Have a wonderful day.";
-var GOODBYE_PHRASES = [
-  "goodbye",
-  "good bye",
-  "bye",
-  "that's all",
-  "thats all",
-  "that is all",
-  "no thank you",
-  "no thanks",
-  "nothing else",
-  "i'm good",
-  "im good",
-  "all set"
-];
-function isGoodbyePhrase(speech) {
-  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
-  return GOODBYE_PHRASES.some(
-    (phrase) => normalized === phrase || normalized.includes(phrase)
-  );
-}
-function isConfirmationPhrase(speech) {
-  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
-  return /^(yes|yeah|yep|yup|correct|right|exactly|sure|absolutely|sounds good|sound good|that'?s right|thats right|that is correct|all good|perfect|ok(?:ay)?)\b/.test(
-    normalized
-  ) || normalized === "uh huh";
-}
-function isCorrectionPhrase(speech) {
-  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
-  return /^(no|nope|nah|not quite|incorrect|wrong|that'?s wrong|thats wrong|not right|actually)\b/.test(
-    normalized
-  );
-}
-
 // ../../lib/call-summary.ts
-var SUMMARY_DATA_FIELDS = /* @__PURE__ */ new Set([
-  "problem_description",
-  "full_name",
-  "callback_phone",
-  "address",
-  "project_type",
-  "active_leak",
-  "storm_damage",
-  "insurance_claim",
-  "urgency",
-  "appointment_preference",
-  "additional_notes"
-]);
-function isSummaryDataField(field) {
-  return SUMMARY_DATA_FIELDS.has(field);
-}
 var FILLER_WORDS = /\b(uh+|um+|uh huh|you know|i mean|kind of|sort of|like|basically|literally|anyway)\b/gi;
 var OPENING_FILLER = /^(hey|hi|hello|yeah|yep|so|well|okay|ok|thanks|thank you)[,.]?\s+/i;
 var CALL_PREFIX = /^(i'?m calling because|calling because|i wanted to (call|see|ask)|i need to (report|tell you about|let you know))\s+/i;
 var UNCERTAIN_PHRASES = /\b(i think|hopefully|maybe|probably|it sounds like|sounds like|i guess|i believe|i feel like)\b/gi;
 var SPOKEN_SUMMARY_CONFIRMATION = "Does everything sound correct before I send this to our roofing team?";
-var SPOKEN_POST_EDIT_CONFIRMATION = "Does everything else sound correct before I send this to our roofing team?";
 function hasText(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
@@ -767,1283 +747,6 @@ function buildCrmCallSummary(fields) {
   }
   return lines.join("\n");
 }
-function fieldEditLabel(field) {
-  switch (field) {
-    case "address":
-      return "inspection address";
-    case "appointment_preference":
-      return "appointment time";
-    case "full_name":
-      return "contact name";
-    case "callback_phone":
-      return "phone number";
-    case "problem_description":
-    case "project_type":
-    case "storm_damage":
-      return "damage details";
-    case "active_leak":
-      return "water intrusion details";
-    case "insurance_claim":
-      return "insurance information";
-    case "urgency":
-      return "priority";
-    case "additional_notes":
-      return "additional notes";
-    default:
-      return "information";
-  }
-}
-function fieldUpdateDetailLine(field, fields) {
-  const content = buildProfessionalSummaryContent(fields);
-  switch (field) {
-    case "address":
-      return content.location ? `I've updated the inspection address to ${content.location}.` : "I've updated the inspection address.";
-    case "appointment_preference": {
-      const detail = content.appointment?.replace(/^Requested inspection:?\s*/i, "").trim().toLowerCase();
-      return detail ? `I've updated the appointment to ${detail}.` : "I've updated the appointment.";
-    }
-    case "full_name":
-      return content.contactName ? `I've updated the contact name to ${content.contactName}.` : "I've updated the contact name.";
-    case "callback_phone":
-      return "I've updated the callback phone number.";
-    case "problem_description":
-    case "project_type":
-    case "storm_damage":
-      return content.reason ? `I've updated the damage details to ${reasonToSpoken(content.reason)}.` : "I've updated the damage details.";
-    case "active_leak":
-      return content.leak ? `I've noted ${content.leak.toLowerCase()}.` : "I've noted the water intrusion.";
-    case "insurance_claim":
-      return content.insurance ? `I've updated the insurance information \u2014 ${content.insurance.toLowerCase()}.` : "I've updated the insurance information.";
-    case "urgency":
-      return content.urgency ? `I've updated the priority \u2014 ${content.urgency.toLowerCase()}.` : "I've updated the priority.";
-    case "additional_notes":
-      return content.additionalNotes ? `I've added the note \u2014 ${content.additionalNotes.toLowerCase()}.` : "I've added that note.";
-    default:
-      return "I've updated that.";
-  }
-}
-function buildSummaryFieldsUpdateReply(fields, updatedFields) {
-  if (updatedFields.length === 0) {
-    return `No problem. I've updated that. ${SPOKEN_POST_EDIT_CONFIRMATION}`;
-  }
-  if (updatedFields.length === 1) {
-    return `No problem. ${fieldUpdateDetailLine(updatedFields[0], fields)} ${SPOKEN_POST_EDIT_CONFIRMATION}`;
-  }
-  if (updatedFields.length === 2) {
-    return `No problem. I've updated both the ${fieldEditLabel(updatedFields[0])} and the ${fieldEditLabel(updatedFields[1])}. ${SPOKEN_POST_EDIT_CONFIRMATION}`;
-  }
-  const labels = updatedFields.map(fieldEditLabel);
-  const last = labels.pop();
-  return `No problem. I've updated the ${labels.join(", the ")}, and the ${last}. ${SPOKEN_POST_EDIT_CONFIRMATION}`;
-}
-function buildSummaryEditValuePrompt(field) {
-  switch (field) {
-    case "full_name":
-      return "What's the correct name?";
-    case "callback_phone":
-      return "What's the correct phone number?";
-    case "address":
-      return "What's the correct address?";
-    case "problem_description":
-    case "project_type":
-    case "storm_damage":
-      return "What's the correct damage description?";
-    case "active_leak":
-      return "Is water currently getting inside?";
-    case "insurance_claim":
-      return "Have you started an insurance claim, or not yet?";
-    case "urgency":
-      return "How soon do you need someone out?";
-    case "appointment_preference":
-      return "What day and time works better?";
-    case "additional_notes":
-      return "What else should our team know?";
-    default:
-      return "What should I change it to?";
-  }
-}
-function getSummaryConfirmationPrompt() {
-  return SPOKEN_SUMMARY_CONFIRMATION;
-}
-function getPostEditConfirmationPrompt() {
-  return SPOKEN_POST_EDIT_CONFIRMATION;
-}
-function isPostEditAffirmation(speech) {
-  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
-  return /\b(sounds? correct|looks? accurate|everything (else )?(is )?(correct|right|good|fine|accurate))\b/.test(
-    normalized
-  ) || /\beverything else (is )?(correct|right|good|fine)\b/.test(normalized) || /\bnothing else\b/.test(normalized) || /^(that'?s all|thats all|that'?s it|thats it|we'?re good|all set)\b/.test(
-    normalized
-  ) || /^no,? (that'?s|thats) (all|it)\b/.test(normalized);
-}
-function isSummaryChangeDeclined(speech) {
-  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
-  return /^(no|nope|nah|not quite|incorrect|wrong|that'?s wrong|not right)\b/.test(
-    normalized
-  );
-}
-
-// ../../lib/call-intelligence.ts
-var STAGE_FIELD_KEYS = {
-  problem: "problem_description",
-  full_name: "full_name",
-  callback_phone: "callback_phone",
-  address: "address",
-  project_type: "project_type",
-  active_leak: "active_leak",
-  storm_damage: "storm_damage",
-  insurance_claim: "insurance_claim",
-  urgency: "urgency",
-  appointment: "appointment_preference",
-  additional_notes: "additional_notes"
-};
-var INTERRUPTION_PAUSE_PATTERN = /^(actually|wait|hold on|hang on|one second|one sec|sorry|let me check|give me a sec)\.?$/i;
-var INTERRUPTION_PREFIX_PATTERN = /^(actually|wait|hold on|hang on|one second|one sec|sorry)[,.]?\s+/i;
-var CORRECTION_PREFIX_PATTERN = /^(no|actually|wait|not|correction)[,.]?\s+/i;
-var SMALL_TALK_PATTERN = /\b(how'?s your day|how are you|how'?s it going|hope you'?re|staying dry|been crazy|pretty crazy|rough day|busy day|^thanks\b|thank you)\b/i;
-var FAQ_PATTERNS = [
-  {
-    topic: "insurance",
-    pattern: /\b(work with insurance|insurance company|accept insurance|file a claim|insurance claim work)\b/i
-  },
-  {
-    topic: "service_area",
-    pattern: /\b(serve my area|service area|do you cover|come to my area|service my area|in my town)\b/i
-  },
-  {
-    topic: "inspection_cost",
-    pattern: /\b(how much|what does it cost|free inspection|charge for|inspection cost|cost of an inspection)\b/i
-  },
-  {
-    topic: "same_day",
-    pattern: /\b(come today|same day|someone today|out today|this afternoon|right now|how soon|when can someone come|how quickly)\b/i
-  },
-  {
-    topic: "photos",
-    pattern: /\b(send photos|send pictures|text photos|email photos|upload photos|share photos|take pictures)\b/i
-  }
-];
-var EMERGENCY_PATTERN = /\b(tree through|through the roof|roof collapse|collapsed|caved in|water pouring|pouring in|ceiling leaking badly|electrical hazard|spark|storm happening now|active storm|emergency|urgent|asap)\b/i;
-function isInterruptionPause(speech) {
-  return INTERRUPTION_PAUSE_PATTERN.test(speech.trim());
-}
-function stripInterruptionPrefix(speech) {
-  return speech.replace(INTERRUPTION_PREFIX_PATTERN, "").trim();
-}
-function hasCorrectionIntent(speech) {
-  const normalized = speech.trim().toLowerCase();
-  return CORRECTION_PREFIX_PATTERN.test(normalized) || /\b(not|actually|instead|rather|meant|correction|wrong)\b/.test(normalized);
-}
-function detectSmallTalk(speech) {
-  return SMALL_TALK_PATTERN.test(speech) && speech.trim().split(/\s+/).length <= 14;
-}
-function buildSmallTalkResponse(speech) {
-  if (/^thanks|thank you/i.test(speech.trim())) {
-    return "You're welcome.";
-  }
-  if (/how'?s your day|how are you|how'?s it going/i.test(speech)) {
-    return "Doing well, thank you.";
-  }
-  if (/staying dry|crazy|storm|weather|busy day/i.test(speech)) {
-    return "It's been a busy day on our end.";
-  }
-  if (/hope you'?re/i.test(speech)) {
-    return "We appreciate that.";
-  }
-  return "Thank you.";
-}
-function detectFaqTopic(speech) {
-  for (const entry of FAQ_PATTERNS) {
-    if (entry.pattern.test(speech)) {
-      return entry.topic;
-    }
-  }
-  return null;
-}
-function isLikelyFaqOnly(speech) {
-  const topic = detectFaqTopic(speech);
-  if (!topic) {
-    return false;
-  }
-  return speech.trim().split(/\s+/).length <= 18;
-}
-function buildFaqResponse(topic) {
-  switch (topic) {
-    case "insurance":
-      return "Yes, we regularly work with insurance claims and can help guide you through the process.";
-    case "service_area":
-      return "We serve homeowners throughout our local service area, and our team can confirm coverage for your address.";
-    case "inspection_cost":
-      return "Inspection details depend on the situation, and our team can walk you through that when they follow up.";
-    case "same_day":
-      return "We'll do our best to get a roofing specialist out quickly, especially for urgent situations.";
-    case "photos":
-      return "Yes, our team can review photos \u2014 someone will follow up on the best way to send them.";
-  }
-}
-function detectEmergency(speech) {
-  return EMERGENCY_PATTERN.test(speech.toLowerCase()) || /water.*(inside|coming in|pouring)|ceiling.*leak/i.test(speech.toLowerCase());
-}
-function buildEmergencyResponse() {
-  return "I'm sorry that's happening. I've marked this as urgent so our team can prioritize it.";
-}
-function buildInterruptionResume(currentQuestion) {
-  if (currentQuestion?.trim()) {
-    return `No problem. ${currentQuestion}`;
-  }
-  return "No problem. Go ahead whenever you're ready.";
-}
-function buildCombinedResponse(prefixParts, question) {
-  const prefix = prefixParts.filter(Boolean).join(" ").trim();
-  return prefix ? `${prefix} ${question}` : question;
-}
-function applyTargetedCorrection(fields, speech, currentStage, callerPhone) {
-  const cleaned = stripInterruptionPrefix(speech).replace(CORRECTION_PREFIX_PATTERN, "").trim();
-  const text = cleaned || speech.trim();
-  const lower = text.toLowerCase();
-  const updated = { ...fields };
-  const nameMatch = text.match(
-    /(?:name is|my name is|i'?m|this is|it's|it is|call me)\s+([A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,3})/i
-  );
-  if (nameMatch?.[1]) {
-    updated.full_name = nameMatch[1].trim();
-    return { fields: updated, updated: true, field: "full_name" };
-  }
-  const firstNameMatch = text.match(
-    /\b(?:my )?first name is\s+([A-Za-z][A-Za-z'-]+)/i
-  );
-  if (firstNameMatch?.[1]) {
-    const lastName = updated.full_name?.trim().split(/\s+/).slice(1).join(" ");
-    updated.full_name = lastName ? `${firstNameMatch[1].trim()} ${lastName}` : firstNameMatch[1].trim();
-    return { fields: updated, updated: true, field: "full_name" };
-  }
-  const lastNameMatch = text.match(
-    /\b(?:my )?last name is\s+([A-Za-z][A-Za-z'-]+)/i
-  );
-  if (lastNameMatch?.[1]) {
-    const firstName = updated.full_name?.trim().split(/\s+/)[0] ?? "";
-    updated.full_name = firstName ? `${firstName} ${lastNameMatch[1].trim()}` : lastNameMatch[1].trim();
-    return { fields: updated, updated: true, field: "full_name" };
-  }
-  if (/\b(last name|surname)\b.*\b(wrong|incorrect)\b/i.test(lower)) {
-    updated.name_pending_confirmation = void 0;
-    updated.full_name = void 0;
-    updated.name_awaiting_repeat = true;
-    return { fields: updated, updated: true, field: "full_name" };
-  }
-  const addressMatch = text.match(
-    /\b(?:address is|at|to)\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80})/i
-  ) ?? text.match(
-    /(?:change|update|correct|fix).*?(?:address|location|property).*?(?:to|is)\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80})/i
-  );
-  if (addressMatch?.[1]) {
-    updated.address = addressMatch[1].trim();
-    return { fields: updated, updated: true, field: "address" };
-  }
-  const phone = text.match(
-    /(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/
-  );
-  if (phone) {
-    const digits = phone[0].replace(/\D/g, "").slice(-10);
-    updated.callback_phone = digits;
-    return { fields: updated, updated: true, field: "callback_phone" };
-  }
-  if (/wind damage|\bwind\b/i.test(lower)) {
-    updated.project_type = "wind damage";
-    updated.storm_damage = "yes";
-    if (!updated.problem_description?.toLowerCase().includes("wind")) {
-      updated.problem_description = text;
-    }
-    return { fields: updated, updated: true, field: "project_type" };
-  }
-  if (/hail/i.test(lower)) {
-    updated.project_type = "storm damage";
-    updated.storm_damage = "yes";
-    return { fields: updated, updated: true, field: "project_type" };
-  }
-  if (/appointment|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d\s*(am|pm)/i.test(
-    text
-  )) {
-    updated.appointment_preference = text;
-    return { fields: updated, updated: true, field: "appointment_preference" };
-  }
-  if (/^(yes|yeah|yep|no|nope|nah)\b/i.test(lower) && fields.insurance_claim) {
-    updated.insurance_claim = /^(yes|yeah|yep)\b/i.test(lower) ? "yes" : "no";
-    return { fields: updated, updated: true, field: "insurance_claim" };
-  }
-  if (hasCorrectionIntent(speech) && text.length > 0) {
-    if (currentStage === "wrap_up" || fields.summary_delivered) {
-      return { fields, updated: false };
-    }
-    const fieldKey = STAGE_FIELD_KEYS[currentStage];
-    updated[fieldKey] = text;
-    return { fields: updated, updated: true, field: fieldKey };
-  }
-  if (callerPhone && /same number|this number/i.test(lower)) {
-    updated.callback_phone = callerPhone;
-    return { fields: updated, updated: true, field: "callback_phone" };
-  }
-  return { fields, updated: false };
-}
-function detectSummaryEditTargets(speech) {
-  const lower = speech.toLowerCase();
-  const targets = /* @__PURE__ */ new Set();
-  if (/\b(address|location|property|street)\b/.test(lower)) {
-    targets.add("address");
-  }
-  if (/\b(name)\b/.test(lower)) {
-    targets.add("full_name");
-  }
-  if (/\b(phone|number|callback)\b/.test(lower)) {
-    targets.add("callback_phone");
-  }
-  if (/\b(appointment|schedule|time|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|morning|afternoon)\b/.test(
-    lower
-  )) {
-    targets.add("appointment_preference");
-  }
-  if (/\b(insurance|claim)\b/.test(lower)) {
-    targets.add("insurance_claim");
-  }
-  if (/\b(leak|water)\b/.test(lower)) {
-    targets.add("active_leak");
-  }
-  if (/\b(damage|hail|wind|storm|roof|shingles)\b/.test(lower)) {
-    targets.add("problem_description");
-  }
-  if (/\b(urgent|urgency|asap|priority)\b/.test(lower)) {
-    targets.add("urgency");
-  }
-  if (/\b(note|notes)\b/.test(lower)) {
-    targets.add("additional_notes");
-  }
-  return [...targets];
-}
-function extractYesNoValue(text) {
-  const normalized = text.toLowerCase().replace(/[^\w\s']/g, " ").trim();
-  if (/^(yes|yeah|yep|yup|correct|sure|absolutely)\b/.test(normalized)) {
-    return "yes";
-  }
-  if (/^(no|nope|nah|not|none|negative)\b/.test(normalized)) {
-    return "no";
-  }
-  return null;
-}
-function applySummaryFieldValue(fields, speech, target, callerPhone) {
-  const cleaned = stripInterruptionPrefix(speech).replace(CORRECTION_PREFIX_PATTERN, "").trim();
-  const text = cleaned || speech.trim();
-  const lower = text.toLowerCase();
-  const updated = { ...fields };
-  switch (target) {
-    case "full_name": {
-      const nameMatch = text.match(
-        /(?:name is|my name is|i'?m|this is)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z'-]+){0,2})/i
-      );
-      if (nameMatch?.[1]) {
-        updated.full_name = nameMatch[1].trim();
-        return { fields: updated, updated: true, field: target };
-      }
-      if (/^[A-Z][a-z]+(?:\s+[A-Z][a-z'-]+){0,2}$/.test(text)) {
-        updated.full_name = text;
-        return { fields: updated, updated: true, field: target };
-      }
-      break;
-    }
-    case "address": {
-      const addressMatch = text.match(
-        /\b(?:address is|at|to)\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80})/i
-      ) ?? text.match(
-        /(?:change|update|move|correct|fix).*?(?:address|location|property|street).*?(?:to|is)\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80})/i
-      ) ?? text.match(/(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80})/i);
-      if (addressMatch?.[1]) {
-        updated.address = addressMatch[1].trim();
-        return { fields: updated, updated: true, field: target };
-      }
-      break;
-    }
-    case "callback_phone": {
-      const phone = text.match(
-        /(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/
-      );
-      if (phone) {
-        updated.callback_phone = phone[0].replace(/\D/g, "").slice(-10);
-        return { fields: updated, updated: true, field: target };
-      }
-      if (callerPhone && /same number|this number/i.test(lower)) {
-        updated.callback_phone = callerPhone;
-        return { fields: updated, updated: true, field: target };
-      }
-      break;
-    }
-    case "appointment_preference": {
-      const appointmentMatch = text.match(
-        /(?:appointment|inspection|schedule|time).*?(?:to|for|on|is)\s+([^,.]+(?:morning|afternoon|evening)?)/i
-      ) ?? text.match(
-        /(?:move|change|update).*?(?:appointment|inspection|visit|come).*?(?:to|for|on)\s+([^,.]+)/i
-      ) ?? text.match(
-        /\b(tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday(?:\s+(?:morning|afternoon|evening))?|\d{1,2}\s*(?:am|pm))(?:\s+(?:morning|afternoon|evening))?/i
-      );
-      if (appointmentMatch?.[1] || appointmentMatch?.[0]) {
-        updated.appointment_preference = (appointmentMatch[1] ?? appointmentMatch[0]).trim();
-        return { fields: updated, updated: true, field: target };
-      }
-      break;
-    }
-    case "insurance_claim": {
-      const yesNo = extractYesNoValue(text);
-      if (yesNo) {
-        updated.insurance_claim = yesNo;
-        return { fields: updated, updated: true, field: target };
-      }
-      break;
-    }
-    case "active_leak": {
-      const yesNo = extractYesNoValue(text);
-      if (yesNo) {
-        updated.active_leak = yesNo;
-        return { fields: updated, updated: true, field: target };
-      }
-      break;
-    }
-    case "urgency":
-      if (/emergency|urgent|asap|today|flexible|soon|week/i.test(lower)) {
-        updated.urgency = lower.includes("flex") ? "flexible" : lower.match(/emergency|urgent|asap|today/) ? "emergency" : "standard";
-        return { fields: updated, updated: true, field: target };
-      }
-      break;
-    case "problem_description":
-    case "project_type":
-    case "storm_damage":
-      if (text.length > 3) {
-        if (/hail|storm/i.test(lower)) {
-          updated.project_type = "storm damage";
-          updated.storm_damage = "yes";
-        } else if (/wind/i.test(lower)) {
-          updated.project_type = "wind damage";
-          updated.storm_damage = "yes";
-        }
-        updated.problem_description = text;
-        return { fields: updated, updated: true, field: "problem_description" };
-      }
-      break;
-    case "additional_notes":
-      if (text.length > 0 && !/^(no|nope|nah|nothing|none)\b/i.test(lower)) {
-        updated.additional_notes = text;
-        return { fields: updated, updated: true, field: target };
-      }
-      break;
-  }
-  return { fields, updated: false };
-}
-var SUMMARY_CORRECTION_ORDER = [
-  "address",
-  "appointment_preference",
-  "full_name",
-  "callback_phone",
-  "insurance_claim",
-  "problem_description",
-  "active_leak",
-  "urgency",
-  "additional_notes"
-];
-function applySummaryCorrections(fields, speech, callerPhone) {
-  let working = { ...fields };
-  const updatedFields = [];
-  for (const target of SUMMARY_CORRECTION_ORDER) {
-    const result = applySummaryFieldValue(working, speech, target, callerPhone);
-    if (result.updated && result.field) {
-      working = result.fields;
-      if (!updatedFields.includes(result.field)) {
-        updatedFields.push(result.field);
-      }
-    }
-  }
-  return { fields: working, updatedFields };
-}
-function processSummaryEdit(fields, speech, callerPhone) {
-  const pendingTarget = typeof fields.summary_edit_target === "string" && isSummaryDataField(fields.summary_edit_target) ? fields.summary_edit_target : null;
-  const awaitingValue = fields.summary_editing === true && pendingTarget !== null;
-  if (awaitingValue && pendingTarget) {
-    const applied = applySummaryFieldValue(
-      fields,
-      speech,
-      pendingTarget,
-      callerPhone
-    );
-    if (applied.updated && applied.field) {
-      return {
-        status: "updated",
-        fields: applied.fields,
-        updatedFields: [applied.field]
-      };
-    }
-    return {
-      status: "awaiting_value",
-      fields,
-      target: pendingTarget
-    };
-  }
-  const multi = applySummaryCorrections(fields, speech, callerPhone);
-  if (multi.updatedFields.length > 0) {
-    return {
-      status: "updated",
-      fields: multi.fields,
-      updatedFields: multi.updatedFields
-    };
-  }
-  const targets = detectSummaryEditTargets(speech);
-  if (targets.length === 1) {
-    return {
-      status: "awaiting_value",
-      fields: {
-        ...fields,
-        summary_editing: true,
-        summary_edit_target: targets[0]
-      },
-      target: targets[0]
-    };
-  }
-  if (targets.length > 1) {
-    const combined = applySummaryCorrections(fields, speech, callerPhone);
-    if (combined.updatedFields.length > 0) {
-      return {
-        status: "updated",
-        fields: combined.fields,
-        updatedFields: combined.updatedFields
-      };
-    }
-    return {
-      status: "awaiting_value",
-      fields: {
-        ...fields,
-        summary_editing: true,
-        summary_edit_target: targets[0]
-      },
-      target: targets[0]
-    };
-  }
-  return { status: "unchanged" };
-}
-
-// ../../lib/call-intake.ts
-var CALL_INTAKE_STAGES = [
-  "problem",
-  "full_name",
-  "callback_phone",
-  "address",
-  "project_type",
-  "active_leak",
-  "storm_damage",
-  "insurance_claim",
-  "urgency",
-  "appointment",
-  "additional_notes"
-];
-var STAGE_FIELD_KEYS2 = {
-  problem: "problem_description",
-  full_name: "full_name",
-  callback_phone: "callback_phone",
-  address: "address",
-  project_type: "project_type",
-  active_leak: "active_leak",
-  storm_damage: "storm_damage",
-  insurance_claim: "insurance_claim",
-  urgency: "urgency",
-  appointment: "appointment_preference",
-  additional_notes: "additional_notes"
-};
-var ROUTINE_STAGES = [
-  "full_name",
-  "callback_phone",
-  "address",
-  "appointment",
-  "insurance_claim",
-  "additional_notes"
-];
-function hasValue(value) {
-  return typeof value === "string" && value.trim().length > 0;
-}
-function getStringField(fields, fieldKey) {
-  const value = fields[fieldKey];
-  return typeof value === "string" ? value : void 0;
-}
-function setStringField(fields, fieldKey, value) {
-  return {
-    ...fields,
-    [fieldKey]: value
-  };
-}
-function fieldText(value) {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    return null;
-  }
-  return value.trim();
-}
-function isYesValue(value) {
-  if (!value) {
-    return false;
-  }
-  return /^(yes|yeah|yep|yup|true|correct|sure)$/i.test(value.trim());
-}
-function indicatesWaterIntrusion(text) {
-  return /water.*(inside|in the|coming|getting in|pouring)|flooding|active leak|leaking inside/i.test(
-    text.toLowerCase()
-  );
-}
-function indicatesStructuralEmergency(text) {
-  return /tree|through the roof|collapsed|caved|structural|fallen on/i.test(
-    text.toLowerCase()
-  );
-}
-function indicatesStormDamage(text) {
-  return /hail|storm|wind damage|tornado|hurricane/i.test(text.toLowerCase());
-}
-function extractActiveLeak(text) {
-  if (indicatesWaterIntrusion(text)) {
-    return "yes";
-  }
-  const yesNo = extractYesNo(text);
-  if (yesNo && /leak|water|drip/i.test(text.toLowerCase())) {
-    return yesNo;
-  }
-  return null;
-}
-function extractStormDamage(text) {
-  if (indicatesStormDamage(text)) {
-    return "yes";
-  }
-  const yesNo = extractYesNo(text);
-  if (yesNo && indicatesStormDamage(text)) {
-    return yesNo;
-  }
-  return null;
-}
-function getNextMissingStage(fields) {
-  for (const stage of CALL_INTAKE_STAGES) {
-    const fieldKey = STAGE_FIELD_KEYS2[stage];
-    const value = fields[fieldKey];
-    if (typeof value !== "string" || !hasValue(value)) {
-      return stage;
-    }
-  }
-  return "wrap_up";
-}
-function isIntakeComplete(fields) {
-  return getNextMissingStage(fields) === "wrap_up";
-}
-function isAwaitingSummaryConfirmation(fields) {
-  return isIntakeComplete(fields) && fields.summary_delivered === true && fields.summary_confirmed !== true;
-}
-function isAwaitingSummaryEditValue(fields) {
-  return fields.summary_editing === true && typeof fields.summary_edit_target === "string" && fields.summary_edit_target.length > 0;
-}
-function clearSummaryEditState(fields) {
-  return {
-    ...fields,
-    summary_editing: false,
-    summary_edit_target: void 0
-  };
-}
-function extractYesNo(text) {
-  const normalized = text.toLowerCase().replace(/[^\w\s']/g, " ").trim();
-  if (/^(yes|yeah|yep|yup|correct|sure|absolutely|affirmative|it is|i am|we are|we do|there is|there's)\b/.test(
-    normalized
-  )) {
-    return "yes";
-  }
-  if (/^(no|nope|nah|not|none|don't|do not|negative|isn't|aren't|there isn't|there's no)\b/.test(
-    normalized
-  )) {
-    return "no";
-  }
-  return null;
-}
-function extractPhone(text) {
-  const match = text.match(
-    /(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/
-  );
-  if (!match) {
-    return null;
-  }
-  const digits = match[0].replace(/\D/g, "");
-  return digits.length >= 10 ? digits.slice(-10) : digits;
-}
-function extractName(text) {
-  const explicit = text.match(
-    /(?:my name is|name is)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z'-]+){0,2})/
-  );
-  if (explicit?.[1]) {
-    return explicit[1].trim();
-  }
-  const introduction = text.match(
-    /(?:this is|i am|i'm)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z'-]+){0,2})(?:\s+(?:and|with|from|at|calling)\b|$)/
-  );
-  if (introduction?.[1]) {
-    return introduction[1].trim();
-  }
-  return null;
-}
-function extractAddress(text) {
-  const streetMatch = text.match(
-    /\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80}(?:\b(?:street|st|avenue|ave|road|rd|drive|dr|lane|ln|boulevard|blvd|way|court|ct|circle|place|pl)\b)?/i
-  );
-  if (streetMatch) {
-    return streetMatch[0].trim();
-  }
-  const atMatch = text.match(
-    /\bat\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,60})/i
-  );
-  return atMatch?.[1]?.trim() ?? null;
-}
-function extractProjectType(text) {
-  const normalized = text.toLowerCase();
-  if (normalized.includes("storm") || normalized.includes("hail")) {
-    return "storm damage";
-  }
-  if (normalized.includes("wind")) {
-    return "wind damage";
-  }
-  if (normalized.includes("replace")) {
-    return "replacement";
-  }
-  if (normalized.includes("repair")) {
-    return "repair";
-  }
-  if (normalized.includes("inspect")) {
-    return "inspection";
-  }
-  return null;
-}
-function extractInsuranceClaim(text) {
-  const lower = text.toLowerCase();
-  if (/\b(already|talked to|spoken to|contacted|filed|started|opened|called).*(insurance|claim)\b/.test(
-    lower
-  ) || /\b(insurance|claim).*(already|started|filed|opened)\b/.test(lower)) {
-    return "yes";
-  }
-  if (/\b(no|not yet|haven't|have not|don't|do not).*(insurance|claim|filed)\b/.test(
-    lower
-  )) {
-    return "no";
-  }
-  return null;
-}
-function extractDamageContext(text) {
-  const result = {};
-  const lower = text.toLowerCase();
-  if (/shingles everywhere|shingles all over|missing shingles|loose shingles/i.test(
-    lower
-  )) {
-    result.project_type = "storm damage";
-    result.storm_damage = "yes";
-    result.problem_description = "loose shingles reported";
-  }
-  if (/started leaking|began leaking|roof leaking|ceiling leaking|leak/i.test(lower)) {
-    if (/yesterday|last night|today|this morning|recently|last week/i.test(lower)) {
-      result.problem_description = result.problem_description ?? `roof issue reported ${extractDamageTimingFromText(text) ?? "recently"}`;
-    }
-    if (/ceiling|kitchen|bathroom|inside|interior|water/i.test(lower)) {
-      result.active_leak = "yes";
-    }
-  }
-  if (/yesterday|last night|today|this morning|last week|recently/i.test(lower)) {
-    if (/hail|storm|wind|damage|hit|leak/i.test(lower)) {
-      result.problem_description = result.problem_description ?? `storm-related roof issue reported ${extractDamageTimingFromText(text) ?? "recently"}`;
-      if (/hail|storm|wind/i.test(lower)) {
-        result.storm_damage = "yes";
-      }
-    }
-  }
-  return result;
-}
-function extractDamageTimingFromText(text) {
-  const lower = text.toLowerCase();
-  if (/\byesterday\b/.test(lower)) return "yesterday";
-  if (/\blast night\b/.test(lower)) return "last night";
-  if (/\bthis morning\b/.test(lower)) return "this morning";
-  if (/\btoday\b/.test(lower)) return "today";
-  if (/\blast week\b/.test(lower)) return "last week";
-  if (/\brecently\b/.test(lower)) return "recently";
-  return null;
-}
-function extractUrgency(text) {
-  const normalized = text.toLowerCase();
-  if (/emergency|urgent|asap|right away|immediately|today/.test(normalized)) {
-    return "emergency";
-  }
-  if (/flexible|no rush|whenever|next week|few weeks/.test(normalized)) {
-    return "flexible";
-  }
-  if (/standard|few days|this week|soon/.test(normalized)) {
-    return "standard";
-  }
-  return null;
-}
-function extractCallbackPhone(text, callerPhone) {
-  const normalized = text.toLowerCase();
-  if (callerPhone && /same number|this number|calling from|number i'?m calling|one i'?m on/.test(
-    normalized
-  )) {
-    return callerPhone;
-  }
-  return extractPhone(text);
-}
-function normalizeFieldValue(stage, answer, callerPhone) {
-  const trimmed = answer.trim();
-  switch (stage) {
-    case "active_leak":
-    case "storm_damage":
-    case "insurance_claim":
-      return extractYesNo(trimmed) ?? trimmed;
-    case "callback_phone":
-      return extractCallbackPhone(trimmed, callerPhone) ?? trimmed;
-    case "project_type":
-      return extractProjectType(trimmed) ?? trimmed;
-    case "urgency":
-      return extractUrgency(trimmed) ?? trimmed;
-    case "additional_notes":
-      if (/^(no|nope|nah|nothing|none|that's all|thats all|all set)\b/i.test(trimmed)) {
-        return "none";
-      }
-      return trimmed;
-    default:
-      return trimmed;
-  }
-}
-function extractFieldsFromSpeech(text, callerPhone) {
-  const extracted = {};
-  const name = extractName(text);
-  const phone = extractCallbackPhone(text, callerPhone) ?? extractPhone(text);
-  const address = extractAddress(text);
-  const projectType = extractProjectType(text);
-  const urgency = extractUrgency(text);
-  if (name) {
-    extracted.full_name = name;
-  }
-  if (phone) {
-    extracted.callback_phone = phone;
-  }
-  if (address) {
-    extracted.address = address;
-  }
-  if (projectType) {
-    extracted.project_type = projectType;
-  }
-  if (urgency) {
-    extracted.urgency = urgency;
-  }
-  const activeLeak = extractActiveLeak(text);
-  if (activeLeak) {
-    extracted.active_leak = activeLeak;
-  }
-  const stormDamage = extractStormDamage(text);
-  if (stormDamage) {
-    extracted.storm_damage = stormDamage;
-  }
-  const insuranceClaim = extractInsuranceClaim(text);
-  if (insuranceClaim) {
-    extracted.insurance_claim = insuranceClaim;
-  }
-  const damageContext = extractDamageContext(text);
-  for (const [key, value] of Object.entries(damageContext)) {
-    const fieldKey = key;
-    const existingValue = extracted[fieldKey];
-    if (typeof value === "string" && !(typeof existingValue === "string" && hasValue(existingValue)) && hasValue(value)) {
-      extracted[fieldKey] = value;
-    }
-  }
-  if (indicatesWaterIntrusion(text) || /emergency|urgent|asap/i.test(text.toLowerCase())) {
-    extracted.urgency = extracted.urgency ?? "emergency";
-  }
-  return extracted;
-}
-function mergeCallerAnswer(fields, answer, callerPhone) {
-  const currentStage = getNextMissingStage(fields);
-  if (hasCorrectionIntent(answer)) {
-    const correction = applyTargetedCorrection(
-      fields,
-      answer,
-      currentStage === "wrap_up" ? "wrap_up" : currentStage,
-      callerPhone
-    );
-    if (correction.updated) {
-      const corrected = correction.fields;
-      if (detectEmergency(answer)) {
-        corrected.urgency = corrected.urgency ?? "emergency";
-        if (/water|leak|pouring/i.test(answer.toLowerCase())) {
-          corrected.active_leak = "yes";
-        }
-      }
-      return corrected;
-    }
-  }
-  const processedAnswer = stripInterruptionPrefix(answer);
-  const answeringStage = getNextMissingStage(fields);
-  let updated = { ...fields };
-  const extracted = extractFieldsFromSpeech(processedAnswer, callerPhone);
-  for (const stage of CALL_INTAKE_STAGES) {
-    const fieldKey = STAGE_FIELD_KEYS2[stage];
-    const extractedValue = extracted[fieldKey];
-    if (!hasValue(getStringField(updated, fieldKey)) && typeof extractedValue === "string" && hasValue(extractedValue)) {
-      updated = setStringField(updated, fieldKey, extractedValue);
-    }
-  }
-  if (detectEmergency(processedAnswer)) {
-    updated.urgency = updated.urgency ?? "emergency";
-  }
-  if (answeringStage !== "wrap_up") {
-    const primaryKey = STAGE_FIELD_KEYS2[answeringStage];
-    if (!hasValue(getStringField(updated, primaryKey))) {
-      updated = setStringField(
-        updated,
-        primaryKey,
-        normalizeFieldValue(answeringStage, processedAnswer, callerPhone)
-      );
-    }
-  }
-  return updated;
-}
-function countNewlyFilledFields(before, after) {
-  let count = 0;
-  for (const stage of CALL_INTAKE_STAGES) {
-    const fieldKey = STAGE_FIELD_KEYS2[stage];
-    if (!hasValue(getStringField(before, fieldKey)) && hasValue(getStringField(after, fieldKey))) {
-      count += 1;
-    }
-  }
-  return count;
-}
-function wasPhraseUsedRecently(phrase, priorPhrases) {
-  const normalized = phrase.toLowerCase();
-  return priorPhrases.some((entry) => entry.toLowerCase().includes(normalized));
-}
-function pickContextualEmpathy(answeredStage, answerText, priorPhrases) {
-  const text = answerText.toLowerCase();
-  if (ROUTINE_STAGES.includes(answeredStage)) {
-    return null;
-  }
-  if (answeredStage === "problem" || answeredStage === "project_type") {
-    if (indicatesStructuralEmergency(text)) {
-      const phrase = "I've noted this as urgent.";
-      return wasPhraseUsedRecently(phrase, priorPhrases) ? null : phrase;
-    }
-    if (indicatesWaterIntrusion(text) || detectEmergency(text)) {
-      const phrase = buildEmergencyResponse();
-      return wasPhraseUsedRecently(phrase, priorPhrases) ? null : phrase;
-    }
-    return null;
-  }
-  if (answeredStage === "active_leak") {
-    const yesNo = extractYesNo(answerText);
-    if (yesNo && isYesValue(yesNo)) {
-      const phrase = buildEmergencyResponse();
-      return wasPhraseUsedRecently(phrase, priorPhrases) ? null : phrase;
-    }
-    return null;
-  }
-  if (answeredStage === "storm_damage") {
-    return null;
-  }
-  return null;
-}
-function pickTransitionPrefix(answeredStage, answerText, newlyFilledCount, priorPhrases) {
-  if (newlyFilledCount > 1) {
-    return null;
-  }
-  const empathy = pickContextualEmpathy(answeredStage, answerText, priorPhrases);
-  if (empathy) {
-    return empathy;
-  }
-  return null;
-}
-function getStageQuestion(stage, fields = {}, callerPhone) {
-  const firstName = fieldText(fields.full_name)?.split(/\s+/)[0];
-  switch (stage) {
-    case "problem":
-      return "What's happening with the roof?";
-    case "full_name":
-      return "What's your name?";
-    case "callback_phone":
-      if (firstName) {
-        return callerPhone ? `${firstName}, is this number the best one to reach you?` : `What's the best number to reach you, ${firstName}?`;
-      }
-      return callerPhone ? "Is this number the best one to reach you?" : "What's the best phone number to reach you?";
-    case "address":
-      return "What address should our roofing team inspect?";
-    case "project_type":
-      return "Are you looking for a repair, replacement, an inspection, or help with storm damage?";
-    case "active_leak":
-      return "Is there any interior water intrusion in the home right now?";
-    case "storm_damage":
-      return "Was this related to recent storm damage?";
-    case "insurance_claim":
-      return "Have you already started an insurance claim for this damage?";
-    case "urgency":
-      if (fields.active_leak === "yes" || fields.urgency === "emergency") {
-        return "How soon do you need a roofing specialist on-site?";
-      }
-      return "How soon would you like someone from our roofing team out?";
-    case "appointment":
-      return "What day and time works best for a roofing specialist to stop by?";
-    case "additional_notes":
-      return "Is there anything else our roofing team should know?";
-    default:
-      return null;
-  }
-}
-function buildIntakeResponse(fields, answeredStage, options = {}) {
-  const nextStage = getNextMissingStage(fields);
-  if (nextStage === "wrap_up") {
-    return buildWrapUpSummary(fields);
-  }
-  const question = getStageQuestion(nextStage, fields, options.callerPhone) ?? "Sorry, could you say that once more?";
-  const newlyFilledCount = options.fieldsBefore ? countNewlyFilledFields(options.fieldsBefore, fields) : 1;
-  if (answeredStage === "wrap_up") {
-    return question;
-  }
-  const empathy = pickTransitionPrefix(
-    answeredStage,
-    options.callerAnswer ?? "",
-    newlyFilledCount,
-    options.priorPhrases ?? []
-  );
-  return buildCombinedResponse([empathy], question);
-}
-function buildWrapUpSummary(fields) {
-  return buildSpokenCallSummary(fields);
-}
-function buildConfirmedGoodbye() {
-  return "Thank you. Everything has been sent to our roofing team. Someone will reach out shortly. Thank you for calling Beau's Roofing. Have a wonderful day.";
-}
-function getRecentAssistantPhrases(transcript) {
-  if (!transcript) {
-    return [];
-  }
-  return transcript.filter((entry) => entry.role === "assistant").slice(-4).map((entry) => entry.content);
-}
-
-// ../../lib/call-name-capture.ts
-var MAX_NAME_CONFIRMATION_ATTEMPTS = 3;
-var NAME_PREFIX_PATTERN = /^(?:my name is|name is|this is|i am|i'm|it's|it is|call me)\s+/i;
-var CORRECTION_PREFIX_PATTERN2 = /^(no|actually|wait|not|correction)[,.]?\s+/i;
-function hasText2(value) {
-  return typeof value === "string" && value.trim().length > 0;
-}
-function isAwaitingNameConfirmation(fields) {
-  return hasText2(fields.name_pending_confirmation) && !hasText2(fields.full_name);
-}
-function normalizePersonName(name) {
-  return name.trim().split(/\s+/).map(
-    (part) => part.split("-").map((segment) => {
-      if (!segment) {
-        return segment;
-      }
-      return segment.charAt(0).toUpperCase() + segment.slice(1).toLowerCase();
-    }).join("-")
-  ).join(" ");
-}
-function parseNameFromSpeech(text) {
-  const cleaned = stripInterruptionPrefix(text.trim()).replace(CORRECTION_PREFIX_PATTERN2, "").replace(NAME_PREFIX_PATTERN, "").trim();
-  if (!cleaned) {
-    return null;
-  }
-  const explicitMatch = cleaned.match(
-    /(?:^|\b)(?:my name is|name is|this is|i am|i'm|it's|it is|call me)\s+([A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,3})/i
-  );
-  if (explicitMatch?.[1]) {
-    return normalizePersonName(explicitMatch[1]);
-  }
-  const directMatch = cleaned.match(
-    /^([A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,3})$/
-  );
-  if (directMatch?.[1]) {
-    return normalizePersonName(directMatch[1]);
-  }
-  const looseMatch = cleaned.match(
-    /([A-Za-z]{2,}(?:['-][A-Za-z]{2,})?(?:\s+[A-Za-z]{2,}(?:['-][A-Za-z]{2,})?){0,3})/
-  );
-  if (looseMatch?.[1]) {
-    return normalizePersonName(looseMatch[1]);
-  }
-  return null;
-}
-function parseSpeechConfidence(confidence) {
-  if (!confidence) {
-    return null;
-  }
-  const parsed = Number.parseFloat(confidence);
-  if (!Number.isFinite(parsed)) {
-    return null;
-  }
-  return parsed;
-}
-function buildNameConfirmationPrompt(name) {
-  return `I heard ${name}. Is that correct?`;
-}
-function buildNameRepeatPrompt() {
-  return "Sorry about that. Please say your first and last name again.";
-}
-function clearNameCaptureState(fields) {
-  return {
-    ...fields,
-    name_pending_confirmation: void 0,
-    name_raw_speech: void 0,
-    name_awaiting_repeat: void 0,
-    name_confirmation_attempts: void 0
-  };
-}
-function acceptPendingName(fields) {
-  const pending = fields.name_pending_confirmation?.trim();
-  if (!pending) {
-    return fields;
-  }
-  return clearNameCaptureState({
-    ...fields,
-    full_name: pending
-  });
-}
-function beginNameConfirmation(fields, rawSpeech, parsedName) {
-  return {
-    ...fields,
-    name_pending_confirmation: parsedName,
-    name_raw_speech: rawSpeech.trim(),
-    name_awaiting_repeat: false
-  };
-}
-function incrementNameConfirmationAttempts(fields) {
-  return {
-    ...fields,
-    name_confirmation_attempts: (fields.name_confirmation_attempts ?? 0) + 1
-  };
-}
-function isNameOnlyCorrection(speech) {
-  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
-  return /\b(last name|first name|surname|spelling)\b/.test(normalized) || /\bwith an? [a-z]\b/i.test(speech);
-}
-function processNameCaptureTurn(input) {
-  const speech = input.speech.trim();
-  let fields = { ...input.fields };
-  let nameCorrected = false;
-  if (isAwaitingNameConfirmation(fields)) {
-    const pendingName = fields.name_pending_confirmation?.trim() ?? "";
-    if (isConfirmationPhrase(speech) && !hasCorrectionIntent(speech) && !isCorrectionPhrase(speech)) {
-      return {
-        status: "accepted",
-        fields: acceptPendingName(fields),
-        replyText: null,
-        nameConfirmationRequested: false,
-        nameCorrected: false
-      };
-    }
-    const correction = applyTargetedCorrection(
-      fields,
-      speech,
-      "full_name"
-    );
-    if (correction.updated && correction.field === "full_name") {
-      const correctedName = normalizePersonName(
-        correction.fields.full_name ?? pendingName
-      );
-      return {
-        status: "confirm",
-        fields: beginNameConfirmation(fields, speech, correctedName),
-        replyText: buildNameConfirmationPrompt(correctedName),
-        nameConfirmationRequested: true,
-        nameCorrected: true
-      };
-    }
-    const parsedCorrection = parseNameFromSpeech(speech);
-    if (parsedCorrection && (hasCorrectionIntent(speech) || isCorrectionPhrase(speech))) {
-      nameCorrected = true;
-      return {
-        status: "confirm",
-        fields: beginNameConfirmation(fields, speech, parsedCorrection),
-        replyText: buildNameConfirmationPrompt(parsedCorrection),
-        nameConfirmationRequested: true,
-        nameCorrected: true
-      };
-    }
-    if (isCorrectionPhrase(speech) || hasCorrectionIntent(speech) || isNameOnlyCorrection(speech)) {
-      fields = incrementNameConfirmationAttempts({
-        ...clearNameCaptureState(fields),
-        name_awaiting_repeat: true
-      });
-      if ((fields.name_confirmation_attempts ?? 0) >= MAX_NAME_CONFIRMATION_ATTEMPTS) {
-        return {
-          status: "accepted",
-          fields: acceptPendingName({
-            ...fields,
-            name_pending_confirmation: pendingName
-          }),
-          replyText: null,
-          nameConfirmationRequested: false,
-          nameCorrected: false
-        };
-      }
-      return {
-        status: "repeat",
-        fields,
-        replyText: buildNameRepeatPrompt(),
-        nameConfirmationRequested: false,
-        nameCorrected: true
-      };
-    }
-    if (parsedCorrection && parsedCorrection.toLowerCase() !== pendingName.toLowerCase()) {
-      return {
-        status: "confirm",
-        fields: beginNameConfirmation(fields, speech, parsedCorrection),
-        replyText: buildNameConfirmationPrompt(parsedCorrection),
-        nameConfirmationRequested: true,
-        nameCorrected: true
-      };
-    }
-    return {
-      status: "confirm",
-      fields,
-      replyText: buildNameConfirmationPrompt(pendingName),
-      nameConfirmationRequested: true,
-      nameCorrected: false
-    };
-  }
-  const parsedName = parseNameFromSpeech(speech);
-  if (!parsedName) {
-    fields = incrementNameConfirmationAttempts({
-      ...fields,
-      name_awaiting_repeat: true
-    });
-    if ((fields.name_confirmation_attempts ?? 0) >= MAX_NAME_CONFIRMATION_ATTEMPTS) {
-      const fallbackName = normalizePersonName(speech);
-      return {
-        status: "accepted",
-        fields: clearNameCaptureState({
-          ...fields,
-          full_name: fallbackName
-        }),
-        replyText: null,
-        nameConfirmationRequested: false,
-        nameCorrected: false
-      };
-    }
-    return {
-      status: "repeat",
-      fields: clearNameCaptureState({
-        ...fields,
-        name_awaiting_repeat: true
-      }),
-      replyText: buildNameRepeatPrompt(),
-      nameConfirmationRequested: false,
-      nameCorrected: false
-    };
-  }
-  fields = beginNameConfirmation(fields, speech, parsedName);
-  return {
-    status: "confirm",
-    fields,
-    replyText: buildNameConfirmationPrompt(parsedName),
-    nameConfirmationRequested: true,
-    nameCorrected: false
-  };
-}
 
 // ../../lib/activity.ts
 async function createActivity(supabase, {
@@ -2144,14 +847,14 @@ function createServiceClient() {
 
 // ../../lib/employee-lead-notification-content.ts
 var EMPLOYEE_PHONE_AI_LEAD_KIND = "employee_phone_ai_lead";
-function hasText3(value) {
+function hasText2(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 function displayValue(value, fallback = "Not provided") {
-  return hasText3(value) ? value.trim() : fallback;
+  return hasText2(value) ? value.trim() : fallback;
 }
 function isAffirmative(value) {
-  return hasText3(value) && /^(yes|yeah|yep|yup|true|correct|started|filed|active)/i.test(value.trim());
+  return hasText2(value) && /^(yes|yeah|yep|yup|true|correct|started|filed|active)/i.test(value.trim());
 }
 function resolveEmployeeNotificationStyle(priorityLabel) {
   return priorityLabel === "Emergency" || priorityLabel === "High" ? "urgent" : "normal";
@@ -2234,7 +937,7 @@ async function resolveEmployeeNotificationRecipients(company) {
   const settings = supabase ? await getBusinessSettingsByCompanyId(supabase, company.id) : null;
   const smsEnabled = settings?.sms_follow_up_enabled ?? false;
   const emailEnabled = settings?.email_follow_up_enabled ?? false;
-  const smsRecipient = hasText3(company.business_phone) ? company.business_phone.trim() : null;
+  const smsRecipient = hasText2(company.business_phone) ? company.business_phone.trim() : null;
   const emailRecipient = settings?.notification_email?.trim() || company.business_email?.trim() || null;
   return {
     smsRecipient,
@@ -2733,7 +1436,7 @@ function isValidIntakePhone(phone) {
 }
 
 // ../../lib/customer-confirmation-content.ts
-function hasText4(value) {
+function hasText3(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 function formatPhoneForTwilioSms(phone) {
@@ -2754,7 +1457,7 @@ function resolveCustomerPhone(lead, fields, callerPhone) {
     lead.phone,
     fields.callback_phone,
     callerPhone
-  ].filter(hasText4);
+  ].filter(hasText3);
   for (const candidate of candidates) {
     if (!isValidIntakePhone(candidate)) {
       continue;
@@ -2786,7 +1489,7 @@ function buildCustomerConfirmationSms(input) {
     "",
     "If this is an emergency involving active water intrusion or immediate safety concerns, please call us immediately."
   ];
-  if (hasText4(input.fields.appointment_preference)) {
+  if (hasText3(input.fields.appointment_preference)) {
     lines.push(
       "",
       "Requested appointment:",
@@ -3102,11 +1805,11 @@ var RETRY_DELAYS_MS3 = [0, 500, 1500];
 function sleep3(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
-function hasText5(value) {
+function hasText4(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 function isAffirmative2(value) {
-  return hasText5(value) && /^(yes|yeah|yep|yup|true|correct|started|filed|active)/i.test(value.trim());
+  return hasText4(value) && /^(yes|yeah|yep|yup|true|correct|started|filed|active)/i.test(value.trim());
 }
 function shouldCreateCrmLeadFromSession(session) {
   if (session.status !== "completed") {
@@ -3132,7 +1835,7 @@ function derivePhoneLeadPriorityLabel(fields) {
   return "Low";
 }
 function mapCallProjectType(value) {
-  if (!hasText5(value)) {
+  if (!hasText4(value)) {
     return null;
   }
   const normalized = value.trim().toLowerCase();
@@ -3154,7 +1857,7 @@ function mapCallProjectType(value) {
   return "other";
 }
 function parseCallInsuranceClaim(value) {
-  if (!hasText5(value)) {
+  if (!hasText4(value)) {
     return false;
   }
   return isAffirmative2(value);
@@ -3163,7 +1866,7 @@ function buildPhoneLeadDescription(session, fields) {
   const summary = buildCrmCallSummary(fields);
   const priorityLabel = derivePhoneLeadPriorityLabel(fields);
   const lines = [summary];
-  if (hasText5(fields.appointment_preference)) {
+  if (hasText4(fields.appointment_preference)) {
     lines.push(`Requested appointment: ${fields.appointment_preference.trim()}`);
   }
   lines.push(
@@ -3314,7 +2017,7 @@ async function createLeadViaDirectInsert(session) {
       }
     }
   ];
-  if (hasText5(fields.appointment_preference)) {
+  if (hasText4(fields.appointment_preference)) {
     activityRows.push({
       company_id: session.company_id,
       lead_id: lead.id,
@@ -3446,6 +2149,497 @@ async function createCrmLeadFromCallSession(session) {
     error: lastError,
     attempts: startingAttempts + MAX_CRM_LEAD_ATTEMPTS
   };
+}
+
+// ../../lib/twilio/voice-phrases.ts
+var OPENING_QUESTION = "What's going on with the roof?";
+var OPENING_GREETING = "Hi, thanks for calling Beau's Roofing. I'm the AI assistant here to help. " + OPENING_QUESTION;
+var OPENING_RETRY_PROMPT = `I didn't catch that. ${OPENING_QUESTION}`;
+var GOODBYE_PHRASES = [
+  "goodbye",
+  "good bye",
+  "bye",
+  "that's all",
+  "thats all",
+  "that is all",
+  "no thank you",
+  "no thanks",
+  "nothing else",
+  "i'm good",
+  "im good",
+  "all set"
+];
+function isGoodbyePhrase(speech) {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  return GOODBYE_PHRASES.some(
+    (phrase) => normalized === phrase || normalized.includes(phrase)
+  );
+}
+function isConfirmationPhrase(speech) {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  return /^(yes|yeah|yep|yup|correct|right|exactly|sure|absolutely|sounds good|sound good|that'?s right|thats right|that is correct|all good|perfect|ok(?:ay)?)\b/.test(
+    normalized
+  ) || normalized === "uh huh";
+}
+function isCorrectionPhrase(speech) {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  return /^(no|nope|nah|not quite|incorrect|wrong|that'?s wrong|thats wrong|not right|actually)\b/.test(
+    normalized
+  );
+}
+
+// ../../lib/call-intelligence.ts
+var STAGE_FIELD_KEYS = {
+  problem: "problem_description",
+  full_name: "full_name",
+  callback_phone: "callback_phone",
+  address: "address",
+  project_type: "project_type",
+  active_leak: "active_leak",
+  storm_damage: "storm_damage",
+  insurance_claim: "insurance_claim",
+  urgency: "urgency",
+  appointment: "appointment_preference",
+  additional_notes: "additional_notes"
+};
+var INTERRUPTION_PREFIX_PATTERN = /^(actually|wait|hold on|hang on|one second|one sec|sorry)[,.]?\s+/i;
+var CORRECTION_PREFIX_PATTERN = /^(no|actually|wait|not|correction)[,.]?\s+/i;
+var EMERGENCY_PATTERN = /\b(tree through|through the roof|roof collapse|collapsed|caved in|water pouring|pouring in|ceiling leaking badly|electrical hazard|spark|storm happening now|active storm|emergency|urgent|asap)\b/i;
+function stripInterruptionPrefix(speech) {
+  return speech.replace(INTERRUPTION_PREFIX_PATTERN, "").trim();
+}
+function hasCorrectionIntent(speech) {
+  const normalized = speech.trim().toLowerCase();
+  return CORRECTION_PREFIX_PATTERN.test(normalized) || /\b(not|actually|instead|rather|meant|correction|wrong)\b/.test(normalized);
+}
+function detectEmergency(speech) {
+  return EMERGENCY_PATTERN.test(speech.toLowerCase()) || /water.*(inside|coming in|pouring)|ceiling.*leak/i.test(speech.toLowerCase());
+}
+function applyTargetedCorrection(fields, speech, currentStage, callerPhone) {
+  const cleaned = stripInterruptionPrefix(speech).replace(CORRECTION_PREFIX_PATTERN, "").trim();
+  const text = cleaned || speech.trim();
+  const lower = text.toLowerCase();
+  const updated = { ...fields };
+  const nameMatch = text.match(
+    /(?:name is|my name is|i'?m|this is|it's|it is|call me)\s+([A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,3})/i
+  );
+  if (nameMatch?.[1]) {
+    updated.full_name = nameMatch[1].trim();
+    return { fields: updated, updated: true, field: "full_name" };
+  }
+  const firstNameMatch = text.match(
+    /\b(?:my )?first name is\s+([A-Za-z][A-Za-z'-]+)/i
+  );
+  if (firstNameMatch?.[1]) {
+    const lastName = updated.full_name?.trim().split(/\s+/).slice(1).join(" ");
+    updated.full_name = lastName ? `${firstNameMatch[1].trim()} ${lastName}` : firstNameMatch[1].trim();
+    return { fields: updated, updated: true, field: "full_name" };
+  }
+  const lastNameMatch = text.match(
+    /\b(?:my )?last name is\s+([A-Za-z][A-Za-z'-]+)/i
+  );
+  if (lastNameMatch?.[1]) {
+    const firstName = updated.full_name?.trim().split(/\s+/)[0] ?? "";
+    updated.full_name = firstName ? `${firstName} ${lastNameMatch[1].trim()}` : lastNameMatch[1].trim();
+    return { fields: updated, updated: true, field: "full_name" };
+  }
+  if (/\b(last name|surname)\b.*\b(wrong|incorrect)\b/i.test(lower)) {
+    updated.name_pending_confirmation = void 0;
+    updated.full_name = void 0;
+    updated.name_awaiting_repeat = true;
+    return { fields: updated, updated: true, field: "full_name" };
+  }
+  const addressMatch = text.match(
+    /\b(?:address is|at|to)\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80})/i
+  ) ?? text.match(
+    /(?:change|update|correct|fix).*?(?:address|location|property).*?(?:to|is)\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80})/i
+  );
+  if (addressMatch?.[1]) {
+    updated.address = addressMatch[1].trim();
+    return { fields: updated, updated: true, field: "address" };
+  }
+  const phone = text.match(
+    /(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/
+  );
+  if (phone) {
+    const digits = phone[0].replace(/\D/g, "").slice(-10);
+    updated.callback_phone = digits;
+    return { fields: updated, updated: true, field: "callback_phone" };
+  }
+  if (/wind damage|\bwind\b/i.test(lower)) {
+    updated.project_type = "wind damage";
+    updated.storm_damage = "yes";
+    if (!updated.problem_description?.toLowerCase().includes("wind")) {
+      updated.problem_description = text;
+    }
+    return { fields: updated, updated: true, field: "project_type" };
+  }
+  if (/hail/i.test(lower)) {
+    updated.project_type = "storm damage";
+    updated.storm_damage = "yes";
+    return { fields: updated, updated: true, field: "project_type" };
+  }
+  if (/appointment|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d\s*(am|pm)/i.test(
+    text
+  )) {
+    updated.appointment_preference = text;
+    return { fields: updated, updated: true, field: "appointment_preference" };
+  }
+  if (/^(yes|yeah|yep|no|nope|nah)\b/i.test(lower) && fields.insurance_claim) {
+    updated.insurance_claim = /^(yes|yeah|yep)\b/i.test(lower) ? "yes" : "no";
+    return { fields: updated, updated: true, field: "insurance_claim" };
+  }
+  if (hasCorrectionIntent(speech) && text.length > 0) {
+    if (currentStage === "wrap_up" || fields.summary_delivered) {
+      return { fields, updated: false };
+    }
+    const fieldKey = STAGE_FIELD_KEYS[currentStage];
+    updated[fieldKey] = text;
+    return { fields: updated, updated: true, field: fieldKey };
+  }
+  if (callerPhone && /same number|this number/i.test(lower)) {
+    updated.callback_phone = callerPhone;
+    return { fields: updated, updated: true, field: "callback_phone" };
+  }
+  return { fields, updated: false };
+}
+
+// ../../lib/call-intake.ts
+var CALL_INTAKE_STAGES = [
+  "problem",
+  "full_name",
+  "callback_phone",
+  "address",
+  "project_type",
+  "active_leak",
+  "storm_damage",
+  "insurance_claim",
+  "urgency",
+  "appointment",
+  "additional_notes"
+];
+var STAGE_FIELD_KEYS2 = {
+  problem: "problem_description",
+  full_name: "full_name",
+  callback_phone: "callback_phone",
+  address: "address",
+  project_type: "project_type",
+  active_leak: "active_leak",
+  storm_damage: "storm_damage",
+  insurance_claim: "insurance_claim",
+  urgency: "urgency",
+  appointment: "appointment_preference",
+  additional_notes: "additional_notes"
+};
+function hasValue(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+function getStringField(fields, fieldKey) {
+  const value = fields[fieldKey];
+  return typeof value === "string" ? value : void 0;
+}
+function setStringField(fields, fieldKey, value) {
+  return {
+    ...fields,
+    [fieldKey]: value
+  };
+}
+function indicatesWaterIntrusion(text) {
+  return /water.*(inside|in the|coming|getting in|pouring)|flooding|active leak|leaking inside/i.test(
+    text.toLowerCase()
+  );
+}
+function indicatesStormDamage(text) {
+  return /hail|storm|wind damage|tornado|hurricane/i.test(text.toLowerCase());
+}
+function extractActiveLeak(text) {
+  if (indicatesWaterIntrusion(text)) {
+    return "yes";
+  }
+  const yesNo = extractYesNo(text);
+  if (yesNo && /leak|water|drip/i.test(text.toLowerCase())) {
+    return yesNo;
+  }
+  return null;
+}
+function extractStormDamage(text) {
+  if (indicatesStormDamage(text)) {
+    return "yes";
+  }
+  const yesNo = extractYesNo(text);
+  if (yesNo && indicatesStormDamage(text)) {
+    return yesNo;
+  }
+  return null;
+}
+function getNextMissingStage(fields) {
+  for (const stage of CALL_INTAKE_STAGES) {
+    const fieldKey = STAGE_FIELD_KEYS2[stage];
+    const value = fields[fieldKey];
+    if (typeof value !== "string" || !hasValue(value)) {
+      return stage;
+    }
+  }
+  return "wrap_up";
+}
+function extractYesNo(text) {
+  const normalized = text.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  if (/^(yes|yeah|yep|yup|correct|sure|absolutely|affirmative|it is|i am|we are|we do|there is|there's)\b/.test(
+    normalized
+  )) {
+    return "yes";
+  }
+  if (/^(no|nope|nah|not|none|don't|do not|negative|isn't|aren't|there isn't|there's no)\b/.test(
+    normalized
+  )) {
+    return "no";
+  }
+  return null;
+}
+function extractPhone(text) {
+  const match = text.match(
+    /(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/
+  );
+  if (!match) {
+    return null;
+  }
+  const digits = match[0].replace(/\D/g, "");
+  return digits.length >= 10 ? digits.slice(-10) : digits;
+}
+function extractName(text) {
+  const explicit = text.match(
+    /(?:my name is|name is)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z'-]+){0,2})/
+  );
+  if (explicit?.[1]) {
+    return explicit[1].trim();
+  }
+  const introduction = text.match(
+    /(?:this is|i am|i'm)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z'-]+){0,2})(?:\s+(?:and|with|from|at|calling)\b|$)/
+  );
+  if (introduction?.[1]) {
+    return introduction[1].trim();
+  }
+  return null;
+}
+function extractAddress(text) {
+  const streetMatch = text.match(
+    /\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80}(?:\b(?:street|st|avenue|ave|road|rd|drive|dr|lane|ln|boulevard|blvd|way|court|ct|circle|place|pl)\b)?/i
+  );
+  if (streetMatch) {
+    return streetMatch[0].trim();
+  }
+  const atMatch = text.match(
+    /\bat\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,60})/i
+  );
+  return atMatch?.[1]?.trim() ?? null;
+}
+function extractProjectType(text) {
+  const normalized = text.toLowerCase();
+  if (normalized.includes("storm") || normalized.includes("hail")) {
+    return "storm damage";
+  }
+  if (normalized.includes("wind")) {
+    return "wind damage";
+  }
+  if (normalized.includes("replace")) {
+    return "replacement";
+  }
+  if (normalized.includes("repair")) {
+    return "repair";
+  }
+  if (normalized.includes("inspect")) {
+    return "inspection";
+  }
+  return null;
+}
+function extractInsuranceClaim(text) {
+  const lower = text.toLowerCase();
+  if (/\b(already|talked to|spoken to|contacted|filed|started|opened|called).*(insurance|claim)\b/.test(
+    lower
+  ) || /\b(insurance|claim).*(already|started|filed|opened)\b/.test(lower)) {
+    return "yes";
+  }
+  if (/\b(no|not yet|haven't|have not|don't|do not).*(insurance|claim|filed)\b/.test(
+    lower
+  )) {
+    return "no";
+  }
+  return null;
+}
+function extractDamageContext(text) {
+  const result = {};
+  const lower = text.toLowerCase();
+  if (/shingles everywhere|shingles all over|missing shingles|loose shingles/i.test(
+    lower
+  )) {
+    result.project_type = "storm damage";
+    result.storm_damage = "yes";
+    result.problem_description = "loose shingles reported";
+  }
+  if (/started leaking|began leaking|roof leaking|ceiling leaking|leak/i.test(lower)) {
+    if (/yesterday|last night|today|this morning|recently|last week/i.test(lower)) {
+      result.problem_description = result.problem_description ?? `roof issue reported ${extractDamageTimingFromText(text) ?? "recently"}`;
+    }
+    if (/ceiling|kitchen|bathroom|inside|interior|water/i.test(lower)) {
+      result.active_leak = "yes";
+    }
+  }
+  if (/yesterday|last night|today|this morning|last week|recently/i.test(lower)) {
+    if (/hail|storm|wind|damage|hit|leak/i.test(lower)) {
+      result.problem_description = result.problem_description ?? `storm-related roof issue reported ${extractDamageTimingFromText(text) ?? "recently"}`;
+      if (/hail|storm|wind/i.test(lower)) {
+        result.storm_damage = "yes";
+      }
+    }
+  }
+  return result;
+}
+function extractDamageTimingFromText(text) {
+  const lower = text.toLowerCase();
+  if (/\byesterday\b/.test(lower)) return "yesterday";
+  if (/\blast night\b/.test(lower)) return "last night";
+  if (/\bthis morning\b/.test(lower)) return "this morning";
+  if (/\btoday\b/.test(lower)) return "today";
+  if (/\blast week\b/.test(lower)) return "last week";
+  if (/\brecently\b/.test(lower)) return "recently";
+  return null;
+}
+function extractUrgency(text) {
+  const normalized = text.toLowerCase();
+  if (/emergency|urgent|asap|right away|immediately|today/.test(normalized)) {
+    return "emergency";
+  }
+  if (/flexible|no rush|whenever|next week|few weeks/.test(normalized)) {
+    return "flexible";
+  }
+  if (/standard|few days|this week|soon/.test(normalized)) {
+    return "standard";
+  }
+  return null;
+}
+function extractCallbackPhone(text, callerPhone) {
+  const normalized = text.toLowerCase();
+  if (callerPhone && /same number|this number|calling from|number i'?m calling|one i'?m on/.test(
+    normalized
+  )) {
+    return callerPhone;
+  }
+  return extractPhone(text);
+}
+function normalizeFieldValue(stage, answer, callerPhone) {
+  const trimmed = answer.trim();
+  switch (stage) {
+    case "active_leak":
+    case "storm_damage":
+    case "insurance_claim":
+      return extractYesNo(trimmed) ?? trimmed;
+    case "callback_phone":
+      return extractCallbackPhone(trimmed, callerPhone) ?? trimmed;
+    case "project_type":
+      return extractProjectType(trimmed) ?? trimmed;
+    case "urgency":
+      return extractUrgency(trimmed) ?? trimmed;
+    case "additional_notes":
+      if (/^(no|nope|nah|nothing|none|that's all|thats all|all set)\b/i.test(trimmed)) {
+        return "none";
+      }
+      return trimmed;
+    default:
+      return trimmed;
+  }
+}
+function extractFieldsFromSpeech(text, callerPhone) {
+  const extracted = {};
+  const name = extractName(text);
+  const phone = extractCallbackPhone(text, callerPhone) ?? extractPhone(text);
+  const address = extractAddress(text);
+  const projectType = extractProjectType(text);
+  const urgency = extractUrgency(text);
+  if (name) {
+    extracted.full_name = name;
+  }
+  if (phone) {
+    extracted.callback_phone = phone;
+  }
+  if (address) {
+    extracted.address = address;
+  }
+  if (projectType) {
+    extracted.project_type = projectType;
+  }
+  if (urgency) {
+    extracted.urgency = urgency;
+  }
+  const activeLeak = extractActiveLeak(text);
+  if (activeLeak) {
+    extracted.active_leak = activeLeak;
+  }
+  const stormDamage = extractStormDamage(text);
+  if (stormDamage) {
+    extracted.storm_damage = stormDamage;
+  }
+  const insuranceClaim = extractInsuranceClaim(text);
+  if (insuranceClaim) {
+    extracted.insurance_claim = insuranceClaim;
+  }
+  const damageContext = extractDamageContext(text);
+  for (const [key, value] of Object.entries(damageContext)) {
+    const fieldKey = key;
+    const existingValue = extracted[fieldKey];
+    if (typeof value === "string" && !(typeof existingValue === "string" && hasValue(existingValue)) && hasValue(value)) {
+      extracted[fieldKey] = value;
+    }
+  }
+  if (indicatesWaterIntrusion(text) || /emergency|urgent|asap/i.test(text.toLowerCase())) {
+    extracted.urgency = extracted.urgency ?? "emergency";
+  }
+  return extracted;
+}
+function mergeCallerAnswer(fields, answer, callerPhone) {
+  const currentStage = getNextMissingStage(fields);
+  if (hasCorrectionIntent(answer)) {
+    const correction = applyTargetedCorrection(
+      fields,
+      answer,
+      currentStage === "wrap_up" ? "wrap_up" : currentStage,
+      callerPhone
+    );
+    if (correction.updated) {
+      const corrected = correction.fields;
+      if (detectEmergency(answer)) {
+        corrected.urgency = corrected.urgency ?? "emergency";
+        if (/water|leak|pouring/i.test(answer.toLowerCase())) {
+          corrected.active_leak = "yes";
+        }
+      }
+      return corrected;
+    }
+  }
+  const processedAnswer = stripInterruptionPrefix(answer);
+  const answeringStage = getNextMissingStage(fields);
+  let updated = { ...fields };
+  const extracted = extractFieldsFromSpeech(processedAnswer, callerPhone);
+  for (const stage of CALL_INTAKE_STAGES) {
+    const fieldKey = STAGE_FIELD_KEYS2[stage];
+    const extractedValue = extracted[fieldKey];
+    if (!hasValue(getStringField(updated, fieldKey)) && typeof extractedValue === "string" && hasValue(extractedValue)) {
+      updated = setStringField(updated, fieldKey, extractedValue);
+    }
+  }
+  if (detectEmergency(processedAnswer)) {
+    updated.urgency = updated.urgency ?? "emergency";
+  }
+  if (answeringStage !== "wrap_up") {
+    const primaryKey = STAGE_FIELD_KEYS2[answeringStage];
+    if (!hasValue(getStringField(updated, primaryKey))) {
+      updated = setStringField(
+        updated,
+        primaryKey,
+        normalizeFieldValue(answeringStage, processedAnswer, callerPhone)
+      );
+    }
+  }
+  return updated;
 }
 
 // ../../lib/twilio/company.ts
@@ -3688,26 +2882,441 @@ async function completeCallSession(callSid, status = "completed") {
   return session;
 }
 
-// ../../lib/call-turn-processor.ts
-function getEffectiveGatherStage(fields) {
+// ../../lib/call-name-capture.ts
+var MAX_NAME_CONFIRMATION_ATTEMPTS = 3;
+var NAME_PREFIX_PATTERN = /^(?:my name is|name is|this is|i am|i'm|it's|it is|call me)\s+/i;
+var CORRECTION_PREFIX_PATTERN2 = /^(no|actually|wait|not|correction)[,.]?\s+/i;
+function hasText5(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+function isAwaitingNameConfirmation(fields) {
+  return hasText5(fields.name_pending_confirmation) && !hasText5(fields.full_name);
+}
+function normalizePersonName(name) {
+  return name.trim().split(/\s+/).map(
+    (part) => part.split("-").map((segment) => {
+      if (!segment) {
+        return segment;
+      }
+      return segment.charAt(0).toUpperCase() + segment.slice(1).toLowerCase();
+    }).join("-")
+  ).join(" ");
+}
+function parseNameFromSpeech(text) {
+  const cleaned = stripInterruptionPrefix(text.trim()).replace(CORRECTION_PREFIX_PATTERN2, "").replace(NAME_PREFIX_PATTERN, "").trim();
+  if (!cleaned) {
+    return null;
+  }
+  const explicitMatch = cleaned.match(
+    /(?:^|\b)(?:my name is|name is|this is|i am|i'm|it's|it is|call me)\s+([A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,3})/i
+  );
+  if (explicitMatch?.[1]) {
+    return normalizePersonName(explicitMatch[1]);
+  }
+  const directMatch = cleaned.match(
+    /^([A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,3})$/
+  );
+  if (directMatch?.[1]) {
+    return normalizePersonName(directMatch[1]);
+  }
+  const looseMatch = cleaned.match(
+    /([A-Za-z]{2,}(?:['-][A-Za-z]{2,})?(?:\s+[A-Za-z]{2,}(?:['-][A-Za-z]{2,})?){0,3})/
+  );
+  if (looseMatch?.[1]) {
+    return normalizePersonName(looseMatch[1]);
+  }
+  return null;
+}
+function buildNameConfirmationPrompt(name) {
+  return `I heard ${name}. Is that correct?`;
+}
+function buildNameRepeatPrompt() {
+  return "Sorry about that. Please say your first and last name again.";
+}
+function clearNameCaptureState(fields) {
+  return {
+    ...fields,
+    name_pending_confirmation: void 0,
+    name_raw_speech: void 0,
+    name_awaiting_repeat: void 0,
+    name_confirmation_attempts: void 0
+  };
+}
+function acceptPendingName(fields) {
+  const pending = fields.name_pending_confirmation?.trim();
+  if (!pending) {
+    return fields;
+  }
+  return clearNameCaptureState({
+    ...fields,
+    full_name: pending
+  });
+}
+function beginNameConfirmation(fields, rawSpeech, parsedName) {
+  return {
+    ...fields,
+    name_pending_confirmation: parsedName,
+    name_raw_speech: rawSpeech.trim(),
+    name_awaiting_repeat: false
+  };
+}
+function incrementNameConfirmationAttempts(fields) {
+  return {
+    ...fields,
+    name_confirmation_attempts: (fields.name_confirmation_attempts ?? 0) + 1
+  };
+}
+function isNameOnlyCorrection(speech) {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  return /\b(last name|first name|surname|spelling)\b/.test(normalized) || /\bwith an? [a-z]\b/i.test(speech);
+}
+function processNameCaptureTurn(input) {
+  const speech = input.speech.trim();
+  let fields = { ...input.fields };
+  let nameCorrected = false;
   if (isAwaitingNameConfirmation(fields)) {
-    return "full_name";
+    const pendingName = fields.name_pending_confirmation?.trim() ?? "";
+    if (isConfirmationPhrase(speech) && !hasCorrectionIntent(speech) && !isCorrectionPhrase(speech)) {
+      return {
+        status: "accepted",
+        fields: acceptPendingName(fields),
+        replyText: null,
+        nameConfirmationRequested: false,
+        nameCorrected: false
+      };
+    }
+    const correction = applyTargetedCorrection(
+      fields,
+      speech,
+      "full_name"
+    );
+    if (correction.updated && correction.field === "full_name") {
+      const correctedName = normalizePersonName(
+        correction.fields.full_name ?? pendingName
+      );
+      return {
+        status: "confirm",
+        fields: beginNameConfirmation(fields, speech, correctedName),
+        replyText: buildNameConfirmationPrompt(correctedName),
+        nameConfirmationRequested: true,
+        nameCorrected: true
+      };
+    }
+    const parsedCorrection = parseNameFromSpeech(speech);
+    if (parsedCorrection && (hasCorrectionIntent(speech) || isCorrectionPhrase(speech))) {
+      nameCorrected = true;
+      return {
+        status: "confirm",
+        fields: beginNameConfirmation(fields, speech, parsedCorrection),
+        replyText: buildNameConfirmationPrompt(parsedCorrection),
+        nameConfirmationRequested: true,
+        nameCorrected: true
+      };
+    }
+    if (isCorrectionPhrase(speech) || hasCorrectionIntent(speech) || isNameOnlyCorrection(speech)) {
+      fields = incrementNameConfirmationAttempts({
+        ...clearNameCaptureState(fields),
+        name_awaiting_repeat: true
+      });
+      if ((fields.name_confirmation_attempts ?? 0) >= MAX_NAME_CONFIRMATION_ATTEMPTS) {
+        return {
+          status: "accepted",
+          fields: acceptPendingName({
+            ...fields,
+            name_pending_confirmation: pendingName
+          }),
+          replyText: null,
+          nameConfirmationRequested: false,
+          nameCorrected: false
+        };
+      }
+      return {
+        status: "repeat",
+        fields,
+        replyText: buildNameRepeatPrompt(),
+        nameConfirmationRequested: false,
+        nameCorrected: true
+      };
+    }
+    if (parsedCorrection && parsedCorrection.toLowerCase() !== pendingName.toLowerCase()) {
+      return {
+        status: "confirm",
+        fields: beginNameConfirmation(fields, speech, parsedCorrection),
+        replyText: buildNameConfirmationPrompt(parsedCorrection),
+        nameConfirmationRequested: true,
+        nameCorrected: true
+      };
+    }
+    return {
+      status: "confirm",
+      fields,
+      replyText: buildNameConfirmationPrompt(pendingName),
+      nameConfirmationRequested: true,
+      nameCorrected: false
+    };
   }
-  return getNextMissingStage(fields);
-}
-function isNameCaptureTurn(fields) {
-  if (isAwaitingNameConfirmation(fields) || fields.name_awaiting_repeat === true) {
-    return true;
+  const parsedName = parseNameFromSpeech(speech);
+  if (!parsedName) {
+    fields = incrementNameConfirmationAttempts({
+      ...fields,
+      name_awaiting_repeat: true
+    });
+    if ((fields.name_confirmation_attempts ?? 0) >= MAX_NAME_CONFIRMATION_ATTEMPTS) {
+      const fallbackName = normalizePersonName(speech);
+      return {
+        status: "accepted",
+        fields: clearNameCaptureState({
+          ...fields,
+          full_name: fallbackName
+        }),
+        replyText: null,
+        nameConfirmationRequested: false,
+        nameCorrected: false
+      };
+    }
+    return {
+      status: "repeat",
+      fields: clearNameCaptureState({
+        ...fields,
+        name_awaiting_repeat: true
+      }),
+      replyText: buildNameRepeatPrompt(),
+      nameConfirmationRequested: false,
+      nameCorrected: false
+    };
   }
-  return getNextMissingStage(fields) === "full_name";
+  fields = beginNameConfirmation(fields, speech, parsedName);
+  return {
+    status: "confirm",
+    fields,
+    replyText: buildNameConfirmationPrompt(parsedName),
+    nameConfirmationRequested: true,
+    nameCorrected: false
+  };
 }
+
+// src/orchestrator/realtime-prompts.ts
+var REALTIME_OPENING_GREETING = "Hi, thanks for calling Beau's Roofing \u2014 what's going on with the roof?";
+var REALTIME_OPENING_QUESTION = "What's going on with the roof?";
+var REALTIME_ANYTHING_ELSE_QUESTION = "Is there anything else you'd like the roofing team to know?";
+function buildRealtimeIntakeReply(prefix, question) {
+  const trimmedQuestion = question.trim();
+  if (!prefix) {
+    return trimmedQuestion;
+  }
+  return `${prefix} ${trimmedQuestion}`.replace(/\s+/g, " ").trim();
+}
+function buildRealtimeClosingMessage(fields) {
+  const summary = buildSpokenCallSummary(fields);
+  const callbackPhone = fields.callback_phone?.trim();
+  const followUp = callbackPhone ? `Someone from our team will follow up at ${callbackPhone}.` : "Someone from our team will follow up using the number you confirmed.";
+  return `${summary} I'll send this to the roofing team. ${followUp} Thanks for calling Beau's Roofing \u2014 have a great day.`;
+}
+function isAnythingElseDeclined(speech) {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  return /^(no|nope|nah|nothing|none|that's all|thats all|that is all|i'm good|im good|all set|nothing else)\b/.test(
+    normalized
+  ) || normalized.includes("nothing else");
+}
+
+// src/orchestrator/realtime-intake.ts
+var REALTIME_INTAKE_STAGES = [
+  "problem",
+  "full_name",
+  "callback_phone",
+  "address",
+  "project_type",
+  "active_leak",
+  "storm_damage",
+  "insurance_claim",
+  "adjuster_contacted",
+  "urgency",
+  "appointment",
+  "photos_available"
+];
+var STAGE_FIELD_KEYS3 = {
+  problem: "problem_description",
+  full_name: "full_name",
+  callback_phone: "callback_phone",
+  address: "address",
+  project_type: "project_type",
+  active_leak: "active_leak",
+  storm_damage: "storm_damage",
+  insurance_claim: "insurance_claim",
+  adjuster_contacted: "adjuster_contacted",
+  urgency: "urgency",
+  appointment: "appointment_preference",
+  photos_available: "photos_available"
+};
+function hasValue2(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+function insuranceClaimStarted(fields) {
+  const claim = fields.insurance_claim?.toLowerCase() ?? "";
+  return /yes|started|filed|claim|insurance|already/i.test(claim);
+}
+function shouldCollectAdjuster(fields) {
+  return insuranceClaimStarted(fields);
+}
+function isRealtimeIntakeComplete(fields) {
+  return getRealtimeNextMissingStage(fields) === "wrap_up";
+}
+function getRealtimeNextMissingStage(fields) {
+  for (const stage of REALTIME_INTAKE_STAGES) {
+    if (stage === "adjuster_contacted" && !shouldCollectAdjuster(fields)) {
+      continue;
+    }
+    const fieldKey = STAGE_FIELD_KEYS3[stage];
+    const value = fields[fieldKey];
+    if (typeof value !== "string" || !hasValue2(value)) {
+      return stage;
+    }
+  }
+  return "wrap_up";
+}
+function extractYesNoUnknown(text) {
+  const normalized = text.toLowerCase().trim();
+  if (/^(yes|yeah|yep|yup|sure|correct|already|i have|i did)\b/.test(normalized)) {
+    return "yes";
+  }
+  if (/^(no|nope|nah|not yet|haven't|havent|none)\b/.test(normalized)) {
+    return "no";
+  }
+  if (/don't know|not sure|unknown/i.test(normalized)) {
+    return "unknown";
+  }
+  return null;
+}
+function extractPhotosAvailability(text) {
+  const yesNo = extractYesNoUnknown(text);
+  if (yesNo) {
+    return yesNo;
+  }
+  if (/photo|picture|image/i.test(text)) {
+    return text.trim();
+  }
+  return null;
+}
+function mergeRealtimeExtras(fields, answer, stage) {
+  let updated = { ...fields };
+  if (stage === "adjuster_contacted" || !hasValue2(updated.adjuster_contacted)) {
+    const adjuster = extractYesNoUnknown(answer);
+    if (adjuster && shouldCollectAdjuster(updated)) {
+      updated.adjuster_contacted = adjuster;
+    }
+  }
+  if (stage === "photos_available" || !hasValue2(updated.photos_available)) {
+    const photos = extractPhotosAvailability(answer);
+    if (photos) {
+      updated.photos_available = photos;
+    }
+  }
+  return updated;
+}
+function mergeRealtimeCallerAnswer(fields, answer, callerPhone) {
+  const stage = getRealtimeNextMissingStage(fields);
+  let updated = { ...fields };
+  const processed = answer.trim();
+  if (stage !== "wrap_up" && processed) {
+    const fieldKey = STAGE_FIELD_KEYS3[stage];
+    if (!hasValue2(updated[fieldKey])) {
+      if (stage === "callback_phone" && callerPhone && /^(yes|yeah|yep|correct|this one|that one)\b/i.test(processed)) {
+        updated[fieldKey] = callerPhone;
+      } else if (stage === "adjuster_contacted" || stage === "photos_available" || stage === "active_leak" || stage === "storm_damage" || stage === "insurance_claim") {
+        updated[fieldKey] = (stage === "photos_available" ? extractPhotosAvailability(processed) : extractYesNoUnknown(processed)) ?? processed.slice(0, 120);
+      } else {
+        updated[fieldKey] = processed.slice(0, 500);
+      }
+    }
+  }
+  if (stage !== "wrap_up") {
+    const stageIndex = REALTIME_INTAKE_STAGES.indexOf(stage);
+    const libMerged = mergeCallerAnswer(fields, answer, callerPhone);
+    for (let index = 0; index < stageIndex; index += 1) {
+      const priorStage = REALTIME_INTAKE_STAGES[index];
+      const fieldKey = STAGE_FIELD_KEYS3[priorStage];
+      const extractedValue = libMerged[fieldKey];
+      if (!hasValue2(updated[fieldKey]) && hasValue2(extractedValue)) {
+        updated[fieldKey] = extractedValue;
+      }
+    }
+  }
+  updated = mergeRealtimeExtras(updated, processed, stage);
+  if (detectEmergency(processed)) {
+    updated.urgency = updated.urgency ?? "emergency";
+    updated.emergency_acknowledged = true;
+  }
+  return updated;
+}
+function getRealtimeStageQuestion(stage, fields = {}, callerPhone) {
+  const firstName = fields.full_name?.trim().split(/\s+/)[0];
+  switch (stage) {
+    case "problem":
+      return "What's going on with the roof?";
+    case "full_name":
+      return "What's your name?";
+    case "callback_phone":
+      if (firstName && callerPhone) {
+        return `${firstName}, is this the best number to reach you?`;
+      }
+      return callerPhone ? "Is this the best number to reach you?" : "What's the best callback number?";
+    case "address":
+      return "What's the property address?";
+    case "project_type":
+      return "Is this a repair, replacement, inspection, or storm damage?";
+    case "active_leak":
+      return "Any water getting inside right now?";
+    case "storm_damage":
+      return "Was this from recent storm damage?";
+    case "insurance_claim":
+      return "Have you started an insurance claim?";
+    case "adjuster_contacted":
+      return "Have you contacted your adjuster yet?";
+    case "urgency":
+      return fields.active_leak === "yes" ? "How soon do you need someone out?" : "How soon would you like someone to take a look?";
+    case "appointment":
+      return "What day or time works best for a visit?";
+    case "photos_available":
+      return "Do you have photos of the damage?";
+    default:
+      return REALTIME_ANYTHING_ELSE_QUESTION;
+  }
+}
+function buildRealtimeAcknowledgement(answeredStage, answer, fields) {
+  if (detectEmergency(answer) && !fields.emergency_acknowledged) {
+    return "Got it \u2014 I'll flag this as urgent.";
+  }
+  if (answeredStage === "problem" && /urgent|emergency|leak|water|tree|hole/i.test(answer)) {
+    return "Understood.";
+  }
+  if (answeredStage === "full_name" || answeredStage === "callback_phone") {
+    return "Thanks.";
+  }
+  return "Got it.";
+}
+function appendAnythingElseNotes(fields, speech) {
+  const trimmed = speech.trim();
+  if (!trimmed) {
+    return fields;
+  }
+  const existing = fields.additional_notes?.trim();
+  const combined = existing ? `${existing} ${trimmed}` : trimmed;
+  return {
+    ...fields,
+    additional_notes: combined.slice(0, 500)
+  };
+}
+function toPersistedFields(fields) {
+  return fields;
+}
+
+// src/orchestrator/realtime-turn-processor.ts
 async function persistTurn(callSid, input) {
   const session = await updateCallSession({
     callSid,
-    collectedFields: input.collectedFields,
+    collectedFields: input.collectedFields ? toPersistedFields(input.collectedFields) : void 0,
     currentQuestion: input.currentQuestion ?? null,
-    transcriptEntry: createTranscriptEntry("caller", input.callerSpeech),
-    attemptCount: input.attemptCount
+    transcriptEntry: createTranscriptEntry("caller", input.callerSpeech)
   }) ?? null;
   await updateCallSession({
     callSid,
@@ -3715,313 +3324,115 @@ async function persistTurn(callSid, input) {
   });
   return session;
 }
-function getNoInputRetryPrompt(session, callerPhone, isInitial) {
-  if (!session) {
-    return OPENING_RETRY_PROMPT;
+function isNameCaptureTurn(fields) {
+  if (isAwaitingNameConfirmation(fields) || fields.name_awaiting_repeat === true) {
+    return true;
   }
-  const fields = session.collected_fields ?? {};
-  if (isAwaitingNameConfirmation(fields)) {
-    const pending = fields.name_pending_confirmation?.trim();
-    if (pending) {
-      return `I didn't catch that. ${buildNameConfirmationPrompt(pending)}`;
-    }
-  }
-  if (fields.name_awaiting_repeat) {
-    return `I didn't catch that. ${buildNameRepeatPrompt()}`;
-  }
-  if (isAwaitingSummaryConfirmation(fields)) {
-    if (isAwaitingSummaryEditValue(fields)) {
-      return `I didn't catch that. ${buildSummaryEditValuePrompt(
-        fields.summary_edit_target
-      )}`;
-    }
-    return `I didn't catch that. ${getSummaryConfirmationPrompt()}`;
-  }
-  const nextStage = getNextMissingStage(fields);
-  if (isInitial && nextStage === "problem") {
-    return OPENING_RETRY_PROMPT;
-  }
-  const question = getStageQuestion(nextStage, fields, callerPhone) ?? session.current_question;
-  if (question) {
-    return `I didn't catch that. ${question}`;
-  }
-  return NO_INPUT_FOLLOW_UP_PROMPT;
+  return getRealtimeNextMissingStage(fields) === "full_name";
 }
-function buildResumeReply(fields, callerPhone, session, prefix) {
-  const stage = getNextMissingStage(fields ?? {});
-  const question = getStageQuestion(stage, fields ?? {}, callerPhone) ?? session.current_question ?? "Let's keep going.";
-  return buildCombinedResponse([prefix], question);
-}
-async function processCallerTurn(input) {
-  const {
-    callSid,
-    callerPhone,
-    speechResult,
-    speechConfidence,
-    attempt,
-    isInitial
-  } = input;
+async function processRealtimeCallerTurn(input) {
+  const { callSid, callerPhone, speechResult, endingPhase } = input;
   let session = input.session;
-  let nameConfirmationRequested = false;
-  let nameCorrected = false;
-  if (!speechResult.trim()) {
-    if (callSid) {
-      await updateCallSession({
-        callSid,
-        attemptCount: attempt
-      });
-    }
-    if (attempt >= MAX_SPEECH_NO_INPUT_ATTEMPTS) {
-      if (callSid) {
-        await completeCallSession(callSid, "failed");
-      }
-      return {
-        kind: "speak_hangup",
-        replyText: NO_INPUT_GOODBYE,
-        session,
-        completionStatus: "failed"
-      };
-    }
-    return {
-      kind: "speak_continue",
-      replyText: getNoInputRetryPrompt(session, callerPhone, isInitial),
-      session,
-      gatherStage: session ? getEffectiveGatherStage(session.collected_fields ?? {}) : null
-    };
-  }
   if (isGoodbyePhrase(speechResult)) {
     if (callSid) {
       await completeCallSession(callSid, "completed");
     }
     return {
-      kind: "speak_hangup",
-      replyText: CALLER_GOODBYE,
+      replyText: "Thanks for calling Beau's Roofing \u2014 have a great day.",
+      hangup: true,
+      hangupAfterMark: true,
       session,
-      completionStatus: "completed"
+      nextEndingPhase: "none"
     };
   }
   if (!session || !callSid) {
     return {
-      kind: "speak_continue",
-      replyText: "I'm having a little trouble on my end. What's going on with the roof?",
-      session
+      replyText: "What's going on with the roof?",
+      hangup: false,
+      hangupAfterMark: false,
+      session,
+      nextEndingPhase: "none"
     };
   }
   const fieldsBefore = session.collected_fields ?? {};
-  const priorPhrases = getRecentAssistantPhrases(session.transcript);
-  const turnIndex = session.transcript?.length ?? 0;
-  if (isInterruptionPause(speechResult)) {
-    const reply2 = buildInterruptionResume(session.current_question);
-    await updateCallSession({
-      callSid,
-      transcriptEntry: createTranscriptEntry("caller", speechResult)
-    });
-    await updateCallSession({
-      callSid,
-      transcriptEntry: createTranscriptEntry("assistant", reply2)
-    });
-    return { kind: "speak_continue", replyText: reply2, session };
-  }
-  if (isAwaitingSummaryConfirmation(fieldsBefore)) {
-    const awaitingEditValue = isAwaitingSummaryEditValue(fieldsBefore);
-    if (!awaitingEditValue && (isConfirmationPhrase(speechResult) || isPostEditAffirmation(speechResult)) && !hasCorrectionIntent(speechResult)) {
-      const reply3 = buildConfirmedGoodbye();
-      await updateCallSession({
-        callSid,
-        collectedFields: clearSummaryEditState({
-          ...fieldsBefore,
-          summary_confirmed: true
-        }),
-        transcriptEntry: createTranscriptEntry("caller", speechResult)
-      });
-      await updateCallSession({
-        callSid,
-        transcriptEntry: createTranscriptEntry("assistant", reply3)
-      });
-      await completeCallSession(callSid, "completed");
-      return {
-        kind: "speak_hangup",
-        replyText: reply3,
-        session,
-        completionStatus: "completed"
-      };
+  if (endingPhase === "anything_else") {
+    let updatedFields2 = fieldsBefore;
+    if (!isAnythingElseDeclined(speechResult)) {
+      updatedFields2 = appendAnythingElseNotes(fieldsBefore, speechResult);
     }
-    const editOutcome = processSummaryEdit(
-      fieldsBefore,
-      speechResult,
-      callerPhone
-    );
-    if (editOutcome.status === "updated") {
-      const updatedFields2 = clearSummaryEditState(editOutcome.fields);
-      const reply3 = buildSummaryFieldsUpdateReply(
-        updatedFields2,
-        editOutcome.updatedFields
-      );
-      await updateCallSession({
-        callSid,
-        collectedFields: updatedFields2,
-        currentQuestion: getPostEditConfirmationPrompt(),
-        transcriptEntry: createTranscriptEntry("caller", speechResult)
-      });
-      await updateCallSession({
-        callSid,
-        transcriptEntry: createTranscriptEntry("assistant", reply3)
-      });
-      return { kind: "speak_continue", replyText: reply3, session };
-    }
-    if (editOutcome.status === "awaiting_value") {
-      const reply3 = buildSummaryEditValuePrompt(editOutcome.target);
-      await updateCallSession({
-        callSid,
-        collectedFields: editOutcome.fields,
-        currentQuestion: reply3,
-        transcriptEntry: createTranscriptEntry("caller", speechResult)
-      });
-      await updateCallSession({
-        callSid,
-        transcriptEntry: createTranscriptEntry("assistant", reply3)
-      });
-      return { kind: "speak_continue", replyText: reply3, session };
-    }
-    if (!awaitingEditValue && isSummaryChangeDeclined(speechResult)) {
-      const reply3 = "What would you like to change?";
-      await updateCallSession({
-        callSid,
-        collectedFields: clearSummaryEditState(fieldsBefore),
-        currentQuestion: reply3,
-        transcriptEntry: createTranscriptEntry("caller", speechResult)
-      });
-      await updateCallSession({
-        callSid,
-        transcriptEntry: createTranscriptEntry("assistant", reply3)
-      });
-      return { kind: "speak_continue", replyText: reply3, session };
-    }
-    const reply2 = awaitingEditValue ? buildSummaryEditValuePrompt(
-      fieldsBefore.summary_edit_target
-    ) : getSummaryConfirmationPrompt();
-    await updateCallSession({
-      callSid,
-      currentQuestion: reply2,
-      transcriptEntry: createTranscriptEntry("caller", speechResult)
-    });
-    await updateCallSession({
-      callSid,
-      transcriptEntry: createTranscriptEntry("assistant", reply2)
-    });
-    return { kind: "speak_continue", replyText: reply2, session };
-  }
-  const faqTopic = detectFaqTopic(speechResult);
-  if (faqTopic && isLikelyFaqOnly(speechResult)) {
-    const reply2 = buildResumeReply(
-      fieldsBefore,
-      callerPhone,
+    const reply2 = buildRealtimeClosingMessage(updatedFields2);
+    await completeCallSession(callSid, "completed");
+    session = await persistTurn(callSid, {
+      collectedFields: updatedFields2,
+      currentQuestion: null,
+      callerSpeech: speechResult,
+      assistantReply: reply2
+    }) ?? session;
+    return {
+      replyText: reply2,
+      hangup: true,
+      hangupAfterMark: true,
       session,
-      buildFaqResponse(faqTopic)
-    );
-    await updateCallSession({
-      callSid,
-      transcriptEntry: createTranscriptEntry("caller", speechResult)
-    });
-    await updateCallSession({
-      callSid,
-      transcriptEntry: createTranscriptEntry("assistant", reply2)
-    });
-    return { kind: "speak_continue", replyText: reply2, session };
-  }
-  if (detectSmallTalk(speechResult)) {
-    const reply2 = buildResumeReply(
-      fieldsBefore,
-      callerPhone,
-      session,
-      buildSmallTalkResponse(speechResult)
-    );
-    await updateCallSession({
-      callSid,
-      transcriptEntry: createTranscriptEntry("caller", speechResult)
-    });
-    await updateCallSession({
-      callSid,
-      transcriptEntry: createTranscriptEntry("assistant", reply2)
-    });
-    return { kind: "speak_continue", replyText: reply2, session };
+      nextEndingPhase: "none"
+    };
   }
   if (isNameCaptureTurn(fieldsBefore)) {
     const nameOutcome = processNameCaptureTurn({
       fields: fieldsBefore,
-      speech: speechResult,
-      confidence: parseSpeechConfidence(speechConfidence)
+      speech: speechResult
     });
-    nameConfirmationRequested = nameOutcome.nameConfirmationRequested;
-    nameCorrected = nameOutcome.nameCorrected;
     if (nameOutcome.status === "confirm" || nameOutcome.status === "repeat") {
       session = await persistTurn(callSid, {
         collectedFields: nameOutcome.fields,
         currentQuestion: nameOutcome.replyText,
         callerSpeech: speechResult,
-        assistantReply: nameOutcome.replyText,
-        attemptCount: 1
+        assistantReply: nameOutcome.replyText
       }) ?? session;
       return {
-        kind: "speak_continue",
         replyText: nameOutcome.replyText,
+        hangup: false,
+        hangupAfterMark: false,
         session,
-        nameConfirmationRequested,
-        nameCorrected,
-        gatherStage: "full_name"
+        nextEndingPhase: "none"
       };
     }
     const confirmedFields = nameOutcome.fields;
-    const answeredStage2 = "full_name";
-    const nextStage2 = getNextMissingStage(confirmedFields);
+    const nextStage2 = getRealtimeNextMissingStage(confirmedFields);
     if (nextStage2 === "wrap_up") {
-      const summary = buildWrapUpSummary(confirmedFields);
       session = await persistTurn(callSid, {
-        collectedFields: {
-          ...confirmedFields,
-          summary_delivered: true
-        },
-        currentQuestion: getSummaryConfirmationPrompt(),
+        collectedFields: confirmedFields,
+        currentQuestion: REALTIME_ANYTHING_ELSE_QUESTION,
         callerSpeech: speechResult,
-        assistantReply: summary
+        assistantReply: REALTIME_ANYTHING_ELSE_QUESTION
       }) ?? session;
       return {
-        kind: "speak_continue",
-        replyText: summary,
+        replyText: REALTIME_ANYTHING_ELSE_QUESTION,
+        hangup: false,
+        hangupAfterMark: false,
         session,
-        nameConfirmationRequested,
-        nameCorrected,
-        gatherStage: "wrap_up"
+        nextEndingPhase: "anything_else"
       };
     }
-    const reply2 = buildIntakeResponse(confirmedFields, answeredStage2, {
-      callerPhone,
-      turnIndex,
-      fieldsBefore,
-      callerAnswer: speechResult,
-      priorPhrases
-    });
+    const reply2 = buildRealtimeIntakeReply(
+      "Thanks.",
+      getRealtimeStageQuestion(nextStage2, confirmedFields, callerPhone)
+    );
     session = await persistTurn(callSid, {
       collectedFields: confirmedFields,
-      currentQuestion: getStageQuestion(nextStage2, confirmedFields, callerPhone),
+      currentQuestion: getRealtimeStageQuestion(nextStage2, confirmedFields, callerPhone),
       callerSpeech: speechResult,
       assistantReply: reply2
     }) ?? session;
     return {
-      kind: "speak_continue",
       replyText: reply2,
+      hangup: false,
+      hangupAfterMark: false,
       session,
-      nameConfirmationRequested,
-      nameCorrected,
-      gatherStage: nextStage2
+      nextEndingPhase: "none"
     };
   }
-  const answeredStage = getNextMissingStage(fieldsBefore);
-  let updatedFields = mergeCallerAnswer(
-    fieldsBefore,
-    speechResult,
-    callerPhone
-  );
+  const answeredStage = getRealtimeNextMissingStage(fieldsBefore);
+  let updatedFields = mergeRealtimeCallerAnswer(fieldsBefore, speechResult, callerPhone);
   if (detectEmergency(speechResult) && !updatedFields.emergency_acknowledged) {
     updatedFields = {
       ...updatedFields,
@@ -4029,45 +3440,43 @@ async function processCallerTurn(input) {
       emergency_acknowledged: true
     };
   }
-  const nextStage = getNextMissingStage(updatedFields);
-  if (nextStage === "wrap_up") {
-    const summary = buildWrapUpSummary(updatedFields);
+  if (isRealtimeIntakeComplete(updatedFields)) {
     session = await persistTurn(callSid, {
-      collectedFields: {
-        ...updatedFields,
-        summary_delivered: true
-      },
-      currentQuestion: getSummaryConfirmationPrompt(),
+      collectedFields: updatedFields,
+      currentQuestion: REALTIME_ANYTHING_ELSE_QUESTION,
       callerSpeech: speechResult,
-      assistantReply: summary,
-      attemptCount: 1
+      assistantReply: REALTIME_ANYTHING_ELSE_QUESTION
     }) ?? session;
     return {
-      kind: "speak_continue",
-      replyText: summary,
+      replyText: REALTIME_ANYTHING_ELSE_QUESTION,
+      hangup: false,
+      hangupAfterMark: false,
       session,
-      gatherStage: "wrap_up"
+      nextEndingPhase: "anything_else"
     };
   }
-  const reply = buildIntakeResponse(updatedFields, answeredStage, {
-    callerPhone,
-    turnIndex,
-    fieldsBefore,
-    callerAnswer: speechResult,
-    priorPhrases
-  });
+  const nextStage = getRealtimeNextMissingStage(updatedFields);
+  const ack = answeredStage !== "wrap_up" ? buildRealtimeAcknowledgement(
+    answeredStage,
+    speechResult,
+    updatedFields
+  ) : null;
+  const reply = buildRealtimeIntakeReply(
+    ack,
+    getRealtimeStageQuestion(nextStage, updatedFields, callerPhone)
+  );
   session = await persistTurn(callSid, {
     collectedFields: updatedFields,
-    currentQuestion: getStageQuestion(nextStage, updatedFields, callerPhone),
+    currentQuestion: getRealtimeStageQuestion(nextStage, updatedFields, callerPhone),
     callerSpeech: speechResult,
-    assistantReply: reply,
-    attemptCount: 1
+    assistantReply: reply
   }) ?? session;
   return {
-    kind: "speak_continue",
     replyText: reply,
+    hangup: false,
+    hangupAfterMark: false,
     session,
-    gatherStage: nextStage
+    nextEndingPhase: "none"
   };
 }
 
@@ -4077,10 +3486,9 @@ var SessionOrchestrator = class {
     this.context = context;
   }
   session = null;
-  attempt = 1;
-  isInitial = true;
   processingTurn = false;
   pendingTranscript = null;
+  endingPhase = "none";
   async initialize() {
     try {
       this.session = await ensureCallSessionForTwilioCall({
@@ -4091,8 +3499,8 @@ var SessionOrchestrator = class {
       if (this.session) {
         await updateCallSession({
           callSid: this.context.callSid,
-          currentQuestion: OPENING_QUESTION,
-          transcriptEntry: createTranscriptEntry("assistant", OPENING_GREETING)
+          currentQuestion: REALTIME_OPENING_QUESTION,
+          transcriptEntry: createTranscriptEntry("assistant", REALTIME_OPENING_GREETING)
         });
       }
     } catch (error) {
@@ -4102,7 +3510,7 @@ var SessionOrchestrator = class {
       callSid: this.context.callSid,
       hasSession: Boolean(this.session)
     });
-    return OPENING_GREETING;
+    return REALTIME_OPENING_GREETING;
   }
   async handleCallerTranscript(transcript) {
     const trimmed = transcript.trim();
@@ -4118,26 +3526,26 @@ var SessionOrchestrator = class {
       if (!this.session) {
         this.session = await getCallSessionBySid(this.context.callSid);
       }
-      const outcome = await processCallerTurn({
+      const outcome = await processRealtimeCallerTurn({
         session: this.session,
         callSid: this.context.callSid,
         callerPhone: this.context.callerPhone,
         speechResult: trimmed,
-        attempt: this.attempt,
-        isInitial: this.isInitial
+        endingPhase: this.endingPhase
       });
       this.session = outcome.session;
-      this.isInitial = false;
-      this.attempt = 1;
+      this.endingPhase = outcome.nextEndingPhase;
       return {
         replyText: outcome.replyText,
-        hangup: outcome.kind === "speak_hangup"
+        hangup: outcome.hangup,
+        hangupAfterMark: outcome.hangupAfterMark
       };
     } catch (error) {
       logError("turn_processing_failed", { callSid: this.context.callSid }, error);
       return {
-        replyText: "I'm having a little trouble on my end. Could you repeat that for me?",
-        hangup: false
+        replyText: "Sorry, I missed that \u2014 could you say it again?",
+        hangup: false,
+        hangupAfterMark: false
       };
     } finally {
       this.processingTurn = false;
@@ -4154,6 +3562,7 @@ var SessionOrchestrator = class {
 };
 
 // src/bridge/call-bridge.ts
+var CLOSING_MARK_NAME = "closing-final";
 var CallBridge = class {
   constructor(params) {
     this.params = params;
@@ -4167,8 +3576,12 @@ var CallBridge = class {
   callTimeout = null;
   orchestrator = null;
   playbackTracker = new PlaybackTracker();
+  callTiming = new CallTimingTracker();
   openAi = null;
   bargeIn = null;
+  openingGreetingSent = false;
+  awaitingClosingMark = false;
+  activeResponseUsesClosingMark = false;
   start() {
     logInfo("twilio_stream_connected");
     this.params.twilioSocket.on("message", (data) => {
@@ -4202,7 +3615,7 @@ var CallBridge = class {
         this.handleStreamMedia(event.media.payload);
         break;
       case "mark":
-        logInfo("twilio_mark_received", { mark: event.mark.name });
+        this.handleTwilioMark(event.mark.name);
         break;
       case "stop":
         logInfo("twilio_stream_stopped");
@@ -4228,6 +3641,7 @@ var CallBridge = class {
       this.sendTwilioClose();
       return;
     }
+    this.callTiming.record("twilio_stream_started", start.callSid);
     logInfo("twilio_stream_started", {
       callSid: start.callSid,
       streamSid: start.streamSid
@@ -4258,13 +3672,29 @@ var CallBridge = class {
       this.cleanup("max_call_duration");
     }, this.params.config.maxCallDurationSeconds * 1e3);
     try {
-      await this.openAi.connect();
-      const openingLine = await this.orchestrator.initialize();
-      this.openAi.speakExactText(openingLine);
+      const connectPromise = this.openAi.connect().then(() => {
+        this.callTiming.record("openai_connected", this.callSid ?? void 0);
+      });
+      const initPromise = this.orchestrator.initialize();
+      const sessionReadyPromise = connectPromise.then(
+        () => this.openAi.waitForSessionReady()
+      );
+      const [openingLine] = await Promise.all([initPromise, sessionReadyPromise]);
+      this.maybeSendOpeningGreeting(openingLine);
     } catch (error) {
       logError("stream_start_setup_failed", { callSid: start.callSid }, error);
       this.cleanup("stream_start_setup_failed");
     }
+  }
+  maybeSendOpeningGreeting(openingLine) {
+    if (this.openingGreetingSent || !this.openAi) {
+      return;
+    }
+    this.openingGreetingSent = true;
+    this.callTiming.record("opening_response_requested", this.callSid ?? void 0);
+    this.playbackTracker.reset();
+    this.activeResponseUsesClosingMark = false;
+    this.openAi.speakExactText(openingLine);
   }
   handleStreamMedia(payload) {
     if (!payload || !this.openAi) {
@@ -4275,7 +3705,9 @@ var CallBridge = class {
   handleOpenAiEvent(event) {
     switch (event.type) {
       case "session.created":
+        break;
       case "session.updated":
+        this.callTiming.record("openai_session_ready", this.callSid ?? void 0);
         logInfo("openai_session_ready", { type: event.type });
         break;
       case "input_audio_buffer.speech_started":
@@ -4297,13 +3729,19 @@ var CallBridge = class {
         }
         break;
       }
-      case "response.audio.delta": {
+      case "response.output_audio.delta": {
         const delta = String(event.delta ?? "");
         this.forwardAssistantAudio(delta);
         break;
       }
-      case "response.audio.done":
-        logInfo("response_audio_done");
+      case "response.output_audio.done":
+        logInfo("response_output_audio_done");
+        if (this.awaitingClosingMark && this.streamSid) {
+          this.sendTwilioJson(
+            buildTwilioMarkMessage(this.streamSid, CLOSING_MARK_NAME)
+          );
+          this.awaitingClosingMark = false;
+        }
         break;
       case "response.done":
         this.bargeIn?.handleResponseCompleted();
@@ -4311,6 +3749,7 @@ var CallBridge = class {
       case "response.cancelled":
       case "response.canceled":
         this.bargeIn?.handleResponseCancelled();
+        this.awaitingClosingMark = false;
         break;
       case "error":
         logError("openai_event_error", {
@@ -4337,9 +3776,11 @@ var CallBridge = class {
       return;
     }
     this.playbackTracker.reset();
+    this.activeResponseUsesClosingMark = result.hangupAfterMark;
+    this.awaitingClosingMark = result.hangupAfterMark;
     this.openAi.speakExactText(result.replyText);
-    if (result.hangup) {
-      setTimeout(() => this.cleanup("call_completed"), 1500);
+    if (result.hangup && !result.hangupAfterMark) {
+      this.cleanup("call_completed");
     }
   }
   forwardAssistantAudio(base64Audio) {
@@ -4351,13 +3792,23 @@ var CallBridge = class {
     this.sendTwilioJson(
       buildTwilioMediaMessage(this.streamSid, base64Audio)
     );
-    this.markCounter += 1;
-    this.sendTwilioJson(
-      buildTwilioMarkMessage(
-        this.streamSid,
-        `assistant-${this.markCounter}`
-      )
-    );
+    this.callTiming.record("first_audio_sent_to_twilio", this.callSid ?? void 0);
+    if (!this.activeResponseUsesClosingMark) {
+      this.markCounter += 1;
+      this.sendTwilioJson(
+        buildTwilioMarkMessage(
+          this.streamSid,
+          `assistant-${this.markCounter}`
+        )
+      );
+    }
+  }
+  handleTwilioMark(name) {
+    logInfo("twilio_mark_received", { mark: name });
+    if (name === CLOSING_MARK_NAME) {
+      logInfo("closing_mark_played", { callSid: this.callSid ?? void 0 });
+      this.cleanup("call_completed");
+    }
   }
   sendTwilioJson(payload) {
     if (this.closed || this.params.twilioSocket.readyState !== this.params.twilioSocket.OPEN) {

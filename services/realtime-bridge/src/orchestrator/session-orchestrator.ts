@@ -7,7 +7,7 @@ import {
   type CallSession,
   updateCallSession,
 } from "../../../../lib/call-sessions.js";
-import { OPENING_QUESTION } from "../../../../lib/twilio/helpers.js";
+import { OPENING_QUESTION } from "../../../../lib/twilio/voice-phrases.js";
 import { logError, logInfo } from "../logger.js";
 
 export type OrchestratorContext = {

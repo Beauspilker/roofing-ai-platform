@@ -203,9 +203,9 @@ test("only one active assistant response maximum", () => {
 
 test("turn timing exposes speech stopped to first audio delay", () => {
   const tracker = new TurnTimingTracker();
-  tracker.beginTurn("CA123");
-  tracker.record("speech_stopped", "CA123");
-  tracker.record("first_audio_received", "CA123");
+  tracker.beginTurn("CA123", 1);
+  tracker.record("speech_stopped", "CA123", { turnId: 1 });
+  tracker.record("first_audio_received", "CA123", { turnId: 1 });
   assert.equal(tracker.getSpeechStoppedToFirstAudioMs(), 0);
 });
 

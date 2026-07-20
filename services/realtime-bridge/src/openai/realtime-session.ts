@@ -15,10 +15,13 @@ const REALTIME_INSTRUCTIONS =
 
 export function buildRealtimeSessionUpdate(voice: string, config?: BridgeConfig) {
   const silenceDurationMs = Math.min(
-    800,
-    Math.max(650, config?.turnDetectionSilenceDurationMs ?? 750),
+    700,
+    Math.max(500, config?.turnDetectionSilenceDurationMs ?? 600),
   );
-  const prefixPaddingMs = config?.turnDetectionPrefixPaddingMs ?? 200;
+  const prefixPaddingMs = Math.min(
+    300,
+    Math.max(200, config?.turnDetectionPrefixPaddingMs ?? 250),
+  );
   const threshold = Number.isFinite(config?.turnDetectionThreshold)
     ? config!.turnDetectionThreshold
     : 0.5;

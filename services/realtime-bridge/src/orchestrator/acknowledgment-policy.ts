@@ -5,7 +5,6 @@ const CONTEXT_ACKNOWLEDGMENTS: Record<string, readonly string[]> = {
   insurance_claim_started: ["That helps.", "Okay."],
   adjuster_contacted: ["That helps.", "Thanks for clarifying."],
   appointment_preference: ["All right.", "Okay."],
-  photos_available: ["Thanks.", "Understood."],
   default: ["Thank you.", "All right.", "That helps.", "Okay."],
 } as const;
 

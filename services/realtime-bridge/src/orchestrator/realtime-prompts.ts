@@ -129,18 +129,6 @@ function spokenLeakSummary(fields: RealtimeFields): string | null {
   return null;
 }
 
-function spokenPhotosSummary(fields: RealtimeFields): string | null {
-  if (fields.photos_available === true) {
-    return "you have photos available";
-  }
-
-  if (fields.photos_available === false) {
-    return "you don't have photos yet";
-  }
-
-  return null;
-}
-
 export function buildStructuredSpokenSummary(fields: RealtimeFields): string {
   const { summary, issues } = buildValidatedSpokenSummary(fields);
 

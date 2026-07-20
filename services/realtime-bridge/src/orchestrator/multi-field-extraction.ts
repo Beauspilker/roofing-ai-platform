@@ -15,11 +15,6 @@ import {
   validateCallerNameCandidate,
 } from "./field-validation.js";
 import { isCallerNameResolved } from "./required-intake.js";
-import {
-  applyPhotosPendingAnswer,
-  isPhotosFieldComplete,
-  parsePhotosAnswerWhenPending,
-} from "./photos-field.js";
 import { preserveConfirmedFieldState } from "./safe-field-merge.js";
 import type { PendingQuestionKey } from "./pending-question.js";
 import {
@@ -53,26 +48,6 @@ function extractAdjusterContact(speech: string, pending: PendingQuestionKey | nu
   }
 
   if (/\badjuster\b/i.test(speech)) {
-    return parseExplicitBoolean(speech);
-  }
-
-  return null;
-}
-
-function extractPhotosAvailable(
-  speech: string,
-  pending: PendingQuestionKey | null,
-): RealtimeFields["photos_available"] | null {
-  const pendingAnswer = parsePhotosAnswerWhenPending(speech, pending);
-  if (pendingAnswer !== null) {
-    return pendingAnswer;
-  }
-
-  if (allowsBooleanDirectAnswer(pending, "photos_available")) {
-    return parseExplicitBoolean(speech);
-  }
-
-  if (/\b(photo|picture|image)s?\b/i.test(speech)) {
     return parseExplicitBoolean(speech);
   }
 
@@ -149,38 +124,25 @@ export function extractAllFieldsFromTranscript(
     extracted.address = address;
   }
 
-  const callbackPhone =
-    pendingQuestion === "photos_available"
-      ? null
-      : extractCallbackPhoneFromSpeech(trimmed, callerPhone, {
-          allowAffirmativeReuse: allowsCallbackAffirmativeReuse(pendingQuestion),
-        });
+  const callbackPhone = extractCallbackPhoneFromSpeech(trimmed, callerPhone, {
+    allowAffirmativeReuse: allowsCallbackAffirmativeReuse(pendingQuestion),
+  });
 
   if (callbackPhone) {
     extracted.callback_phone = callbackPhone;
   }
 
-  const insurance =
-    pendingQuestion === "photos_available" ? null : extractInsuranceClaim(trimmed, pendingQuestion);
+  const insurance = extractInsuranceClaim(trimmed, pendingQuestion);
   if (insurance !== null) {
     extracted.insurance_claim_started = insurance;
   }
 
-  const adjuster =
-    pendingQuestion === "photos_available"
-      ? null
-      : extractAdjusterContact(trimmed, pendingQuestion);
+  const adjuster = extractAdjusterContact(trimmed, pendingQuestion);
   if (adjuster !== null) {
     extracted.adjuster_contacted = adjuster;
   }
 
-  const photos = extractPhotosAvailable(trimmed, pendingQuestion);
-  if (photos !== null) {
-    extracted.photos_available = photos;
-  }
-
-  const leak =
-    pendingQuestion === "photos_available" ? null : extractActiveLeak(trimmed, pendingQuestion);
+  const leak = extractActiveLeak(trimmed, pendingQuestion);
   if (leak !== null) {
     extracted.emergency_or_active_leak = leak;
   }
@@ -242,13 +204,6 @@ export function mergeExtractedFields(
 
   if (extracted.adjuster_contacted !== undefined && extracted.adjuster_contacted !== null) {
     updated.adjuster_contacted = extracted.adjuster_contacted;
-  }
-
-  if (extracted.photos_available !== undefined && extracted.photos_available !== null) {
-    if (!isPhotosFieldComplete(updated)) {
-      updated.photos_available = extracted.photos_available;
-      updated.pending_question = undefined;
-    }
   }
 
   if (
@@ -340,10 +295,6 @@ export function applyPendingQuestionAnswer(
         }
       }
       break;
-    case "photos_available": {
-      updated = applyPhotosPendingAnswer(updated, trimmed, pendingQuestion);
-      break;
-    }
     case "insurance_claim":
     case "adjuster_contacted":
     case "active_leak": {

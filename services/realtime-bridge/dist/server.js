@@ -34,11 +34,11 @@ function getConfig() {
     ),
     bargeInEnabled: isRealtimeBargeInEnabled(),
     turnDetectionSilenceDurationMs: Number.parseInt(
-      process.env.REALTIME_SILENCE_DURATION_MS ?? "750",
+      process.env.REALTIME_SILENCE_DURATION_MS ?? "600",
       10
     ),
     turnDetectionPrefixPaddingMs: Number.parseInt(
-      process.env.REALTIME_PREFIX_PADDING_MS ?? "200",
+      process.env.REALTIME_PREFIX_PADDING_MS ?? "250",
       10
     ),
     turnDetectionThreshold: Number.parseFloat(
@@ -269,31 +269,55 @@ var CallTimingTracker = class {
 // src/bridge/turn-timing.ts
 var TurnTimingTracker = class {
   turnStartedAt = null;
+  turnId = null;
   marks = /* @__PURE__ */ new Map();
   stageTotals = /* @__PURE__ */ new Map();
-  beginTurn(callSid) {
+  beginTurn(callSid, turnId) {
     this.turnStartedAt = Date.now();
+    this.turnId = turnId ?? null;
     this.marks.clear();
-    logInfo("turn_timing_reset", { callSid });
+    logInfo("turn_timing_reset", { callSid, turnId });
   }
-  record(milestone, callSid) {
+  getTurnId() {
+    return this.turnId;
+  }
+  isStaleTurn(turnId) {
+    if (turnId === null || turnId === void 0 || this.turnId === null) {
+      return false;
+    }
+    return turnId !== this.turnId;
+  }
+  hasFirstAudio() {
+    return this.marks.has("first_audio_received");
+  }
+  record(milestone, callSid, options = {}) {
+    if (this.isStaleTurn(options.turnId)) {
+      return;
+    }
     if (this.turnStartedAt === null) {
-      this.beginTurn(callSid);
+      this.beginTurn(callSid, options.turnId ?? void 0);
     }
     if (this.marks.has(milestone)) {
       return;
     }
     const now = Date.now();
     this.marks.set(milestone, now);
+    const speechStopped = this.marks.get("speech_stopped");
     logInfo("turn_timing", {
       callSid,
+      turnId: this.turnId,
       milestone,
       elapsedMs: now - (this.turnStartedAt ?? now),
+      elapsedFromSpeechStoppedMs: speechStopped !== void 0 ? now - speechStopped : void 0,
       caller_speech_stopped_at: this.marks.get("speech_stopped"),
       final_transcript_at: this.marks.get("transcript_completed"),
+      caller_turn_processed_at: this.marks.get("caller_turn_processed"),
       state_updated_at: this.marks.get("structured_state_updated"),
+      next_question_selected_at: this.marks.get("next_question_selected"),
       response_requested_at: this.marks.get("response_requested"),
-      first_audio_delta_at: this.marks.get("first_audio_received")
+      response_create_sent_at: this.marks.get("response_create_sent"),
+      first_audio_delta_at: this.marks.get("first_audio_received"),
+      first_audio_sent_to_twilio_at: this.marks.get("first_audio_sent_to_twilio")
     });
     if (milestone === "first_audio_sent_to_twilio") {
       this.recordStageSegments(callSid);
@@ -302,18 +326,22 @@ var TurnTimingTracker = class {
   recordStageSegments(callSid) {
     const speechStopped = this.marks.get("speech_stopped");
     const transcriptCompleted = this.marks.get("transcript_completed");
+    const callerTurnProcessed = this.marks.get("caller_turn_processed");
     const structuredUpdated = this.marks.get("structured_state_updated");
     const responseRequested = this.marks.get("response_requested");
+    const responseCreateSent = this.marks.get("response_create_sent");
     const firstReceived = this.marks.get("first_audio_received");
     const firstSent = this.marks.get("first_audio_sent_to_twilio");
-    if (speechStopped === void 0 || transcriptCompleted === void 0 || structuredUpdated === void 0 || responseRequested === void 0 || firstReceived === void 0 || firstSent === void 0) {
+    if (speechStopped === void 0 || transcriptCompleted === void 0 || callerTurnProcessed === void 0 || structuredUpdated === void 0 || responseRequested === void 0 || responseCreateSent === void 0 || firstReceived === void 0 || firstSent === void 0) {
       return;
     }
     const segments = [
       { stage: "speech_stopped_to_transcript", ms: transcriptCompleted - speechStopped },
-      { stage: "transcript_to_structured_state", ms: structuredUpdated - transcriptCompleted },
-      { stage: "structured_state_to_response_requested", ms: responseRequested - structuredUpdated },
-      { stage: "response_requested_to_first_audio", ms: firstReceived - responseRequested },
+      { stage: "transcript_to_turn_processed", ms: callerTurnProcessed - transcriptCompleted },
+      { stage: "turn_processed_to_state_updated", ms: structuredUpdated - callerTurnProcessed },
+      { stage: "state_updated_to_response_requested", ms: responseRequested - structuredUpdated },
+      { stage: "response_requested_to_create_sent", ms: responseCreateSent - responseRequested },
+      { stage: "response_create_to_first_audio", ms: firstReceived - responseCreateSent },
       { stage: "first_audio_to_twilio_send", ms: firstSent - firstReceived }
     ];
     for (const segment of segments) {
@@ -323,21 +351,15 @@ var TurnTimingTracker = class {
         count: existing.count + 1
       });
     }
-    const largest = segments.reduce(
-      (max, segment) => segment.ms > max.ms ? segment : max
-    );
-    const averages = Object.fromEntries(
-      [...this.stageTotals.entries()].map(([stage, stats]) => [
-        stage,
-        Math.round(stats.totalMs / stats.count)
-      ])
-    );
-    logInfo("turn_timing_largest_delay", {
+    const speechStoppedToFirstAudioMs = firstReceived - speechStopped;
+    logInfo("turn_timing_summary", {
       callSid,
-      stage: largest.stage,
-      delayMs: largest.ms,
-      speechStoppedToFirstAudioMs: firstReceived !== void 0 && speechStopped !== void 0 ? firstReceived - speechStopped : void 0,
-      stageAveragesMs: averages
+      turnId: this.turnId,
+      speechStoppedToFirstAudioMs,
+      speechStoppedToTranscriptMs: transcriptCompleted - speechStopped,
+      transcriptToResponseCreateMs: responseCreateSent - transcriptCompleted,
+      responseCreateToFirstAudioMs: firstReceived - responseCreateSent,
+      stageAveragesMs: this.getStageAveragesMs()
     });
   }
   getStageAveragesMs() {
@@ -384,6 +406,8 @@ var ResponseStateGuard = class {
   awaitingClosingMark = false;
   assistantAudioPending = false;
   lastTranscriptItemId = null;
+  activeTurnId = 0;
+  responseTurnId = null;
   canTriggerResponse(reason) {
     if (this.activeResponse) {
       this.logBlocked(reason, "active_response");
@@ -407,13 +431,36 @@ var ResponseStateGuard = class {
     }
     return true;
   }
-  recordTrigger(reason) {
-    logInfo("response_trigger", { reason });
+  beginCallerTurn(turnId) {
+    this.activeTurnId = turnId;
+    this.callerTurnReady = false;
+  }
+  getActiveTurnId() {
+    return this.activeTurnId;
+  }
+  getResponseTurnId() {
+    return this.responseTurnId;
+  }
+  isStaleTurn(turnId) {
+    if (turnId === null || turnId === void 0) {
+      return false;
+    }
+    return turnId !== this.activeTurnId;
+  }
+  isStaleResponseAudio(turnId) {
+    if (this.responseTurnId === null || turnId === null || turnId === void 0) {
+      return false;
+    }
+    return turnId !== this.responseTurnId;
+  }
+  recordTrigger(reason, turnId) {
+    logInfo("response_trigger", { reason, turnId: turnId ?? this.activeTurnId });
     this.activeResponse = true;
     this.clientInitiatedResponse = true;
     this.callerTurnReady = false;
     this.waitingForCaller = false;
     this.assistantAudioPending = true;
+    this.responseTurnId = turnId ?? this.activeTurnId;
   }
   onExternalResponseCreated() {
     if (this.activeResponse && this.clientInitiatedResponse) {
@@ -439,6 +486,7 @@ var ResponseStateGuard = class {
     this.waitingForCaller = true;
     this.callerTurnReady = false;
     this.assistantAudioPending = false;
+    this.responseTurnId = null;
   }
   onResponseCancelled() {
     this.releaseActiveResponse({ waitingForCaller: true });
@@ -457,6 +505,7 @@ var ResponseStateGuard = class {
     this.activeResponse = false;
     this.clientInitiatedResponse = false;
     this.assistantAudioPending = false;
+    this.responseTurnId = null;
     if (options.waitingForCaller !== void 0) {
       this.waitingForCaller = options.waitingForCaller;
     }
@@ -525,10 +574,13 @@ var REALTIME_DELIVERY_INSTRUCTIONS = "Professional, calm, confident, lower-pitch
 var REALTIME_INSTRUCTIONS = `${REALTIME_DELIVERY_INSTRUCTIONS} You are the live phone receptionist for Beau's Roofing. Deliver exactly one short script per turn. Never ask more than one question. Never invent intake questions or confirm details that were not provided by the server.`;
 function buildRealtimeSessionUpdate(voice, config2) {
   const silenceDurationMs = Math.min(
-    800,
-    Math.max(650, config2?.turnDetectionSilenceDurationMs ?? 750)
+    700,
+    Math.max(500, config2?.turnDetectionSilenceDurationMs ?? 600)
   );
-  const prefixPaddingMs = config2?.turnDetectionPrefixPaddingMs ?? 200;
+  const prefixPaddingMs = Math.min(
+    300,
+    Math.max(200, config2?.turnDetectionPrefixPaddingMs ?? 250)
+  );
   const threshold = Number.isFinite(config2?.turnDetectionThreshold) ? config2.turnDetectionThreshold : 0.5;
   return {
     type: "session.update",
@@ -2728,7 +2780,6 @@ var CONTEXT_ACKNOWLEDGMENTS = {
   insurance_claim_started: ["That helps.", "Okay."],
   adjuster_contacted: ["That helps.", "Thanks for clarifying."],
   appointment_preference: ["All right.", "Okay."],
-  photos_available: ["Thanks.", "Understood."],
   default: ["Thank you.", "All right.", "That helps.", "Okay."]
 };
 var CLOSING_PHRASES = [
@@ -3113,12 +3164,6 @@ function extractCallbackPhoneFromSpeech(speech, callerPhone, options = {}) {
 }
 
 // src/orchestrator/photos-field.ts
-function isPhotosResolved(value) {
-  return value === true || value === false || value === "unknown" || value === "declined";
-}
-function isPhotosFieldComplete(fields) {
-  return isPhotosResolved(normalizePhotosValue(fields.photos_available));
-}
 function normalizePhotosValue(value) {
   if (value === true || value === false || value === "unknown" || value === "declined") {
     return value;
@@ -3137,54 +3182,6 @@ function normalizePhotosValue(value) {
   }
   if (value === null || value === void 0) {
     return null;
-  }
-  return null;
-}
-function parsePhotosAnswerWhenPending(speech, pendingQuestion) {
-  if (pendingQuestion !== "photos_available") {
-    return null;
-  }
-  const normalized = speech.trim().toLowerCase().replace(/[^\w\s']/g, " ").replace(/\s+/g, " ").trim();
-  if (!normalized) {
-    return null;
-  }
-  if (/\b(rather not say|prefer not|rather not|don't want to say|do not want to say|won't say|will not say)\b/.test(
-    normalized
-  )) {
-    return "declined";
-  }
-  if (/\b(not sure|unsure|don't know|do not know|maybe|uncertain)\b/.test(normalized)) {
-    return "unknown";
-  }
-  if (/^(yes|yeah|yep|yup|sure|correct|right|i do|i have|i've got|we do|we have|i have some|we have some)\b/.test(
-    normalized
-  ) || /\b(i have (some )?(photos|pictures|images)|got (some )?(photos|pictures|images))\b/.test(
-    normalized
-  )) {
-    return true;
-  }
-  if (/^(no|nope|nah|none|don't|dont|i don't|i dont|we don't|we dont|not really)\b/.test(normalized)) {
-    return false;
-  }
-  if (/\b(no photos|no pictures|don't have|dont have|haven't taken|havent taken)\b/.test(normalized)) {
-    return false;
-  }
-  return null;
-}
-function applyPhotosPendingAnswer(fields, speech, pendingQuestion) {
-  const parsed = parsePhotosAnswerWhenPending(speech, pendingQuestion);
-  if (parsed === null || isPhotosResolved(fields.photos_available)) {
-    return fields;
-  }
-  return {
-    ...fields,
-    photos_available: parsed,
-    pending_question: void 0
-  };
-}
-function photosAffirmativeAcknowledgment(value) {
-  if (value === true) {
-    return "Great. You'll be able to send those safely after the call.";
   }
   return null;
 }
@@ -3970,19 +3967,15 @@ function mapRequiredFieldToPending(field) {
       return "adjuster_contacted";
     case "appointment_preference":
       return "preferred_callback_time";
-    case "photos_available":
-      return "photos_available";
     default:
       return "call_reason";
   }
 }
 function isPendingQuestionKey(value) {
-  return value === "caller_name" || value === "callback_phone" || value === "callback_confirmation" || value === "service_address" || value === "address_confirmation" || value === "call_reason" || value === "photos_available" || value === "insurance_claim" || value === "adjuster_contacted" || value === "active_leak" || value === "urgency" || value === "preferred_callback_time" || value === "schedule_confirmation" || value === "additional_notes" || value === "summary_confirmation";
+  return value === "caller_name" || value === "callback_phone" || value === "callback_confirmation" || value === "service_address" || value === "address_confirmation" || value === "call_reason" || value === "insurance_claim" || value === "adjuster_contacted" || value === "active_leak" || value === "urgency" || value === "preferred_callback_time" || value === "schedule_confirmation" || value === "additional_notes" || value === "summary_confirmation";
 }
 function isStoredPendingQuestionStillValid(fields, pending) {
   switch (pending) {
-    case "photos_available":
-      return !isPhotosFieldComplete(fields);
     case "callback_confirmation":
       return needsCallbackConfirmation(fields);
     case "address_confirmation":
@@ -4073,17 +4066,19 @@ function allowsBooleanDirectAnswer(pendingQuestion, field) {
 }
 
 // src/orchestrator/required-intake.ts
+var BRANCH_FIELD_ORDER = [
+  "urgency",
+  "insurance_claim_started",
+  "adjuster_contacted",
+  "appointment_preference"
+];
 var REQUIRED_FIELD_ORDER = [
   "problem_description",
   "full_name",
   "callback_phone",
   "address",
   "emergency_or_active_leak",
-  "urgency",
-  "insurance_claim_started",
-  "adjuster_contacted",
-  "appointment_preference",
-  "photos_available"
+  ...BRANCH_FIELD_ORDER
 ];
 function hasValue3(value) {
   return typeof value === "string" && value.trim().length > 0;
@@ -4143,14 +4138,51 @@ function isFieldComplete(field, fields) {
       return !isStructuredBooleanUnset(fields.adjuster_contacted);
     case "appointment_preference":
       return isScheduleComplete(fields);
-    case "photos_available":
-      return isPhotosFieldComplete(fields);
     default:
       return false;
   }
 }
+function needsImmediateSafetyClarification(fields) {
+  if (!isStructuredBooleanUnset(fields.emergency_or_active_leak)) {
+    return false;
+  }
+  if (fields.emergency_acknowledged === true) {
+    return true;
+  }
+  const problem = fields.problem_description?.toLowerCase() ?? "";
+  return /\b(active leak|water (is )?((getting )?in|inside|pouring)|pouring in|flooding|emergency|collapse|structural damage|someone (is )?hurt|injured)\b/i.test(
+    problem
+  );
+}
+function collectMissingFieldsInPriorityOrder(fields) {
+  const missing = [];
+  if (!hasValue3(fields.problem_description)) {
+    missing.push("problem_description");
+  }
+  if (needsImmediateSafetyClarification(fields)) {
+    missing.push("emergency_or_active_leak");
+  }
+  if (!isCallerNameResolved(fields)) {
+    missing.push("full_name");
+  }
+  if (!isCallbackComplete(fields)) {
+    missing.push("callback_phone");
+  }
+  if (!isAddressConfirmed(fields)) {
+    missing.push("address");
+  }
+  if (!isFieldComplete("emergency_or_active_leak", fields) && !missing.includes("emergency_or_active_leak")) {
+    missing.push("emergency_or_active_leak");
+  }
+  for (const field of BRANCH_FIELD_ORDER) {
+    if (!isFieldComplete(field, fields)) {
+      missing.push(field);
+    }
+  }
+  return missing;
+}
 function getMissingRequiredFields(fields) {
-  return REQUIRED_FIELD_ORDER.filter((field) => !isFieldComplete(field, fields));
+  return collectMissingFieldsInPriorityOrder(fields);
 }
 function getSharedMissingFields(fields) {
   const missing = /* @__PURE__ */ new Set();
@@ -4169,7 +4201,7 @@ function isSharedIntakeComplete(fields) {
   return getSharedMissingFields(fields).length === 0;
 }
 function getNextRequiredField(fields) {
-  return getMissingRequiredFields(fields)[0] ?? null;
+  return collectMissingFieldsInPriorityOrder(fields)[0] ?? null;
 }
 var FIELD_QUESTIONS = {
   problem_description: "What's going on with the roof?",
@@ -4180,8 +4212,7 @@ var FIELD_QUESTIONS = {
   urgency: "How urgent is this?",
   insurance_claim_started: "Have you started an insurance claim?",
   adjuster_contacted: "Have you contacted your adjuster yet?",
-  appointment_preference: "What day and time would be best for the roofing team to contact you?",
-  photos_available: "Do you have photos of the damage?"
+  appointment_preference: "What day and time would be best for the roofing team to contact you?"
 };
 function getRequiredFieldQuestion(field, fields, callerPhone) {
   const firstName = fields.full_name?.trim().split(/\s+/)[0];
@@ -4200,8 +4231,7 @@ var CONTEXTUAL_TRANSITIONS = {
   urgency: "How urgent is this?",
   insurance_claim_started: "Have you started an insurance claim?",
   adjuster_contacted: "Have you contacted your adjuster yet?",
-  appointment_preference: "What day and time would be best for the roofing team to contact you?",
-  photos_available: "Do you have photos of the damage?"
+  appointment_preference: "What day and time would be best for the roofing team to contact you?"
 };
 function getNaturalTransitionQuestion(field, fields, callerPhone) {
   if (field === "callback_phone") {
@@ -4281,14 +4311,6 @@ function applyDirectAnswerToMissingField(fields, answer, callerPhone, pendingQue
       }
       break;
     }
-    case "photos_available": {
-      const parsed = parseExplicitBoolean(trimmed);
-      if (parsed !== null && !isPhotosFieldComplete(updated)) {
-        updated.photos_available = parsed;
-        updated.pending_question = void 0;
-      }
-      break;
-    }
     case "callback_phone":
       if (/^(yes|yeah|yep|correct|this one|that one|same number)\b/i.test(trimmed) && callerPhone) {
         updated.callback_phone = normalizeCallbackPhoneE164(callerPhone);
@@ -4337,19 +4359,6 @@ function extractAdjusterContact(speech, pending) {
     return parseExplicitBoolean(speech);
   }
   if (/\badjuster\b/i.test(speech)) {
-    return parseExplicitBoolean(speech);
-  }
-  return null;
-}
-function extractPhotosAvailable(speech, pending) {
-  const pendingAnswer = parsePhotosAnswerWhenPending(speech, pending);
-  if (pendingAnswer !== null) {
-    return pendingAnswer;
-  }
-  if (allowsBooleanDirectAnswer(pending, "photos_available")) {
-    return parseExplicitBoolean(speech);
-  }
-  if (/\b(photo|picture|image)s?\b/i.test(speech)) {
     return parseExplicitBoolean(speech);
   }
   return null;
@@ -4404,25 +4413,21 @@ function extractAllFieldsFromTranscript(speech, callerPhone, pendingQuestion = n
   if (address) {
     extracted.address = address;
   }
-  const callbackPhone = pendingQuestion === "photos_available" ? null : extractCallbackPhoneFromSpeech(trimmed, callerPhone, {
+  const callbackPhone = extractCallbackPhoneFromSpeech(trimmed, callerPhone, {
     allowAffirmativeReuse: allowsCallbackAffirmativeReuse(pendingQuestion)
   });
   if (callbackPhone) {
     extracted.callback_phone = callbackPhone;
   }
-  const insurance = pendingQuestion === "photos_available" ? null : extractInsuranceClaim(trimmed, pendingQuestion);
+  const insurance = extractInsuranceClaim(trimmed, pendingQuestion);
   if (insurance !== null) {
     extracted.insurance_claim_started = insurance;
   }
-  const adjuster = pendingQuestion === "photos_available" ? null : extractAdjusterContact(trimmed, pendingQuestion);
+  const adjuster = extractAdjusterContact(trimmed, pendingQuestion);
   if (adjuster !== null) {
     extracted.adjuster_contacted = adjuster;
   }
-  const photos = extractPhotosAvailable(trimmed, pendingQuestion);
-  if (photos !== null) {
-    extracted.photos_available = photos;
-  }
-  const leak = pendingQuestion === "photos_available" ? null : extractActiveLeak(trimmed, pendingQuestion);
+  const leak = extractActiveLeak(trimmed, pendingQuestion);
   if (leak !== null) {
     extracted.emergency_or_active_leak = leak;
   }
@@ -4462,12 +4467,6 @@ function mergeExtractedFields(fields, extracted) {
   }
   if (extracted.adjuster_contacted !== void 0 && extracted.adjuster_contacted !== null) {
     updated.adjuster_contacted = extracted.adjuster_contacted;
-  }
-  if (extracted.photos_available !== void 0 && extracted.photos_available !== null) {
-    if (!isPhotosFieldComplete(updated)) {
-      updated.photos_available = extracted.photos_available;
-      updated.pending_question = void 0;
-    }
   }
   if (extracted.emergency_or_active_leak !== void 0 && extracted.emergency_or_active_leak !== null) {
     updated.emergency_or_active_leak = extracted.emergency_or_active_leak;
@@ -4541,10 +4540,6 @@ function applyPendingQuestionAnswer(fields, answer, callerPhone, pendingQuestion
         }
       }
       break;
-    case "photos_available": {
-      updated = applyPhotosPendingAnswer(updated, trimmed, pendingQuestion);
-      break;
-    }
     case "insurance_claim":
     case "adjuster_contacted":
     case "active_leak": {
@@ -4642,11 +4637,6 @@ function buildValidatedSpokenSummary(fields) {
     );
   } else if (data.insurance === false) {
     situationParts.push("you haven't started an insurance claim yet");
-  }
-  if (data.photos === true) {
-    situationParts.push("you have photos available");
-  } else if (data.photos === false) {
-    situationParts.push("you don't have photos yet");
   }
   if (data.callbackPreference) {
     situationParts.push(`you'd prefer a call on ${data.callbackPreference.replace(/\.$/, "")}`);
@@ -4965,10 +4955,8 @@ function buildPostIntakeReply(policy, fieldsBefore, updatedFields, trimmedSpeech
     (field) => field !== "additionalNotes"
   );
   if (missing.length === 0 && sharedMissing.length === 0) {
-    const photosJustResolved2 = !isPhotosFieldComplete(fieldsBefore) && isPhotosFieldComplete(updatedFields);
-    const photosAck2 = photosJustResolved2 ? photosAffirmativeAcknowledgment(normalizePhotosValue(updatedFields.photos_available)) : null;
     const anythingElseQuestion = REALTIME_ANYTHING_ELSE_QUESTION;
-    const reply = photosAck2 ? ensureSingleIntakeQuestion(`${photosAck2} ${anythingElseQuestion}`.replace(/\s+/g, " ").trim()) : ensureSingleIntakeQuestion(anythingElseQuestion);
+    const reply = ensureSingleIntakeQuestion(anythingElseQuestion);
     return packagePostIntakeResult(updatedFields, reply, "awaiting_additional_notes");
   }
   if (options.isFirstCallerTurn === true && updatedFields.intake_intro_delivered !== true && updatedFields.problem_description?.trim()) {
@@ -4985,8 +4973,6 @@ function buildPostIntakeReply(policy, fieldsBefore, updatedFields, trimmedSpeech
       "collecting_intake"
     );
   }
-  const photosJustResolved = !isPhotosFieldComplete(fieldsBefore) && isPhotosFieldComplete(updatedFields);
-  const photosAck = photosJustResolved ? photosAffirmativeAcknowledgment(normalizePhotosValue(updatedFields.photos_available)) : null;
   const intakeReply = buildIntakeReply(
     policy,
     updatedFields,
@@ -4995,7 +4981,7 @@ function buildPostIntakeReply(policy, fieldsBefore, updatedFields, trimmedSpeech
     filledCount,
     options.afterConfirmation === true
   );
-  const combinedReply = photosAck ? ensureSingleIntakeQuestion(`${photosAck} ${intakeReply}`.replace(/\s+/g, " ").trim()) : ensureSingleIntakeQuestion(intakeReply);
+  const combinedReply = ensureSingleIntakeQuestion(intakeReply);
   return packagePostIntakeResult(updatedFields, combinedReply, "collecting_intake");
 }
 function isNameCaptureTurn(fields, conversationState) {
@@ -5754,7 +5740,7 @@ var SessionOrchestrator = class {
 // src/bridge/call-bridge.ts
 var CLOSING_MARK_NAME = "closing-final";
 var OPENING_GREETING_DEADLINE_MS = 4e3;
-var TURN_RECOVERY_TIMEOUT_MS = 2500;
+var RESPONSE_WATCHDOG_MS = 2e3;
 var OPENING_FALLBACK_GREETING = "Thank you for calling Beau's Roofing. One moment while I get ready to help you.";
 var CallBridge = class {
   constructor(params) {
@@ -5780,9 +5766,11 @@ var CallBridge = class {
   pendingClientResponse = false;
   pendingSpeech = null;
   openingFallbackTimer = null;
-  turnRecoveryTimer = null;
-  turnRecoveryTranscript = null;
-  turnRecoveryUsed = false;
+  activeTurnId = 0;
+  responseWatchdogTimer = null;
+  responseWatchdogTurnId = null;
+  responseWatchdogRetryUsed = false;
+  responseWatchdogRequest = null;
   start() {
     logInfo("twilio_stream_connected");
     this.params.twilioSocket.on("message", (data) => {
@@ -5924,13 +5912,15 @@ var CallBridge = class {
     if (!this.openAi) {
       return false;
     }
+    const turnId = options.turnId ?? this.activeTurnId;
     const sent = this.openAi.speakScript(
       text,
       reason,
       (triggerReason) => this.responseGuard.canTriggerResponse(triggerReason),
       (triggerReason) => {
         this.pendingClientResponse = true;
-        this.responseGuard.recordTrigger(triggerReason);
+        this.responseGuard.recordTrigger(triggerReason, turnId);
+        this.turnTiming.record("response_create_sent", this.callSid ?? void 0, { turnId });
       }
     );
     if (sent === "sent") {
@@ -5943,18 +5933,22 @@ var CallBridge = class {
     }
     return sent === "sent";
   }
-  enqueueOrSpeakSpeech(request) {
+  enqueueOrSpeakSpeech(request, options = {}) {
+    const turnId = options.turnId ?? this.activeTurnId;
     const sent = this.requestAssistantSpeech(request.text, request.reason, {
-      hangupAfterMark: request.hangupAfterMark
+      hangupAfterMark: request.hangupAfterMark,
+      turnId
     });
     if (sent) {
       if (request.hangup && !request.hangupAfterMark) {
         this.cleanup("call_completed");
+      } else if (request.reason === "caller_turn_reply") {
+        this.scheduleResponseWatchdog(turnId, request);
       }
       return true;
     }
     this.pendingSpeech = request;
-    logWarn("caller_turn_reply_deferred", { callSid: this.callSid ?? void 0 });
+    logWarn("caller_turn_reply_deferred", { callSid: this.callSid ?? void 0, turnId });
     return false;
   }
   flushPendingSpeech() {
@@ -5988,9 +5982,12 @@ var CallBridge = class {
         this.bargeIn?.handleCallerSpeechStarted();
         break;
       case "input_audio_buffer.speech_stopped":
-        this.responseGuard.onCallerSpeechStopped();
-        this.turnTiming.beginTurn(this.callSid ?? void 0);
-        this.turnTiming.record("speech_stopped", this.callSid ?? void 0);
+        this.activeTurnId += 1;
+        this.responseGuard.beginCallerTurn(this.activeTurnId);
+        this.turnTiming.beginTurn(this.callSid ?? void 0, this.activeTurnId);
+        this.turnTiming.record("speech_stopped", this.callSid ?? void 0, {
+          turnId: this.activeTurnId
+        });
         break;
       case "conversation.item.input_audio_transcription.completed":
         void this.handleTranscriptionCompleted(event);
@@ -6015,7 +6012,18 @@ var CallBridge = class {
       }
       case "response.output_audio.delta": {
         const delta = String(event.delta ?? "");
-        this.turnTiming.record("first_audio_received", this.callSid ?? void 0);
+        if (this.responseGuard.isStaleResponseAudio(this.activeTurnId)) {
+          logWarn("stale_audio_delta_ignored", {
+            callSid: this.callSid ?? void 0,
+            activeTurnId: this.activeTurnId,
+            responseTurnId: this.responseGuard.getResponseTurnId()
+          });
+          break;
+        }
+        this.clearResponseWatchdog();
+        this.turnTiming.record("first_audio_received", this.callSid ?? void 0, {
+          turnId: this.activeTurnId
+        });
         this.responseGuard.onAssistantAudioDelta();
         this.forwardAssistantAudio(delta);
         break;
@@ -6034,7 +6042,7 @@ var CallBridge = class {
         this.bargeIn?.handleResponseCompleted();
         this.responseGuard.onResponseDone();
         this.orchestrator?.onAssistantResponseDone();
-        this.clearTurnRecoveryTimer();
+        this.clearResponseWatchdog();
         this.flushPendingSpeech();
         void this.processQueuedCallerTranscript();
         break;
@@ -6044,6 +6052,7 @@ var CallBridge = class {
         this.responseGuard.onResponseFailed();
         this.pendingClientResponse = false;
         this.awaitingClosingMark = false;
+        this.clearResponseWatchdog();
         this.flushPendingSpeech();
         void this.processQueuedCallerTranscript();
         break;
@@ -6053,6 +6062,7 @@ var CallBridge = class {
         this.responseGuard.onResponseCancelled();
         this.pendingClientResponse = false;
         this.awaitingClosingMark = false;
+        this.clearResponseWatchdog();
         this.flushPendingSpeech();
         void this.processQueuedCallerTranscript();
         break;
@@ -6062,6 +6072,7 @@ var CallBridge = class {
         });
         this.responseGuard.onOpenAiError();
         this.pendingClientResponse = false;
+        this.clearResponseWatchdog();
         this.flushPendingSpeech();
         void this.processQueuedCallerTranscript();
         break;
@@ -6086,51 +6097,66 @@ var CallBridge = class {
       callSid: this.callSid ?? void 0,
       transcriptLength: transcript.length
     });
-    this.turnTiming.record("transcript_completed", this.callSid ?? void 0);
-    this.scheduleTurnRecovery(transcript);
+    this.turnTiming.record("transcript_completed", this.callSid ?? void 0, {
+      turnId: this.activeTurnId
+    });
     void this.processCallerTurnReply(transcript);
   }
-  scheduleTurnRecovery(transcript) {
-    this.clearTurnRecoveryTimer();
-    this.turnRecoveryTranscript = transcript;
-    this.turnRecoveryUsed = false;
-    this.turnRecoveryTimer = setTimeout(() => {
-      this.handleTurnRecoveryTimeout();
-    }, TURN_RECOVERY_TIMEOUT_MS);
+  scheduleResponseWatchdog(turnId, request) {
+    this.clearResponseWatchdog();
+    this.responseWatchdogTurnId = turnId;
+    this.responseWatchdogRequest = request;
+    this.responseWatchdogRetryUsed = false;
+    this.responseWatchdogTimer = setTimeout(() => {
+      this.handleResponseWatchdogTimeout(turnId);
+    }, RESPONSE_WATCHDOG_MS);
   }
-  clearTurnRecoveryTimer() {
-    if (this.turnRecoveryTimer) {
-      clearTimeout(this.turnRecoveryTimer);
-      this.turnRecoveryTimer = null;
+  clearResponseWatchdog() {
+    if (this.responseWatchdogTimer) {
+      clearTimeout(this.responseWatchdogTimer);
+      this.responseWatchdogTimer = null;
     }
+    this.responseWatchdogTurnId = null;
+    this.responseWatchdogRequest = null;
+    this.responseWatchdogRetryUsed = false;
   }
-  handleTurnRecoveryTimeout() {
-    if (this.closed || this.turnRecoveryUsed) {
+  handleResponseWatchdogTimeout(turnId) {
+    if (this.closed || this.responseWatchdogTurnId !== turnId) {
       return;
     }
-    logWarn("turn_recovery_timeout", {
+    if (this.turnTiming.hasFirstAudio()) {
+      return;
+    }
+    if (this.responseWatchdogRetryUsed) {
+      logWarn("response_watchdog_exhausted", {
+        callSid: this.callSid ?? void 0,
+        turnId
+      });
+      this.responseGuard.releaseActiveResponse({
+        waitingForCaller: true,
+        preserveCallerTurnReady: true
+      });
+      return;
+    }
+    const request = this.responseWatchdogRequest;
+    if (!request) {
+      return;
+    }
+    logWarn("response_watchdog_retry", {
       callSid: this.callSid ?? void 0,
-      activeResponse: this.responseGuard.isActiveResponse(),
-      hasPendingSpeech: Boolean(this.pendingSpeech)
+      turnId
     });
-    this.turnRecoveryUsed = true;
+    this.responseWatchdogRetryUsed = true;
     this.responseGuard.prepareCallerTurnRecovery();
     this.pendingClientResponse = false;
-    this.flushPendingSpeech();
-    this.enqueueOrSpeakSpeech({
-      text: "Thanks for your patience. Could you repeat that last answer for me?",
-      reason: "caller_turn_reply"
-    });
+    this.enqueueOrSpeakSpeech(request, { turnId });
   }
   attemptEmptyReplyRecovery(transcript) {
-    if (this.turnRecoveryUsed) {
-      return;
-    }
     logWarn("caller_turn_empty_reply_recovery", {
       callSid: this.callSid ?? void 0,
-      transcriptLength: transcript.length
+      transcriptLength: transcript.length,
+      turnId: this.activeTurnId
     });
-    this.turnRecoveryUsed = true;
     this.responseGuard.prepareCallerTurnRecovery();
     this.enqueueOrSpeakSpeech({
       text: "Thanks for your patience. Could you repeat that last answer for me?",
@@ -6141,35 +6167,41 @@ var CallBridge = class {
     if (!this.orchestrator || !this.openAi) {
       return;
     }
+    const turnId = this.activeTurnId;
     void this.orchestrator.handleCallerTranscript(transcript).then((result) => {
-      this.clearTurnRecoveryTimer();
+      if (this.turnTiming.isStaleTurn(turnId)) {
+        return;
+      }
+      this.turnTiming.record("caller_turn_processed", this.callSid ?? void 0, { turnId });
       if (!result?.replyText) {
         this.attemptEmptyReplyRecovery(transcript);
         return;
       }
-      this.turnRecoveryUsed = false;
       if (result.structuredStateUpdated) {
-        this.turnTiming.record("structured_state_updated", this.callSid ?? void 0);
+        this.turnTiming.record("structured_state_updated", this.callSid ?? void 0, { turnId });
       }
-      this.turnTiming.record("response_requested", this.callSid ?? void 0);
+      this.turnTiming.record("next_question_selected", this.callSid ?? void 0, { turnId });
+      this.turnTiming.record("response_requested", this.callSid ?? void 0, { turnId });
       const reason = result.hangupAfterMark ? "closing_message" : "caller_turn_reply";
-      const sent = this.enqueueOrSpeakSpeech({
-        text: result.replyText,
-        reason,
-        hangupAfterMark: result.hangupAfterMark,
-        hangup: result.hangup
-      });
-      if (!sent) {
-        return;
-      }
+      this.enqueueOrSpeakSpeech(
+        {
+          text: result.replyText,
+          reason,
+          hangupAfterMark: result.hangupAfterMark,
+          hangup: result.hangup
+        },
+        { turnId }
+      );
     }).catch((error) => {
-      this.clearTurnRecoveryTimer();
-      logError("caller_turn_processing_failed", { callSid: this.callSid ?? void 0 }, error);
+      logError("caller_turn_processing_failed", { callSid: this.callSid ?? void 0, turnId }, error);
       this.responseGuard.prepareCallerTurnRecovery();
-      this.enqueueOrSpeakSpeech({
-        text: "Thanks for your patience. Could you repeat that last answer for me?",
-        reason: "caller_turn_reply"
-      });
+      this.enqueueOrSpeakSpeech(
+        {
+          text: "Thanks for your patience. Could you repeat that last answer for me?",
+          reason: "caller_turn_reply"
+        },
+        { turnId }
+      );
     });
   }
   async processQueuedCallerTranscript() {
@@ -6198,7 +6230,9 @@ var CallBridge = class {
     this.sendTwilioJson(
       buildTwilioMediaMessage(this.streamSid, base64Audio)
     );
-    this.turnTiming.record("first_audio_sent_to_twilio", this.callSid ?? void 0);
+    this.turnTiming.record("first_audio_sent_to_twilio", this.callSid ?? void 0, {
+      turnId: this.activeTurnId
+    });
     this.callTiming.record("first_audio_sent_to_twilio", this.callSid ?? void 0);
     if (!this.activeResponseUsesClosingMark) {
       this.markCounter += 1;
@@ -6245,8 +6279,9 @@ var CallBridge = class {
       this.callTimeout = null;
     }
     this.clearOpeningFallbackTimer();
-    this.clearTurnRecoveryTimer();
+    this.clearResponseWatchdog();
     this.pendingSpeech = null;
+    this.responseGuard.onWebSocketClosed();
     this.openAi?.close();
     this.openAi = null;
     if (this.params.twilioSocket.readyState === this.params.twilioSocket.OPEN) {

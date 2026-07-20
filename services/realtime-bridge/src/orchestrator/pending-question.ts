@@ -1,5 +1,4 @@
 import type { RealtimeFields } from "./realtime-prompts.js";
-import { isPhotosFieldComplete } from "./photos-field.js";
 import { hasConfirmableAddress, isAddressConfirmed } from "./address-confirmation.js";
 import {
   needsScheduleClarification,
@@ -18,7 +17,6 @@ export type PendingQuestionKey =
   | "service_address"
   | "address_confirmation"
   | "call_reason"
-  | "photos_available"
   | "insurance_claim"
   | "adjuster_contacted"
   | "active_leak"
@@ -62,8 +60,6 @@ export function mapRequiredFieldToPending(field: RequiredFieldKey): PendingQuest
       return "adjuster_contacted";
     case "appointment_preference":
       return "preferred_callback_time";
-    case "photos_available":
-      return "photos_available";
     default:
       return "call_reason";
   }
@@ -77,7 +73,6 @@ export function isPendingQuestionKey(value: string): value is PendingQuestionKey
     value === "service_address" ||
     value === "address_confirmation" ||
     value === "call_reason" ||
-    value === "photos_available" ||
     value === "insurance_claim" ||
     value === "adjuster_contacted" ||
     value === "active_leak" ||
@@ -94,8 +89,6 @@ function isStoredPendingQuestionStillValid(
   pending: PendingQuestionKey,
 ): boolean {
   switch (pending) {
-    case "photos_available":
-      return !isPhotosFieldComplete(fields);
     case "callback_confirmation":
       return needsCallbackConfirmation(fields);
     case "address_confirmation":

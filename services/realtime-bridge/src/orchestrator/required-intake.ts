@@ -10,7 +10,6 @@ import {
   isPlausibleServiceAddress,
   validateCallerNameCandidate,
 } from "./field-validation.js";
-import { isPhotosFieldComplete } from "./photos-field.js";
 import { isScheduleComplete } from "./schedule-normalizer.js";
 import { needsCallbackConfirmation, mapRequiredFieldToPending } from "./pending-question.js";
 import {
@@ -28,8 +27,7 @@ export type RequiredFieldKey =
   | "emergency_or_active_leak"
   | "insurance_claim_started"
   | "adjuster_contacted"
-  | "appointment_preference"
-  | "photos_available";
+  | "appointment_preference";
 
 /** Shared completion gate keys used before summary/closing. */
 export type SharedMissingFieldKey =
@@ -43,18 +41,21 @@ export type SharedMissingFieldKey =
   | "callbackSchedule"
   | "additionalNotes";
 
-/** Priority order for the next intake question. Code-owned — not model judgment. */
+const BRANCH_FIELD_ORDER: RequiredFieldKey[] = [
+  "urgency",
+  "insurance_claim_started",
+  "adjuster_contacted",
+  "appointment_preference",
+];
+
+/** Legacy list for tests and field counting — photos are not part of live intake. */
 export const REQUIRED_FIELD_ORDER: RequiredFieldKey[] = [
   "problem_description",
   "full_name",
   "callback_phone",
   "address",
   "emergency_or_active_leak",
-  "urgency",
-  "insurance_claim_started",
-  "adjuster_contacted",
-  "appointment_preference",
-  "photos_available",
+  ...BRANCH_FIELD_ORDER,
 ];
 
 function hasValue(value: string | undefined): boolean {
@@ -121,16 +122,70 @@ function isFieldComplete(field: RequiredFieldKey, fields: RealtimeFields): boole
       return !isStructuredBooleanUnset(fields.adjuster_contacted);
     case "appointment_preference":
       return isScheduleComplete(fields);
-    case "photos_available":
-      return isPhotosFieldComplete(fields);
     default:
       return false;
   }
 }
 
+/** Safety before name only when the opening reason suggests an immediate safety concern. */
+export function needsImmediateSafetyClarification(fields: RealtimeFields): boolean {
+  if (!isStructuredBooleanUnset(fields.emergency_or_active_leak)) {
+    return false;
+  }
+
+  if (fields.emergency_acknowledged === true) {
+    return true;
+  }
+
+  const problem = fields.problem_description?.toLowerCase() ?? "";
+
+  return /\b(active leak|water (is )?((getting )?in|inside|pouring)|pouring in|flooding|emergency|collapse|structural damage|someone (is )?hurt|injured)\b/i.test(
+    problem,
+  );
+}
+
+function collectMissingFieldsInPriorityOrder(fields: RealtimeFields): RequiredFieldKey[] {
+  const missing: RequiredFieldKey[] = [];
+
+  if (!hasValue(fields.problem_description)) {
+    missing.push("problem_description");
+  }
+
+  if (needsImmediateSafetyClarification(fields)) {
+    missing.push("emergency_or_active_leak");
+  }
+
+  if (!isCallerNameResolved(fields)) {
+    missing.push("full_name");
+  }
+
+  if (!isCallbackComplete(fields)) {
+    missing.push("callback_phone");
+  }
+
+  if (!isAddressConfirmed(fields)) {
+    missing.push("address");
+  }
+
+  if (
+    !isFieldComplete("emergency_or_active_leak", fields) &&
+    !missing.includes("emergency_or_active_leak")
+  ) {
+    missing.push("emergency_or_active_leak");
+  }
+
+  for (const field of BRANCH_FIELD_ORDER) {
+    if (!isFieldComplete(field, fields)) {
+      missing.push(field);
+    }
+  }
+
+  return missing;
+}
+
 /** Deterministic gate — summary/closing blocked while this returns any item. */
 export function getMissingRequiredFields(fields: RealtimeFields): RequiredFieldKey[] {
-  return REQUIRED_FIELD_ORDER.filter((field) => !isFieldComplete(field, fields));
+  return collectMissingFieldsInPriorityOrder(fields);
 }
 
 /** Shared completion gate — blocks summary/closing until every shared field is resolved. */
@@ -161,7 +216,7 @@ export function isRequiredIntakeComplete(fields: RealtimeFields): boolean {
 }
 
 export function getNextRequiredField(fields: RealtimeFields): RequiredFieldKey | null {
-  return getMissingRequiredFields(fields)[0] ?? null;
+  return collectMissingFieldsInPriorityOrder(fields)[0] ?? null;
 }
 
 const FIELD_QUESTIONS: Record<RequiredFieldKey, string> = {
@@ -175,7 +230,6 @@ const FIELD_QUESTIONS: Record<RequiredFieldKey, string> = {
   adjuster_contacted: "Have you contacted your adjuster yet?",
   appointment_preference:
     "What day and time would be best for the roofing team to contact you?",
-  photos_available: "Do you have photos of the damage?",
 };
 
 export function getRequiredFieldQuestion(
@@ -204,7 +258,6 @@ const CONTEXTUAL_TRANSITIONS: Partial<Record<RequiredFieldKey, string>> = {
   adjuster_contacted: "Have you contacted your adjuster yet?",
   appointment_preference:
     "What day and time would be best for the roofing team to contact you?",
-  photos_available: "Do you have photos of the damage?",
 };
 
 export function getNaturalTransitionQuestion(
@@ -303,14 +356,6 @@ export function applyDirectAnswerToMissingField(
       const parsed = parseExplicitBoolean(trimmed);
       if (parsed !== null) {
         updated[target] = parsed;
-      }
-      break;
-    }
-    case "photos_available": {
-      const parsed = parseExplicitBoolean(trimmed);
-      if (parsed !== null && !isPhotosFieldComplete(updated)) {
-        updated.photos_available = parsed;
-        updated.pending_question = undefined;
       }
       break;
     }

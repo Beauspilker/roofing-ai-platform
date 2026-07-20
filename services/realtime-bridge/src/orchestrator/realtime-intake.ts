@@ -49,7 +49,6 @@ import {
 import type { PendingQuestionKey } from "./pending-question.js";
 import { resolvePendingQuestion } from "./pending-question.js";
 import {
-  isPhotosFieldComplete,
   normalizePhotosValue,
 } from "./photos-field.js";
 import { preserveConfirmedFieldState } from "./safe-field-merge.js";

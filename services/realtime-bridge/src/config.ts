@@ -28,11 +28,11 @@ export function getConfig() {
     ),
     bargeInEnabled: isRealtimeBargeInEnabled(),
     turnDetectionSilenceDurationMs: Number.parseInt(
-      process.env.REALTIME_SILENCE_DURATION_MS ?? "750",
+      process.env.REALTIME_SILENCE_DURATION_MS ?? "600",
       10,
     ),
     turnDetectionPrefixPaddingMs: Number.parseInt(
-      process.env.REALTIME_PREFIX_PADDING_MS ?? "200",
+      process.env.REALTIME_PREFIX_PADDING_MS ?? "250",
       10,
     ),
     turnDetectionThreshold: Number.parseFloat(

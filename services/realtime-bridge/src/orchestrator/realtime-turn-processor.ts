@@ -80,11 +80,6 @@ import {
   getSharedMissingFields,
   isSharedIntakeComplete,
 } from "./required-intake.js";
-import {
-  isPhotosFieldComplete,
-  normalizePhotosValue,
-  photosAffirmativeAcknowledgment,
-} from "./photos-field.js";
 import { applyCorrectionToStructuredField, syncLegacyStringFields } from "./structured-intake.js";
 import { logError } from "../logger.js";
 
@@ -313,15 +308,8 @@ function buildPostIntakeReply(
   );
 
   if (missing.length === 0 && sharedMissing.length === 0) {
-    const photosJustResolved =
-      !isPhotosFieldComplete(fieldsBefore) && isPhotosFieldComplete(updatedFields);
-    const photosAck = photosJustResolved
-      ? photosAffirmativeAcknowledgment(normalizePhotosValue(updatedFields.photos_available))
-      : null;
     const anythingElseQuestion = REALTIME_ANYTHING_ELSE_QUESTION;
-    const reply = photosAck
-      ? ensureSingleIntakeQuestion(`${photosAck} ${anythingElseQuestion}`.replace(/\s+/g, " ").trim())
-      : ensureSingleIntakeQuestion(anythingElseQuestion);
+    const reply = ensureSingleIntakeQuestion(anythingElseQuestion);
 
     return packagePostIntakeResult(updatedFields, reply, "awaiting_additional_notes");
   }
@@ -351,11 +339,6 @@ function buildPostIntakeReply(
     );
   }
 
-  const photosJustResolved =
-    !isPhotosFieldComplete(fieldsBefore) && isPhotosFieldComplete(updatedFields);
-  const photosAck = photosJustResolved
-    ? photosAffirmativeAcknowledgment(normalizePhotosValue(updatedFields.photos_available))
-    : null;
   const intakeReply = buildIntakeReply(
     policy,
     updatedFields,
@@ -364,9 +347,7 @@ function buildPostIntakeReply(
     filledCount,
     options.afterConfirmation === true,
   );
-  const combinedReply = photosAck
-    ? ensureSingleIntakeQuestion(`${photosAck} ${intakeReply}`.replace(/\s+/g, " ").trim())
-    : ensureSingleIntakeQuestion(intakeReply);
+  const combinedReply = ensureSingleIntakeQuestion(intakeReply);
 
   return packagePostIntakeResult(updatedFields, combinedReply, "collecting_intake");
 }

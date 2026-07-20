@@ -20,7 +20,7 @@ import {
 
 const CLOSING_MARK_NAME = "closing-final";
 const OPENING_GREETING_DEADLINE_MS = 4_000;
-const TURN_RECOVERY_TIMEOUT_MS = 2_500;
+const RESPONSE_WATCHDOG_MS = 2_000;
 const OPENING_FALLBACK_GREETING =
   "Thank you for calling Beau's Roofing. One moment while I get ready to help you.";
 
@@ -57,9 +57,11 @@ export class CallBridge {
   private pendingClientResponse = false;
   private pendingSpeech: PendingSpeechRequest | null = null;
   private openingFallbackTimer: NodeJS.Timeout | null = null;
-  private turnRecoveryTimer: NodeJS.Timeout | null = null;
-  private turnRecoveryTranscript: string | null = null;
-  private turnRecoveryUsed = false;
+  private activeTurnId = 0;
+  private responseWatchdogTimer: NodeJS.Timeout | null = null;
+  private responseWatchdogTurnId: number | null = null;
+  private responseWatchdogRetryUsed = false;
+  private responseWatchdogRequest: PendingSpeechRequest | null = null;
 
   constructor(private readonly params: CallBridgeParams) {}
 
@@ -233,11 +235,13 @@ export class CallBridge {
   private requestAssistantSpeech(
     text: string,
     reason: ResponseTriggerReason,
-    options: { hangupAfterMark?: boolean } = {},
+    options: { hangupAfterMark?: boolean; turnId?: number } = {},
   ): boolean {
     if (!this.openAi) {
       return false;
     }
+
+    const turnId = options.turnId ?? this.activeTurnId;
 
     const sent = this.openAi.speakScript(
       text,
@@ -245,7 +249,8 @@ export class CallBridge {
       (triggerReason) => this.responseGuard.canTriggerResponse(triggerReason),
       (triggerReason) => {
         this.pendingClientResponse = true;
-        this.responseGuard.recordTrigger(triggerReason);
+        this.responseGuard.recordTrigger(triggerReason, turnId);
+        this.turnTiming.record("response_create_sent", this.callSid ?? undefined, { turnId });
       },
     );
 
@@ -262,20 +267,27 @@ export class CallBridge {
     return sent === "sent";
   }
 
-  private enqueueOrSpeakSpeech(request: PendingSpeechRequest): boolean {
+  private enqueueOrSpeakSpeech(
+    request: PendingSpeechRequest,
+    options: { turnId?: number } = {},
+  ): boolean {
+    const turnId = options.turnId ?? this.activeTurnId;
     const sent = this.requestAssistantSpeech(request.text, request.reason, {
       hangupAfterMark: request.hangupAfterMark,
+      turnId,
     });
 
     if (sent) {
       if (request.hangup && !request.hangupAfterMark) {
         this.cleanup("call_completed");
+      } else if (request.reason === "caller_turn_reply") {
+        this.scheduleResponseWatchdog(turnId, request);
       }
       return true;
     }
 
     this.pendingSpeech = request;
-    logWarn("caller_turn_reply_deferred", { callSid: this.callSid ?? undefined });
+    logWarn("caller_turn_reply_deferred", { callSid: this.callSid ?? undefined, turnId });
     return false;
   }
 
@@ -316,9 +328,12 @@ export class CallBridge {
         this.bargeIn?.handleCallerSpeechStarted();
         break;
       case "input_audio_buffer.speech_stopped":
-        this.responseGuard.onCallerSpeechStopped();
-        this.turnTiming.beginTurn(this.callSid ?? undefined);
-        this.turnTiming.record("speech_stopped", this.callSid ?? undefined);
+        this.activeTurnId += 1;
+        this.responseGuard.beginCallerTurn(this.activeTurnId);
+        this.turnTiming.beginTurn(this.callSid ?? undefined, this.activeTurnId);
+        this.turnTiming.record("speech_stopped", this.callSid ?? undefined, {
+          turnId: this.activeTurnId,
+        });
         break;
       case "conversation.item.input_audio_transcription.completed":
         void this.handleTranscriptionCompleted(event);
@@ -344,7 +359,20 @@ export class CallBridge {
       }
       case "response.output_audio.delta": {
         const delta = String(event.delta ?? "");
-        this.turnTiming.record("first_audio_received", this.callSid ?? undefined);
+
+        if (this.responseGuard.isStaleResponseAudio(this.activeTurnId)) {
+          logWarn("stale_audio_delta_ignored", {
+            callSid: this.callSid ?? undefined,
+            activeTurnId: this.activeTurnId,
+            responseTurnId: this.responseGuard.getResponseTurnId(),
+          });
+          break;
+        }
+
+        this.clearResponseWatchdog();
+        this.turnTiming.record("first_audio_received", this.callSid ?? undefined, {
+          turnId: this.activeTurnId,
+        });
         this.responseGuard.onAssistantAudioDelta();
         this.forwardAssistantAudio(delta);
         break;
@@ -366,7 +394,7 @@ export class CallBridge {
         this.bargeIn?.handleResponseCompleted();
         this.responseGuard.onResponseDone();
         this.orchestrator?.onAssistantResponseDone();
-        this.clearTurnRecoveryTimer();
+        this.clearResponseWatchdog();
         this.flushPendingSpeech();
         void this.processQueuedCallerTranscript();
         break;
@@ -376,6 +404,7 @@ export class CallBridge {
         this.responseGuard.onResponseFailed();
         this.pendingClientResponse = false;
         this.awaitingClosingMark = false;
+        this.clearResponseWatchdog();
         this.flushPendingSpeech();
         void this.processQueuedCallerTranscript();
         break;
@@ -385,6 +414,7 @@ export class CallBridge {
         this.responseGuard.onResponseCancelled();
         this.pendingClientResponse = false;
         this.awaitingClosingMark = false;
+        this.clearResponseWatchdog();
         this.flushPendingSpeech();
         void this.processQueuedCallerTranscript();
         break;
@@ -394,6 +424,7 @@ export class CallBridge {
         });
         this.responseGuard.onOpenAiError();
         this.pendingClientResponse = false;
+        this.clearResponseWatchdog();
         this.flushPendingSpeech();
         void this.processQueuedCallerTranscript();
         break;
@@ -429,62 +460,80 @@ export class CallBridge {
       transcriptLength: transcript.length,
     });
 
-    this.turnTiming.record("transcript_completed", this.callSid ?? undefined);
+    this.turnTiming.record("transcript_completed", this.callSid ?? undefined, {
+      turnId: this.activeTurnId,
+    });
 
-    this.scheduleTurnRecovery(transcript);
     void this.processCallerTurnReply(transcript);
   }
 
-  private scheduleTurnRecovery(transcript: string): void {
-    this.clearTurnRecoveryTimer();
-    this.turnRecoveryTranscript = transcript;
-    this.turnRecoveryUsed = false;
+  private scheduleResponseWatchdog(turnId: number, request: PendingSpeechRequest): void {
+    this.clearResponseWatchdog();
+    this.responseWatchdogTurnId = turnId;
+    this.responseWatchdogRequest = request;
+    this.responseWatchdogRetryUsed = false;
 
-    this.turnRecoveryTimer = setTimeout(() => {
-      this.handleTurnRecoveryTimeout();
-    }, TURN_RECOVERY_TIMEOUT_MS);
+    this.responseWatchdogTimer = setTimeout(() => {
+      this.handleResponseWatchdogTimeout(turnId);
+    }, RESPONSE_WATCHDOG_MS);
   }
 
-  private clearTurnRecoveryTimer(): void {
-    if (this.turnRecoveryTimer) {
-      clearTimeout(this.turnRecoveryTimer);
-      this.turnRecoveryTimer = null;
+  private clearResponseWatchdog(): void {
+    if (this.responseWatchdogTimer) {
+      clearTimeout(this.responseWatchdogTimer);
+      this.responseWatchdogTimer = null;
     }
+
+    this.responseWatchdogTurnId = null;
+    this.responseWatchdogRequest = null;
+    this.responseWatchdogRetryUsed = false;
   }
 
-  private handleTurnRecoveryTimeout(): void {
-    if (this.closed || this.turnRecoveryUsed) {
+  private handleResponseWatchdogTimeout(turnId: number): void {
+    if (this.closed || this.responseWatchdogTurnId !== turnId) {
       return;
     }
 
-    logWarn("turn_recovery_timeout", {
+    if (this.turnTiming.hasFirstAudio()) {
+      return;
+    }
+
+    if (this.responseWatchdogRetryUsed) {
+      logWarn("response_watchdog_exhausted", {
+        callSid: this.callSid ?? undefined,
+        turnId,
+      });
+      this.responseGuard.releaseActiveResponse({
+        waitingForCaller: true,
+        preserveCallerTurnReady: true,
+      });
+      return;
+    }
+
+    const request = this.responseWatchdogRequest;
+
+    if (!request) {
+      return;
+    }
+
+    logWarn("response_watchdog_retry", {
       callSid: this.callSid ?? undefined,
-      activeResponse: this.responseGuard.isActiveResponse(),
-      hasPendingSpeech: Boolean(this.pendingSpeech),
+      turnId,
     });
 
-    this.turnRecoveryUsed = true;
+    this.responseWatchdogRetryUsed = true;
     this.responseGuard.prepareCallerTurnRecovery();
     this.pendingClientResponse = false;
-    this.flushPendingSpeech();
-
-    this.enqueueOrSpeakSpeech({
-      text: "Thanks for your patience. Could you repeat that last answer for me?",
-      reason: "caller_turn_reply",
-    });
+    this.enqueueOrSpeakSpeech(request, { turnId });
   }
 
   private attemptEmptyReplyRecovery(transcript: string): void {
-    if (this.turnRecoveryUsed) {
-      return;
-    }
-
     logWarn("caller_turn_empty_reply_recovery", {
       callSid: this.callSid ?? undefined,
       transcriptLength: transcript.length,
+      turnId: this.activeTurnId,
     });
 
-    this.turnRecoveryUsed = true;
     this.responseGuard.prepareCallerTurnRecovery();
 
     this.enqueueOrSpeakSpeech({
@@ -498,44 +547,50 @@ export class CallBridge {
       return;
     }
 
+    const turnId = this.activeTurnId;
+
     void this.orchestrator.handleCallerTranscript(transcript).then((result) => {
-      this.clearTurnRecoveryTimer();
+      if (this.turnTiming.isStaleTurn(turnId)) {
+        return;
+      }
+
+      this.turnTiming.record("caller_turn_processed", this.callSid ?? undefined, { turnId });
 
       if (!result?.replyText) {
         this.attemptEmptyReplyRecovery(transcript);
         return;
       }
 
-      this.turnRecoveryUsed = false;
-
       if (result.structuredStateUpdated) {
-        this.turnTiming.record("structured_state_updated", this.callSid ?? undefined);
+        this.turnTiming.record("structured_state_updated", this.callSid ?? undefined, { turnId });
       }
 
-      this.turnTiming.record("response_requested", this.callSid ?? undefined);
+      this.turnTiming.record("next_question_selected", this.callSid ?? undefined, { turnId });
+      this.turnTiming.record("response_requested", this.callSid ?? undefined, { turnId });
 
       const reason: ResponseTriggerReason = result.hangupAfterMark
         ? "closing_message"
         : "caller_turn_reply";
 
-      const sent = this.enqueueOrSpeakSpeech({
-        text: result.replyText,
-        reason,
-        hangupAfterMark: result.hangupAfterMark,
-        hangup: result.hangup,
-      });
-
-      if (!sent) {
-        return;
-      }
+      this.enqueueOrSpeakSpeech(
+        {
+          text: result.replyText,
+          reason,
+          hangupAfterMark: result.hangupAfterMark,
+          hangup: result.hangup,
+        },
+        { turnId },
+      );
     }).catch((error) => {
-      this.clearTurnRecoveryTimer();
-      logError("caller_turn_processing_failed", { callSid: this.callSid ?? undefined }, error);
+      logError("caller_turn_processing_failed", { callSid: this.callSid ?? undefined, turnId }, error);
       this.responseGuard.prepareCallerTurnRecovery();
-      this.enqueueOrSpeakSpeech({
-        text: "Thanks for your patience. Could you repeat that last answer for me?",
-        reason: "caller_turn_reply",
-      });
+      this.enqueueOrSpeakSpeech(
+        {
+          text: "Thanks for your patience. Could you repeat that last answer for me?",
+          reason: "caller_turn_reply",
+        },
+        { turnId },
+      );
     });
   }
 
@@ -577,7 +632,9 @@ export class CallBridge {
       >,
     );
 
-    this.turnTiming.record("first_audio_sent_to_twilio", this.callSid ?? undefined);
+    this.turnTiming.record("first_audio_sent_to_twilio", this.callSid ?? undefined, {
+      turnId: this.activeTurnId,
+    });
     this.callTiming.record("first_audio_sent_to_twilio", this.callSid ?? undefined);
 
     if (!this.activeResponseUsesClosingMark) {
@@ -634,8 +691,10 @@ export class CallBridge {
     }
 
     this.clearOpeningFallbackTimer();
-    this.clearTurnRecoveryTimer();
+    this.clearResponseWatchdog();
     this.pendingSpeech = null;
+
+    this.responseGuard.onWebSocketClosed();
 
     this.openAi?.close();
     this.openAi = null;

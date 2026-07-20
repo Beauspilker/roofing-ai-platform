@@ -21,6 +21,8 @@ export class ResponseStateGuard {
   private awaitingClosingMark = false;
   private assistantAudioPending = false;
   private lastTranscriptItemId: string | null = null;
+  private activeTurnId = 0;
+  private responseTurnId: number | null = null;
 
   canTriggerResponse(reason: ResponseTriggerReason): boolean {
     if (this.activeResponse) {
@@ -51,13 +53,43 @@ export class ResponseStateGuard {
     return true;
   }
 
-  recordTrigger(reason: ResponseTriggerReason): void {
-    logInfo("response_trigger", { reason });
+  beginCallerTurn(turnId: number): void {
+    this.activeTurnId = turnId;
+    this.callerTurnReady = false;
+  }
+
+  getActiveTurnId(): number {
+    return this.activeTurnId;
+  }
+
+  getResponseTurnId(): number | null {
+    return this.responseTurnId;
+  }
+
+  isStaleTurn(turnId: number | null | undefined): boolean {
+    if (turnId === null || turnId === undefined) {
+      return false;
+    }
+
+    return turnId !== this.activeTurnId;
+  }
+
+  isStaleResponseAudio(turnId: number | null | undefined): boolean {
+    if (this.responseTurnId === null || turnId === null || turnId === undefined) {
+      return false;
+    }
+
+    return turnId !== this.responseTurnId;
+  }
+
+  recordTrigger(reason: ResponseTriggerReason, turnId?: number): void {
+    logInfo("response_trigger", { reason, turnId: turnId ?? this.activeTurnId });
     this.activeResponse = true;
     this.clientInitiatedResponse = true;
     this.callerTurnReady = false;
     this.waitingForCaller = false;
     this.assistantAudioPending = true;
+    this.responseTurnId = turnId ?? this.activeTurnId;
   }
 
   onExternalResponseCreated(): boolean {
@@ -87,6 +119,7 @@ export class ResponseStateGuard {
     this.waitingForCaller = true;
     this.callerTurnReady = false;
     this.assistantAudioPending = false;
+    this.responseTurnId = null;
   }
 
   onResponseCancelled(): void {
@@ -112,6 +145,7 @@ export class ResponseStateGuard {
     this.activeResponse = false;
     this.clientInitiatedResponse = false;
     this.assistantAudioPending = false;
+    this.responseTurnId = null;
 
     if (options.waitingForCaller !== undefined) {
       this.waitingForCaller = options.waitingForCaller;

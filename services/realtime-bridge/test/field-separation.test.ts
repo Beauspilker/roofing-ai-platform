@@ -70,33 +70,11 @@ test("We had hail damage does not populate caller name", () => {
   assert.match(extracted.problem_description ?? "", /hail damage/i);
 });
 
-test("photos yes does not reopen callback confirmation", () => {
-  let fields: RealtimeFields = {
-    callback_phone: "+14025551234",
-    callback_phone_confirmed: true,
-    photos_available: null,
-  };
-
-  fields = mergeRealtimeCallerAnswer(fields, "Yes", "+14025551234", {
-    conversationState: "collecting_intake",
-    pendingQuestion: "photos_available",
-  });
-
-  assert.equal(fields.photos_available, true);
-  assert.equal(fields.callback_phone_confirmed, true);
-  assert.equal(needsCallbackConfirmation(fields), false);
-});
-
-test("confirmed callback remains confirmed after photos insurance urgency and damage answers", () => {
+test("confirmed callback remains confirmed after insurance urgency and damage answers", () => {
   let fields: RealtimeFields = confirmCallbackPhone({
     callback_phone: "+14025551234",
     callback_phone_confirmed: false,
   });
-
-  fields = mergeRealtimeCallerAnswer(fields, "Yes", "+14025551234", {
-    pendingQuestion: "photos_available",
-  });
-  assert.equal(fields.callback_phone_confirmed, true);
 
   fields = mergeRealtimeCallerAnswer(fields, "No", "+14025551234", {
     pendingQuestion: "insurance_claim",
@@ -115,8 +93,8 @@ test("confirmed address remains confirmed throughout intake", () => {
     address_confirmed: false,
   });
 
-  fields = mergeRealtimeCallerAnswer(fields, "Yes", "+14025551234", {
-    pendingQuestion: "photos_available",
+  fields = mergeRealtimeCallerAnswer(fields, "No", "+14025551234", {
+    pendingQuestion: "insurance_claim",
   });
 
   assert.equal(fields.address_confirmed, true);
@@ -240,26 +218,26 @@ test("only one pending question is resolved at a time", () => {
       insurance_claim_started: false,
       appointment_preference: "July 21 at 2 PM",
       schedule_confirmed: true,
-      photos_available: null,
     },
     "collecting_intake",
   );
 
-  assert.equal(pending, "photos_available");
+  assert.notEqual(pending, "photos_available");
+  assert.equal(pending, null);
 });
 
 test("bare yes cannot reuse callback unless pending callback question", () => {
-  assert.equal(allowsCallbackAffirmativeReuse("photos_available"), false);
+  assert.equal(allowsCallbackAffirmativeReuse("insurance_claim"), false);
   assert.equal(allowsCallbackAffirmativeReuse("callback_phone"), true);
 });
 
-test("response to photos pending question cannot reopen unrelated confirmed callback", () => {
+test("insurance pending answer cannot reopen unrelated confirmed callback", () => {
   const fields = mergeExtractedFields(
     {
       callback_phone: "+14025551234",
       callback_phone_confirmed: true,
     },
-    extractAllFieldsFromTranscript("Yes", "+14025551234", "photos_available"),
+    extractAllFieldsFromTranscript("Yes", "+14025551234", "insurance_claim"),
   );
 
   assert.equal(fields.callback_phone_confirmed, true);

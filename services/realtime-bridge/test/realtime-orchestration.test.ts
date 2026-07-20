@@ -87,7 +87,7 @@ const mockSession = {
 
 test("cedar is selected in initial session config before any response", () => {
   const update = buildRealtimeSessionUpdate("cedar", {
-    turnDetectionSilenceDurationMs: 750,
+    turnDetectionSilenceDurationMs: 600,
   } as never);
 
   assert.equal(update.session.audio.output.voice, "cedar");
@@ -361,7 +361,7 @@ test("final summary uses structured state only", () => {
   assert.match(summary, /402-555-5678/);
   assert.match(summary, /123 Main Street/);
   assert.match(summary, /haven't started an insurance claim/i);
-  assert.match(summary, /photos available/i);
+  assert.doesNotMatch(summary, /photos/i);
   assert.doesNotMatch(summary, /761-1540/);
 });
 
@@ -766,24 +766,29 @@ test("schedule clarification flow resolves vague afternoon", () => {
 
 test("response timing config targets about one second after caller finishes", () => {
   const update = buildRealtimeSessionUpdate("cedar", {
-    turnDetectionSilenceDurationMs: 750,
-    turnDetectionPrefixPaddingMs: 200,
+    turnDetectionSilenceDurationMs: 600,
+    turnDetectionPrefixPaddingMs: 250,
     turnDetectionThreshold: 0.5,
   } as never);
 
   assert.equal(update.session.audio.input.turn_detection.type, "server_vad");
-  assert.equal(update.session.audio.input.turn_detection.silence_duration_ms, 750);
+  assert.equal(update.session.audio.input.turn_detection.silence_duration_ms, 600);
+  assert.equal(update.session.audio.input.turn_detection.prefix_padding_ms, 250);
 });
 
 test("turn timing records speech stopped to first audio delay", () => {
   const tracker = new TurnTimingTracker();
-  tracker.beginTurn("CA123");
-  tracker.record("speech_stopped", "CA123");
-  tracker.record("transcript_completed", "CA123");
-  tracker.record("structured_state_updated", "CA123");
-  tracker.record("response_requested", "CA123");
-  tracker.record("first_audio_received", "CA123");
-  tracker.record("first_audio_sent_to_twilio", "CA123");
+  tracker.beginTurn("CA123", 1);
+  tracker.record("speech_stopped", "CA123", { turnId: 1 });
+  tracker.record("transcript_completed", "CA123", { turnId: 1 });
+  tracker.record("caller_turn_processed", "CA123", { turnId: 1 });
+  tracker.record("structured_state_updated", "CA123", { turnId: 1 });
+  tracker.record("next_question_selected", "CA123", { turnId: 1 });
+  tracker.record("response_requested", "CA123", { turnId: 1 });
+  tracker.record("response_create_sent", "CA123", { turnId: 1 });
+  tracker.record("first_audio_received", "CA123", { turnId: 1 });
+  tracker.record("first_audio_sent_to_twilio", "CA123", { turnId: 1 });
+  assert.equal(tracker.getSpeechStoppedToFirstAudioMs(), 0);
 });
 
 test("intake reply can include brief acknowledgment before next question", () => {

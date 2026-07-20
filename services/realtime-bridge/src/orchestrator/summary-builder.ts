@@ -126,14 +126,8 @@ export function buildValidatedSpokenSummary(fields: RealtimeFields): {
           ? "you've started an insurance claim but haven't contacted your adjuster yet"
           : "you've started an insurance claim",
     );
-  } else if (data.insurance === false) {
+  } else   if (data.insurance === false) {
     situationParts.push("you haven't started an insurance claim yet");
-  }
-
-  if (data.photos === true) {
-    situationParts.push("you have photos available");
-  } else if (data.photos === false) {
-    situationParts.push("you don't have photos yet");
   }
 
   if (data.callbackPreference) {

@@ -59,6 +59,7 @@ export function isCallbackRejected(speech: string): boolean {
 export function extractCallbackPhoneFromSpeech(
   speech: string,
   callerPhone?: string,
+  options: { allowAffirmativeReuse?: boolean } = {},
 ): string | null {
   const normalized = speech.toLowerCase();
   const phonePattern =
@@ -83,6 +84,7 @@ export function extractCallbackPhoneFromSpeech(
   }
 
   if (
+    options.allowAffirmativeReuse === true &&
     callerPhone &&
     /^(yes|yeah|yep|correct|this one|that one|same number|this number|calling from)\b/i.test(
       normalized.trim(),

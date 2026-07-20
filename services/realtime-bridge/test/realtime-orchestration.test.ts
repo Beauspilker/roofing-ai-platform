@@ -346,7 +346,9 @@ test("final summary uses structured state only", () => {
   const summary = buildStructuredSpokenSummary({
     full_name: "John Smith",
     callback_phone: "+14025555678",
+    callback_phone_confirmed: true,
     address: "123 Main Street",
+    address_confirmed: true,
     problem_description: "a tree damaged the roof yesterday",
     emergency_or_active_leak: false,
     insurance_claim_started: false,
@@ -369,6 +371,7 @@ test("summary contains all known required fields when present", () => {
     callback_phone: "+14025555678",
     callback_phone_confirmed: true,
     address: "123 Main Street",
+    address_confirmed: true,
     problem_description: "tree damage",
     project_type: "repair",
     urgency: "standard",
@@ -385,7 +388,7 @@ test("summary contains all known required fields when present", () => {
   assert.match(summary, /John Smith/);
   assert.match(summary, /402-555-5678/);
   assert.match(summary, /123 Main Street/);
-  assert.match(summary, /repair/i);
+  assert.match(summary, /tree damage/i);
   assert.match(summary, /tomorrow afternoon/i);
   assert.match(summary, /dog in backyard/i);
   assert.match(summary, /Does all of that sound correct\?/);

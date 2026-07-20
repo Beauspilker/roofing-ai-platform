@@ -6,9 +6,13 @@ import {
   type TriStateBoolean,
 } from "./structured-intake.js";
 import { CLOSING_MESSAGE } from "./conversation-state.js";
+import { buildValidatedSpokenSummary } from "./summary-builder.js";
 
 export const REALTIME_OPENING_GREETING =
   "Thank you for calling Beau's Roofing. I'm Beau's Roofing's AI assistant. How can I help you today?";
+
+export const REALTIME_INTRO_TRANSITION =
+  "Absolutely. I'll run you through a few questions so the roofing team has everything they need.";
 
 export const REALTIME_OPENING_QUESTION = "How can I help you today?";
 
@@ -31,6 +35,9 @@ export type RealtimeFields = Omit<
   schedule_confirmed?: boolean;
   schedule_pending_clarification?: boolean;
   schedule_clarification_prompt?: string;
+  intake_intro_delivered?: boolean;
+  name_needs_clarification?: boolean;
+  pending_question?: string;
   insurance_claim?: string;
   adjuster_contacted_legacy?: string;
   photos_available_legacy?: string;
@@ -130,82 +137,17 @@ function spokenPhotosSummary(fields: RealtimeFields): string | null {
 }
 
 export function buildStructuredSpokenSummary(fields: RealtimeFields): string {
-  const sentences: string[] = ["Let me make sure I have everything right."];
+  const { summary, issues } = buildValidatedSpokenSummary(fields);
 
-  const detailParts: string[] = [];
-
-  if (fields.full_name?.trim()) {
-    detailParts.push(`Your name is ${fields.full_name.trim()}`);
+  if (issues.includes("invalid_name")) {
+    return "";
   }
 
-  const callback = spokenCallbackNumber(fields);
-  if (callback) {
-    detailParts.push(`your callback number is ${callback}`);
-  }
-
-  if (fields.address?.trim()) {
-    detailParts.push(`the property is at ${fields.address.trim()}`);
-  }
-
-  if (detailParts.length > 0) {
-    sentences.push(`${detailParts.join(", ")}.`);
-  }
-
-  const situationParts: string[] = [];
-
-  if (fields.problem_description?.trim()) {
-    situationParts.push(fields.problem_description.trim());
-  }
-
-  if (fields.project_type?.trim()) {
-    situationParts.push(`this is a ${fields.project_type.trim()} project`);
-  }
-
-  const leak = spokenLeakSummary(fields);
-  if (leak) {
-    situationParts.push(leak);
-  }
-
-  if (fields.storm_damage?.trim()) {
-    situationParts.push(
-      fields.storm_damage.toLowerCase() === "yes" ? "storm damage was reported" : "no storm damage noted",
-    );
-  }
-
-  const insurance = spokenInsuranceSummary(fields);
-  if (insurance) {
-    situationParts.push(insurance);
-  }
-
-  if (fields.urgency?.trim()) {
-    situationParts.push(`timing is ${fields.urgency.trim()}`);
-  }
-
-  if (fields.appointment_preference?.trim()) {
-    situationParts.push(`you'd prefer ${fields.appointment_preference.trim()}`);
-  }
-
-  const photos = spokenPhotosSummary(fields);
-  if (photos) {
-    situationParts.push(photos);
-  }
-
-  if (fields.additional_notes?.trim()) {
-    situationParts.push(`I also noted ${fields.additional_notes.trim()}`);
-  }
-
-  if (situationParts.length > 0) {
-    const joined = situationParts
-      .map((part) => part.replace(/\.$/, ""))
-      .join(", ");
-    sentences.push(`${joined.charAt(0).toUpperCase()}${joined.slice(1)}.`);
-  }
-
-  if (sentences.length === 1) {
+  if (!summary) {
     return "Let me make sure I have everything right.";
   }
 
-  return sentences.join(" ");
+  return summary.replace(/^Here's what I have\./, "Let me make sure I have everything right.");
 }
 
 export function buildSummaryWithConfirmation(fields: RealtimeFields): string {

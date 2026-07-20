@@ -58,8 +58,15 @@ import {
   isSummaryConfirmed,
   isSummaryRejected,
   REALTIME_ANYTHING_ELSE_QUESTION,
+  REALTIME_INTRO_TRANSITION,
   type RealtimeFields,
 } from "./realtime-prompts.js";
+import { buildNameClarificationPrompt } from "./field-validation.js";
+import { resolvePendingQuestion } from "./pending-question.js";
+import {
+  getNaturalTransitionQuestion,
+  getNextRequiredField,
+} from "./required-intake.js";
 import { applyCorrectionToStructuredField, syncLegacyStringFields } from "./structured-intake.js";
 import { logError } from "../logger.js";
 
@@ -181,7 +188,7 @@ function buildPostIntakeReply(
   trimmedSpeech: string,
   callerPhone: string,
   filledCount: number,
-  options: { afterConfirmation?: boolean } = {},
+  options: { afterConfirmation?: boolean; isFirstCallerTurn?: boolean } = {},
 ): { replyText: string; fields: RealtimeFields; nextState: ConversationState } {
   if (needsCallbackReadback(updatedFields)) {
     const reply = buildCallbackConfirmationReply(updatedFields);
@@ -231,6 +238,28 @@ function buildPostIntakeReply(
     };
   }
 
+  if (
+    options.isFirstCallerTurn === true &&
+    updatedFields.intake_intro_delivered !== true &&
+    updatedFields.problem_description?.trim()
+  ) {
+    const nextField = getNextRequiredField(updatedFields);
+    const question = nextField
+      ? getNaturalTransitionQuestion(nextField, updatedFields, callerPhone)
+      : "What's your name?";
+
+    return {
+      replyText: ensureSingleIntakeQuestion(
+        `${REALTIME_INTRO_TRANSITION} ${question}`.replace(/\s+/g, " ").trim(),
+      ),
+      fields: {
+        ...updatedFields,
+        intake_intro_delivered: true,
+      },
+      nextState: "collecting_intake",
+    };
+  }
+
   return {
     replyText: ensureSingleIntakeQuestion(
       buildIntakeReply(
@@ -247,12 +276,18 @@ function buildPostIntakeReply(
   };
 }
 
-function isNameCaptureTurn(fields: RealtimeFields): boolean {
+function isNameCaptureTurn(
+  fields: RealtimeFields,
+  conversationState: ConversationState,
+): boolean {
   if (isAwaitingNameConfirmation(fields) || fields.name_awaiting_repeat === true) {
     return true;
   }
 
-  return getRealtimeNextMissingStage(fields) === "full_name";
+  return (
+    resolvePendingQuestion(fields, conversationState) === "caller_name" &&
+    getNextRequiredField(fields) === "full_name"
+  );
 }
 
 export async function processRealtimeCallerTurn(
@@ -775,7 +810,7 @@ export async function processRealtimeCallerTurn(
     };
   }
 
-  if (isNameCaptureTurn(fieldsBefore)) {
+  if (isNameCaptureTurn(fieldsBefore, conversationState)) {
     const nameOutcome = processNameCaptureTurn({
       fields: fieldsBefore,
       speech: trimmedSpeech,
@@ -835,7 +870,9 @@ export async function processRealtimeCallerTurn(
     });
   }
 
-  let updatedFields = mergeRealtimeCallerAnswer(fieldsBefore, trimmedSpeech, callerPhone);
+  let updatedFields = mergeRealtimeCallerAnswer(fieldsBefore, trimmedSpeech, callerPhone, {
+    conversationState,
+  });
 
   if (detectEmergency(trimmedSpeech) && !updatedFields.emergency_acknowledged) {
     updatedFields = {
@@ -843,6 +880,33 @@ export async function processRealtimeCallerTurn(
       urgency: updatedFields.urgency ?? "emergency",
       emergency_acknowledged: true,
     };
+  }
+
+  if (
+    updatedFields.name_needs_clarification &&
+    resolvePendingQuestion(updatedFields, conversationState) === "caller_name"
+  ) {
+    const reply = ensureSingleIntakeQuestion(buildNameClarificationPrompt(trimmedSpeech));
+
+    session = applyLocalSessionUpdate(session, {
+      collectedFields: updatedFields,
+      currentQuestion: reply,
+    });
+
+    persistTurnAsync(callSid, {
+      collectedFields: updatedFields,
+      currentQuestion: reply,
+      callerSpeech: trimmedSpeech,
+      assistantReply: reply,
+    });
+
+    return finishTurn(input, {
+      replyText: reply,
+      hangup: false,
+      hangupAfterMark: false,
+      session,
+      nextConversationState: "collecting_intake",
+    });
   }
 
   const filledCount = countNewlyFilledFields(fieldsBefore, updatedFields);
@@ -853,6 +917,10 @@ export async function processRealtimeCallerTurn(
     trimmedSpeech,
     callerPhone,
     filledCount,
+    {
+      afterConfirmation: false,
+      isFirstCallerTurn: input.isFirstCallerTurn,
+    },
   );
 
   session = applyLocalSessionUpdate(session, {

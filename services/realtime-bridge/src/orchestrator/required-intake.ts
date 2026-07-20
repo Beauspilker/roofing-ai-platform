@@ -1,7 +1,14 @@
 import type { RealtimeFields } from "./realtime-prompts.js";
 import { normalizeCallbackPhoneE164 } from "./callback-phone.js";
 import { isAddressConfirmed } from "./address-confirmation.js";
+import {
+  extractDamageOrCallReason,
+  isPlausibleCallerName,
+  isPlausibleServiceAddress,
+  validateCallerNameCandidate,
+} from "./field-validation.js";
 import { isScheduleComplete } from "./schedule-normalizer.js";
+import { needsCallbackConfirmation, mapRequiredFieldToPending } from "./pending-question.js";
 import {
   isStructuredBooleanUnset,
   parseExplicitBoolean,
@@ -45,7 +52,7 @@ function isCallbackComplete(fields: RealtimeFields): boolean {
 function isFieldComplete(field: RequiredFieldKey, fields: RealtimeFields): boolean {
   switch (field) {
     case "full_name":
-      return hasValue(fields.full_name);
+      return hasValue(fields.full_name) && isPlausibleCallerName(fields.full_name ?? "");
     case "callback_phone":
       return isCallbackComplete(fields);
     case "address":
@@ -141,6 +148,7 @@ export function applyDirectAnswerToMissingField(
   fields: RealtimeFields,
   answer: string,
   callerPhone?: string,
+  pendingQuestion: import("./pending-question.js").PendingQuestionKey | null = null,
 ): RealtimeFields {
   const trimmed = answer.trim();
 
@@ -154,23 +162,35 @@ export function applyDirectAnswerToMissingField(
     return fields;
   }
 
+  if (pendingQuestion !== null && pendingQuestion !== mapRequiredFieldToPending(target)) {
+    return fields;
+  }
+
   let updated: RealtimeFields = { ...fields };
 
   switch (target) {
-    case "full_name":
+    case "full_name": {
       if (!hasValue(updated.full_name)) {
-        updated.full_name = trimmed.slice(0, 100);
+        const validated = validateCallerNameCandidate(trimmed, { isDirectNameAnswer: true });
+        if (validated.value) {
+          updated.full_name = validated.value.slice(0, 100);
+          updated.name_needs_clarification = false;
+        } else if (validated.needsClarification) {
+          updated.name_needs_clarification = true;
+        }
       }
       break;
+    }
     case "address":
-      if (!hasValue(updated.address)) {
+      if (!hasValue(updated.address) && isPlausibleServiceAddress(trimmed)) {
         updated.address = trimmed.slice(0, 500);
         updated.address_confirmed = false;
       }
       break;
     case "problem_description":
       if (!hasValue(updated.problem_description)) {
-        updated.problem_description = trimmed.slice(0, 500);
+        updated.problem_description =
+          extractDamageOrCallReason(trimmed) ?? trimmed.slice(0, 500);
       }
       break;
     case "urgency":
@@ -208,5 +228,5 @@ export function applyDirectAnswerToMissingField(
 }
 
 export function needsCallbackReadback(fields: RealtimeFields): boolean {
-  return hasValue(fields.callback_phone) && fields.callback_phone_confirmed !== true;
+  return needsCallbackConfirmation(fields);
 }

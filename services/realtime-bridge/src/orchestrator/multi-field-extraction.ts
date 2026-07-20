@@ -1,4 +1,3 @@
-import { extractFieldsFromSpeech } from "../../../../lib/call-intake.js";
 import { detectEmergency } from "../../../../lib/call-intelligence.js";
 import type { RealtimeFields } from "./realtime-prompts.js";
 import {
@@ -7,7 +6,18 @@ import {
   normalizeCallbackPhoneE164,
 } from "./callback-phone.js";
 import {
-  parseCorrectionBoolean,
+  extractDamageOrCallReason,
+  extractExplicitCallerName,
+  isPlausibleCallerName,
+  isPlausibleServiceAddress,
+  validateCallerNameCandidate,
+} from "./field-validation.js";
+import type { PendingQuestionKey } from "./pending-question.js";
+import {
+  allowsBooleanDirectAnswer,
+  allowsCallbackAffirmativeReuse,
+} from "./pending-question.js";
+import {
   parseExplicitBoolean,
   syncLegacyStringFields,
 } from "./structured-intake.js";
@@ -16,66 +26,35 @@ function hasValue(value: string | undefined): boolean {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-function mergeStringField(
-  current: string | undefined,
-  extracted: string | undefined,
-): string | undefined {
-  if (!hasValue(extracted)) {
-    return current;
-  }
-
-  return extracted!.trim().slice(0, 500);
-}
-
-function extractProblemDescription(speech: string): string | null {
-  const lower = speech.toLowerCase();
-
-  if (/tree (hit|fell|damaged)|hole in the roof|roof (is )?(leak|damaged|destroyed)/i.test(speech)) {
-    return speech.trim().slice(0, 500);
-  }
-
-  if (/shingle|leak|damage|storm|hail|water|emergency|urgent/i.test(lower) && speech.length > 12) {
-    return speech.trim().slice(0, 500);
-  }
-
-  return null;
-}
-
-function extractAdjusterContact(speech: string): boolean | null {
-  const normalized = speech.toLowerCase();
-
-  if (/\badjuster\b/.test(normalized)) {
+function extractInsuranceClaim(speech: string, pending: PendingQuestionKey | null): boolean | null {
+  if (allowsBooleanDirectAnswer(pending, "insurance_claim")) {
     return parseExplicitBoolean(speech);
   }
 
-  if (/\b(haven't talked to|have not talked to|haven't contacted|have not contacted)\b.*\badjuster\b/.test(
-    normalized,
-  )) {
-    return false;
-  }
-
-  if (/\b(talked to|spoken to|contacted)\b.*\badjuster\b/.test(normalized)) {
-    return true;
+  if (/\b(insurance|claim)\b/i.test(speech)) {
+    return parseExplicitBoolean(speech);
   }
 
   return null;
 }
 
-function extractInsuranceClaim(speech: string): boolean | null {
-  const normalized = speech.toLowerCase();
-
-  if (/\b(insurance|claim)\b/.test(normalized)) {
-    return parseExplicitBoolean(speech) ?? parseCorrectionBoolean(speech);
+function extractAdjusterContact(speech: string, pending: PendingQuestionKey | null): boolean | null {
+  if (allowsBooleanDirectAnswer(pending, "adjuster_contacted")) {
+    return parseExplicitBoolean(speech);
   }
 
-  if (/\bno claim\b|\bnot yet\b.*\bclaim\b|\bhaven't started\b.*\bclaim\b/.test(normalized)) {
-    return false;
+  if (/\badjuster\b/i.test(speech)) {
+    return parseExplicitBoolean(speech);
   }
 
   return null;
 }
 
-function extractPhotosAvailable(speech: string): boolean | null {
+function extractPhotosAvailable(speech: string, pending: PendingQuestionKey | null): boolean | null {
+  if (allowsBooleanDirectAnswer(pending, "photos_available")) {
+    return parseExplicitBoolean(speech);
+  }
+
   if (/\b(photo|picture|image)s?\b/i.test(speech)) {
     return parseExplicitBoolean(speech);
   }
@@ -83,7 +62,11 @@ function extractPhotosAvailable(speech: string): boolean | null {
   return null;
 }
 
-function extractActiveLeak(speech: string): boolean | null {
+function extractActiveLeak(speech: string, pending: PendingQuestionKey | null): boolean | null {
+  if (allowsBooleanDirectAnswer(pending, "active_leak")) {
+    return parseExplicitBoolean(speech);
+  }
+
   if (/\b(leak|water|drip|flooding|getting inside|active leak)\b/i.test(speech)) {
     const parsed = parseExplicitBoolean(speech);
     if (parsed !== null) {
@@ -102,35 +85,29 @@ function extractActiveLeak(speech: string): boolean | null {
   return null;
 }
 
-function applyExtractedBooleans(fields: RealtimeFields, speech: string): RealtimeFields {
-  let updated = { ...fields };
+function extractAddressFromSpeech(speech: string): string | null {
+  const streetMatch = speech.match(
+    /\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80}(?:\b(?:street|st|avenue|ave|road|rd|drive|dr|lane|ln|boulevard|blvd|way|court|ct|circle|place|pl)\b)?/i,
+  );
 
-  const insurance = extractInsuranceClaim(speech);
-  if (insurance !== null) {
-    updated.insurance_claim_started = insurance;
+  if (streetMatch && isPlausibleServiceAddress(streetMatch[0])) {
+    return streetMatch[0].trim();
   }
 
-  const adjuster = extractAdjusterContact(speech);
-  if (adjuster !== null) {
-    updated.adjuster_contacted = adjuster;
+  const atMatch = speech.match(/\bat\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,60})/i);
+  const candidate = atMatch?.[1]?.trim();
+
+  if (candidate && isPlausibleServiceAddress(candidate)) {
+    return candidate;
   }
 
-  const photos = extractPhotosAvailable(speech);
-  if (photos !== null) {
-    updated.photos_available = photos;
-  }
-
-  const leak = extractActiveLeak(speech);
-  if (leak !== null) {
-    updated.emergency_or_active_leak = leak;
-  }
-
-  return updated;
+  return null;
 }
 
 export function extractAllFieldsFromTranscript(
   speech: string,
   callerPhone?: string,
+  pendingQuestion: PendingQuestionKey | null = null,
 ): Partial<RealtimeFields> {
   const trimmed = speech.trim();
 
@@ -138,64 +115,60 @@ export function extractAllFieldsFromTranscript(
     return {};
   }
 
-  const libExtracted = extractFieldsFromSpeech(trimmed, callerPhone);
   const extracted: Partial<RealtimeFields> = {};
 
-  if (hasValue(libExtracted.full_name)) {
-    extracted.full_name = libExtracted.full_name;
-  } else {
-    const looseName = trimmed.match(
-      /\b(?:i'?m|my name is|this is|name'?s)\s+([A-Za-z]+(?:\s+[A-Za-z'-]+)?)/i,
-    )?.[1];
-    if (looseName) {
-      extracted.full_name = looseName.trim();
-    }
+  const explicitName = extractExplicitCallerName(trimmed);
+  if (explicitName) {
+    extracted.full_name = explicitName;
   }
 
-  if (hasValue(libExtracted.address)) {
-    extracted.address = libExtracted.address;
+  const damage = extractDamageOrCallReason(trimmed);
+  if (damage) {
+    extracted.problem_description = damage;
   }
 
-  if (hasValue(libExtracted.project_type)) {
-    extracted.project_type = libExtracted.project_type;
+  const address = extractAddressFromSpeech(trimmed);
+  if (address) {
+    extracted.address = address;
   }
 
-  if (hasValue(libExtracted.urgency)) {
-    extracted.urgency = libExtracted.urgency;
-  }
+  const callbackPhone = extractCallbackPhoneFromSpeech(trimmed, callerPhone, {
+    allowAffirmativeReuse: allowsCallbackAffirmativeReuse(pendingQuestion),
+  });
 
-  if (hasValue(libExtracted.appointment_preference)) {
-    extracted.appointment_preference = libExtracted.appointment_preference;
-  }
-
-  if (hasValue(libExtracted.storm_damage)) {
-    extracted.storm_damage = libExtracted.storm_damage;
-  }
-
-  const problem = extractProblemDescription(trimmed) ?? libExtracted.problem_description;
-  if (hasValue(problem)) {
-    extracted.problem_description = problem;
-  }
-
-  const callbackPhone = extractCallbackPhoneFromSpeech(trimmed, callerPhone);
   if (callbackPhone) {
     extracted.callback_phone = callbackPhone;
-    extracted.callback_phone_confirmed = false;
   }
 
-  const withBooleans = applyExtractedBooleans(extracted as RealtimeFields, trimmed);
+  const insurance = extractInsuranceClaim(trimmed, pendingQuestion);
+  if (insurance !== null) {
+    extracted.insurance_claim_started = insurance;
+  }
+
+  const adjuster = extractAdjusterContact(trimmed, pendingQuestion);
+  if (adjuster !== null) {
+    extracted.adjuster_contacted = adjuster;
+  }
+
+  const photos = extractPhotosAvailable(trimmed, pendingQuestion);
+  if (photos !== null) {
+    extracted.photos_available = photos;
+  }
+
+  const leak = extractActiveLeak(trimmed, pendingQuestion);
+  if (leak !== null) {
+    extracted.emergency_or_active_leak = leak;
+  }
 
   if (detectEmergency(trimmed)) {
-    withBooleans.urgency = withBooleans.urgency ?? "emergency";
-    if (
-      /water.*(inside|getting in|coming into)|active leak|leaking inside|flooding/i.test(trimmed)
-    ) {
-      withBooleans.emergency_or_active_leak = withBooleans.emergency_or_active_leak ?? true;
-      withBooleans.emergency_acknowledged = withBooleans.emergency_acknowledged ?? true;
+    extracted.urgency = extracted.urgency ?? "emergency";
+    if (/water.*(inside|getting in|coming into)|active leak|leaking inside|flooding/i.test(trimmed)) {
+      extracted.emergency_or_active_leak = extracted.emergency_or_active_leak ?? true;
+      extracted.emergency_acknowledged = true;
     }
   }
 
-  return withBooleans;
+  return extracted;
 }
 
 export function mergeExtractedFields(
@@ -204,35 +177,37 @@ export function mergeExtractedFields(
 ): RealtimeFields {
   let updated: RealtimeFields = { ...fields };
 
-  updated.full_name = mergeStringField(updated.full_name, extracted.full_name);
-
-  if (hasValue(extracted.address) && !hasValue(updated.address)) {
-    updated.address = extracted.address;
-    updated.address_confirmed = false;
+  if (
+    hasValue(extracted.full_name) &&
+    isPlausibleCallerName(extracted.full_name!) &&
+    !hasValue(updated.full_name)
+  ) {
+    updated.full_name = extracted.full_name!.trim().slice(0, 100);
   }
 
-  updated.project_type = mergeStringField(updated.project_type, extracted.project_type);
-  updated.urgency = mergeStringField(updated.urgency, extracted.urgency);
+  if (hasValue(extracted.problem_description) && !hasValue(updated.problem_description)) {
+    updated.problem_description = extracted.problem_description!.trim().slice(0, 500);
+  }
 
   if (
-    hasValue(extracted.appointment_preference) &&
-    !hasValue(updated.appointment_preference_raw)
+    hasValue(extracted.address) &&
+    isPlausibleServiceAddress(extracted.address!) &&
+    !hasValue(updated.address)
   ) {
-    updated.appointment_preference_raw = extracted.appointment_preference;
-    updated.schedule_confirmed = false;
+    updated.address = extracted.address!.trim().slice(0, 500);
+    updated.address_confirmed = false;
   }
-  updated.storm_damage = mergeStringField(updated.storm_damage, extracted.storm_damage);
-  updated.problem_description = mergeStringField(
-    updated.problem_description,
-    extracted.problem_description,
-  );
 
   if (hasValue(extracted.callback_phone)) {
     const normalized = normalizeCallbackPhoneE164(extracted.callback_phone!);
 
     if (!isCompanyPhoneNumber(normalized)) {
-      updated.callback_phone = normalized;
-      updated.callback_phone_confirmed = false;
+      const sameNumber = updated.callback_phone === normalized;
+
+      if (!sameNumber) {
+        updated.callback_phone = normalized;
+        updated.callback_phone_confirmed = false;
+      }
     }
   }
 
@@ -257,6 +232,89 @@ export function mergeExtractedFields(
 
   if (extracted.emergency_acknowledged) {
     updated.emergency_acknowledged = true;
+  }
+
+  return syncLegacyStringFields(updated);
+}
+
+export function applyPendingQuestionAnswer(
+  fields: RealtimeFields,
+  answer: string,
+  callerPhone: string | undefined,
+  pendingQuestion: PendingQuestionKey | null,
+): RealtimeFields {
+  const trimmed = answer.trim();
+
+  if (!trimmed || !pendingQuestion) {
+    return fields;
+  }
+
+  let updated: RealtimeFields = { ...fields };
+
+  switch (pendingQuestion) {
+    case "caller_name": {
+      const validated = validateCallerNameCandidate(trimmed, { isDirectNameAnswer: true });
+      if (validated.value) {
+        updated.full_name = validated.value.slice(0, 100);
+        updated.name_needs_clarification = false;
+      } else if (validated.needsClarification) {
+        updated.name_needs_clarification = true;
+      }
+      break;
+    }
+    case "call_reason":
+      if (!hasValue(updated.problem_description)) {
+        const damage = extractDamageOrCallReason(trimmed);
+        if (damage) {
+          updated.problem_description = damage;
+        }
+      }
+      break;
+    case "callback_phone":
+      if (/^(yes|yeah|yep|correct|this one|that one|same number)\b/i.test(trimmed) && callerPhone) {
+        updated.callback_phone = normalizeCallbackPhoneE164(callerPhone);
+        updated.callback_phone_confirmed = false;
+      } else {
+        const phone = extractCallbackPhoneFromSpeech(trimmed, callerPhone, {
+          allowAffirmativeReuse: true,
+        });
+        if (phone && !isCompanyPhoneNumber(phone)) {
+          updated.callback_phone = phone;
+          updated.callback_phone_confirmed = false;
+        }
+      }
+      break;
+    case "service_address":
+      if (!hasValue(updated.address)) {
+        if (isPlausibleServiceAddress(trimmed)) {
+          updated.address = trimmed.slice(0, 500);
+          updated.address_confirmed = false;
+        }
+      }
+      break;
+    case "photos_available":
+    case "insurance_claim":
+    case "adjuster_contacted":
+    case "active_leak": {
+      const parsed = parseExplicitBoolean(trimmed);
+      if (parsed !== null) {
+        const fieldMap = {
+          photos_available: "photos_available",
+          insurance_claim: "insurance_claim_started",
+          adjuster_contacted: "adjuster_contacted",
+          active_leak: "emergency_or_active_leak",
+        } as const;
+        updated[fieldMap[pendingQuestion]] = parsed;
+      }
+      break;
+    }
+    case "urgency":
+      if (!hasValue(updated.urgency)) {
+        updated.urgency = trimmed.slice(0, 200);
+      }
+      break;
+    default:
+      break;
   }
 
   return syncLegacyStringFields(updated);

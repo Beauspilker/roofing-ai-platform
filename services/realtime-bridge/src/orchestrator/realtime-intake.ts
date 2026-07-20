@@ -16,6 +16,7 @@ import {
   normalizeCallbackPhoneE164,
 } from "./callback-phone.js";
 import {
+  applyPendingQuestionAnswer,
   extractAllFieldsFromTranscript,
   mergeExtractedFields,
 } from "./multi-field-extraction.js";
@@ -42,7 +43,9 @@ import {
   syncLegacyStringFields,
   toCollectedFields,
 } from "./structured-intake.js";
-import type { RealtimeFields } from "./realtime-prompts.js";
+import type { PendingQuestionKey } from "./pending-question.js";
+import { resolvePendingQuestion } from "./pending-question.js";
+import type { ConversationState } from "./conversation-state.js";
 
 export type RealtimeIntakeStage = RequiredFieldKey;
 
@@ -72,13 +75,31 @@ export function mergeRealtimeCallerAnswer(
   fields: RealtimeFields,
   answer: string,
   callerPhone?: string,
+  options: {
+    pendingQuestion?: PendingQuestionKey | null;
+    conversationState?: ConversationState;
+  } = {},
 ): RealtimeFields {
-  const extracted = extractAllFieldsFromTranscript(answer, callerPhone);
-  let updated = mergeExtractedFields(fields, extracted);
+  const pendingQuestion =
+    options.pendingQuestion ??
+    resolvePendingQuestion(
+      fields,
+      options.conversationState ?? "collecting_intake",
+    );
+
+  let updated = applyPendingQuestionAnswer(fields, answer, callerPhone, pendingQuestion);
+
+  const extracted = extractAllFieldsFromTranscript(answer, callerPhone, pendingQuestion);
+  updated = mergeExtractedFields(updated, extracted);
 
   const missingBeforeDirect = getMissingRequiredFields(updated);
   if (missingBeforeDirect.length > 0) {
-    updated = applyDirectAnswerToMissingField(updated, answer, callerPhone);
+    updated = applyDirectAnswerToMissingField(
+      updated,
+      answer,
+      callerPhone,
+      pendingQuestion,
+    );
   }
 
   if (

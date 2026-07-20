@@ -1,0 +1,132 @@
+import type { RealtimeFields } from "./realtime-prompts.js";
+import { hasConfirmableAddress, isAddressConfirmed } from "./address-confirmation.js";
+import {
+  needsScheduleClarification,
+  needsScheduleConfirmation,
+} from "./schedule-normalizer.js";
+import {
+  getNextRequiredField,
+  type RequiredFieldKey,
+} from "./required-intake.js";
+import type { ConversationState } from "./conversation-state.js";
+
+export type PendingQuestionKey =
+  | "caller_name"
+  | "callback_phone"
+  | "callback_confirmation"
+  | "service_address"
+  | "address_confirmation"
+  | "call_reason"
+  | "photos_available"
+  | "insurance_claim"
+  | "adjuster_contacted"
+  | "active_leak"
+  | "urgency"
+  | "preferred_callback_time"
+  | "schedule_confirmation"
+  | "additional_notes"
+  | "summary_confirmation";
+
+function hasValue(value: string | undefined): boolean {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+export function needsCallbackConfirmation(fields: RealtimeFields): boolean {
+  return Boolean(
+    hasValue(fields.callback_phone) && fields.callback_phone_confirmed !== true,
+  );
+}
+
+export function needsAddressConfirmation(fields: RealtimeFields): boolean {
+  return hasConfirmableAddress(fields.address) && fields.address_confirmed !== true;
+}
+
+export function mapRequiredFieldToPending(field: RequiredFieldKey): PendingQuestionKey {
+  switch (field) {
+    case "problem_description":
+      return "call_reason";
+    case "full_name":
+      return "caller_name";
+    case "callback_phone":
+      return "callback_phone";
+    case "address":
+      return "service_address";
+    case "emergency_or_active_leak":
+      return "active_leak";
+    case "urgency":
+      return "urgency";
+    case "insurance_claim_started":
+      return "insurance_claim";
+    case "adjuster_contacted":
+      return "adjuster_contacted";
+    case "appointment_preference":
+      return "preferred_callback_time";
+    case "photos_available":
+      return "photos_available";
+    default:
+      return "call_reason";
+  }
+}
+
+export function resolvePendingQuestion(
+  fields: RealtimeFields,
+  conversationState: ConversationState,
+): PendingQuestionKey | null {
+  if (conversationState === "awaiting_callback_confirmation") {
+    return "callback_confirmation";
+  }
+
+  if (conversationState === "awaiting_address_confirmation") {
+    return "address_confirmation";
+  }
+
+  if (conversationState === "awaiting_schedule_clarification") {
+    return "preferred_callback_time";
+  }
+
+  if (conversationState === "awaiting_schedule_confirmation") {
+    return "schedule_confirmation";
+  }
+
+  if (conversationState === "awaiting_additional_notes") {
+    return "additional_notes";
+  }
+
+  if (
+    conversationState === "awaiting_summary_confirmation" ||
+    conversationState === "handling_correction" ||
+    conversationState === "presenting_summary"
+  ) {
+    return "summary_confirmation";
+  }
+
+  if (needsCallbackConfirmation(fields)) {
+    return "callback_confirmation";
+  }
+
+  if (needsAddressConfirmation(fields)) {
+    return "address_confirmation";
+  }
+
+  if (needsScheduleClarification(fields) || needsScheduleConfirmation(fields)) {
+    return needsScheduleConfirmation(fields)
+      ? "schedule_confirmation"
+      : "preferred_callback_time";
+  }
+
+  const next = getNextRequiredField(fields);
+  return next ? mapRequiredFieldToPending(next) : null;
+}
+
+export function allowsCallbackAffirmativeReuse(
+  pendingQuestion: PendingQuestionKey | null,
+): boolean {
+  return pendingQuestion === "callback_phone" || pendingQuestion === "callback_confirmation";
+}
+
+export function allowsBooleanDirectAnswer(
+  pendingQuestion: PendingQuestionKey | null,
+  field: PendingQuestionKey,
+): boolean {
+  return pendingQuestion === field;
+}

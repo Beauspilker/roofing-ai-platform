@@ -10,6 +10,7 @@ import {
   isPlausibleServiceAddress,
   validateCallerNameCandidate,
 } from "./field-validation.js";
+import { isPhotosFieldComplete } from "./photos-field.js";
 import { isScheduleComplete } from "./schedule-normalizer.js";
 import { needsCallbackConfirmation, mapRequiredFieldToPending } from "./pending-question.js";
 import {
@@ -121,7 +122,7 @@ function isFieldComplete(field: RequiredFieldKey, fields: RealtimeFields): boole
     case "appointment_preference":
       return isScheduleComplete(fields);
     case "photos_available":
-      return !isStructuredBooleanUnset(fields.photos_available);
+      return isPhotosFieldComplete(fields);
     default:
       return false;
   }
@@ -298,11 +299,18 @@ export function applyDirectAnswerToMissingField(
       break;
     case "emergency_or_active_leak":
     case "insurance_claim_started":
-    case "adjuster_contacted":
-    case "photos_available": {
+    case "adjuster_contacted": {
       const parsed = parseExplicitBoolean(trimmed);
       if (parsed !== null) {
         updated[target] = parsed;
+      }
+      break;
+    }
+    case "photos_available": {
+      const parsed = parseExplicitBoolean(trimmed);
+      if (parsed !== null && !isPhotosFieldComplete(updated)) {
+        updated.photos_available = parsed;
+        updated.pending_question = undefined;
       }
       break;
     }

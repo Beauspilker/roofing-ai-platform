@@ -68,13 +68,23 @@ import {
   EARLY_CALLER_NAME_QUESTION,
   isPlausibleCallerName,
 } from "./field-validation.js";
-import { resolvePendingQuestion } from "./pending-question.js";
+import {
+  attachPendingQuestion,
+  pendingQuestionForConversationState,
+  pendingQuestionForNextField,
+  resolvePendingQuestion,
+} from "./pending-question.js";
 import {
   getNaturalTransitionQuestion,
   getNextRequiredField,
   getSharedMissingFields,
   isSharedIntakeComplete,
 } from "./required-intake.js";
+import {
+  isPhotosFieldComplete,
+  normalizePhotosValue,
+  photosAffirmativeAcknowledgment,
+} from "./photos-field.js";
 import { applyCorrectionToStructuredField, syncLegacyStringFields } from "./structured-intake.js";
 import { logError } from "../logger.js";
 
@@ -228,6 +238,31 @@ function buildScheduleConfirmationReply(fields: RealtimeFields): string {
   return ensureSingleIntakeQuestion(buildScheduleConfirmationQuestion(label));
 }
 
+function finalizeIntakeFields(
+  fields: RealtimeFields,
+  nextState: ConversationState,
+): RealtimeFields {
+  const statePending = pendingQuestionForConversationState(nextState);
+
+  if (statePending) {
+    return attachPendingQuestion(fields, statePending);
+  }
+
+  return attachPendingQuestion(fields, pendingQuestionForNextField(getNextRequiredField(fields)));
+}
+
+function packagePostIntakeResult(
+  fields: RealtimeFields,
+  replyText: string,
+  nextState: ConversationState,
+): { replyText: string; fields: RealtimeFields; nextState: ConversationState } {
+  return {
+    replyText,
+    fields: finalizeIntakeFields(fields, nextState),
+    nextState,
+  };
+}
+
 function buildPostIntakeReply(
   policy: AcknowledgmentPolicy,
   fieldsBefore: RealtimeFields,
@@ -238,41 +273,38 @@ function buildPostIntakeReply(
   options: { afterConfirmation?: boolean; isFirstCallerTurn?: boolean } = {},
 ): { replyText: string; fields: RealtimeFields; nextState: ConversationState } {
   if (needsCallbackReadback(updatedFields)) {
-    const reply = buildCallbackConfirmationReply(updatedFields);
-    return {
-      replyText: reply,
-      fields: updatedFields,
-      nextState: "awaiting_callback_confirmation",
-    };
+    return packagePostIntakeResult(
+      updatedFields,
+      buildCallbackConfirmationReply(updatedFields),
+      "awaiting_callback_confirmation",
+    );
   }
 
   if (needsAddressReadback(updatedFields)) {
-    const reply = buildAddressConfirmationReply(updatedFields);
-    return {
-      replyText: reply,
-      fields: updatedFields,
-      nextState: "awaiting_address_confirmation",
-    };
+    return packagePostIntakeResult(
+      updatedFields,
+      buildAddressConfirmationReply(updatedFields),
+      "awaiting_address_confirmation",
+    );
   }
 
   if (needsScheduleClarification(updatedFields)) {
     const prompt =
       updatedFields.schedule_clarification_prompt?.trim() ||
       "What time works best?";
-    return {
-      replyText: ensureSingleIntakeQuestion(prompt),
-      fields: updatedFields,
-      nextState: "awaiting_schedule_clarification",
-    };
+    return packagePostIntakeResult(
+      updatedFields,
+      ensureSingleIntakeQuestion(prompt),
+      "awaiting_schedule_clarification",
+    );
   }
 
   if (needsScheduleConfirmation(updatedFields)) {
-    const reply = buildScheduleConfirmationReply(updatedFields);
-    return {
-      replyText: reply,
-      fields: updatedFields,
-      nextState: "awaiting_schedule_confirmation",
-    };
+    return packagePostIntakeResult(
+      updatedFields,
+      buildScheduleConfirmationReply(updatedFields),
+      "awaiting_schedule_confirmation",
+    );
   }
 
   const missing = getMissingRequiredFields(updatedFields);
@@ -281,11 +313,17 @@ function buildPostIntakeReply(
   );
 
   if (missing.length === 0 && sharedMissing.length === 0) {
-    return {
-      replyText: ensureSingleIntakeQuestion(REALTIME_ANYTHING_ELSE_QUESTION),
-      fields: updatedFields,
-      nextState: "awaiting_additional_notes",
-    };
+    const photosJustResolved =
+      !isPhotosFieldComplete(fieldsBefore) && isPhotosFieldComplete(updatedFields);
+    const photosAck = photosJustResolved
+      ? photosAffirmativeAcknowledgment(normalizePhotosValue(updatedFields.photos_available))
+      : null;
+    const anythingElseQuestion = REALTIME_ANYTHING_ELSE_QUESTION;
+    const reply = photosAck
+      ? ensureSingleIntakeQuestion(`${photosAck} ${anythingElseQuestion}`.replace(/\s+/g, " ").trim())
+      : ensureSingleIntakeQuestion(anythingElseQuestion);
+
+    return packagePostIntakeResult(updatedFields, reply, "awaiting_additional_notes");
   }
 
   if (
@@ -301,32 +339,36 @@ function buildPostIntakeReply(
           ? getNaturalTransitionQuestion(nextField, updatedFields, callerPhone)
           : EARLY_CALLER_NAME_QUESTION;
 
-    return {
-      replyText: ensureSingleIntakeQuestion(
-        `${REALTIME_INTRO_TRANSITION} ${question}`.replace(/\s+/g, " ").trim(),
-      ),
-      fields: {
+    return packagePostIntakeResult(
+      {
         ...updatedFields,
         intake_intro_delivered: true,
       },
-      nextState: "collecting_intake",
-    };
+      ensureSingleIntakeQuestion(
+        `${REALTIME_INTRO_TRANSITION} ${question}`.replace(/\s+/g, " ").trim(),
+      ),
+      "collecting_intake",
+    );
   }
 
-  return {
-    replyText: ensureSingleIntakeQuestion(
-      buildIntakeReply(
-        policy,
-        updatedFields,
-        trimmedSpeech,
-        callerPhone,
-        filledCount,
-        options.afterConfirmation === true,
-      ),
-    ),
-    fields: updatedFields,
-    nextState: "collecting_intake",
-  };
+  const photosJustResolved =
+    !isPhotosFieldComplete(fieldsBefore) && isPhotosFieldComplete(updatedFields);
+  const photosAck = photosJustResolved
+    ? photosAffirmativeAcknowledgment(normalizePhotosValue(updatedFields.photos_available))
+    : null;
+  const intakeReply = buildIntakeReply(
+    policy,
+    updatedFields,
+    trimmedSpeech,
+    callerPhone,
+    filledCount,
+    options.afterConfirmation === true,
+  );
+  const combinedReply = photosAck
+    ? ensureSingleIntakeQuestion(`${photosAck} ${intakeReply}`.replace(/\s+/g, " ").trim())
+    : ensureSingleIntakeQuestion(intakeReply);
+
+  return packagePostIntakeResult(updatedFields, combinedReply, "collecting_intake");
 }
 
 function isNameCaptureTurn(

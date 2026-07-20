@@ -15,6 +15,12 @@ import {
   validateCallerNameCandidate,
 } from "./field-validation.js";
 import { isCallerNameResolved } from "./required-intake.js";
+import {
+  applyPhotosPendingAnswer,
+  isPhotosFieldComplete,
+  parsePhotosAnswerWhenPending,
+} from "./photos-field.js";
+import { preserveConfirmedFieldState } from "./safe-field-merge.js";
 import type { PendingQuestionKey } from "./pending-question.js";
 import {
   allowsBooleanDirectAnswer,
@@ -53,7 +59,15 @@ function extractAdjusterContact(speech: string, pending: PendingQuestionKey | nu
   return null;
 }
 
-function extractPhotosAvailable(speech: string, pending: PendingQuestionKey | null): boolean | null {
+function extractPhotosAvailable(
+  speech: string,
+  pending: PendingQuestionKey | null,
+): RealtimeFields["photos_available"] | null {
+  const pendingAnswer = parsePhotosAnswerWhenPending(speech, pending);
+  if (pendingAnswer !== null) {
+    return pendingAnswer;
+  }
+
   if (allowsBooleanDirectAnswer(pending, "photos_available")) {
     return parseExplicitBoolean(speech);
   }
@@ -135,20 +149,27 @@ export function extractAllFieldsFromTranscript(
     extracted.address = address;
   }
 
-  const callbackPhone = extractCallbackPhoneFromSpeech(trimmed, callerPhone, {
-    allowAffirmativeReuse: allowsCallbackAffirmativeReuse(pendingQuestion),
-  });
+  const callbackPhone =
+    pendingQuestion === "photos_available"
+      ? null
+      : extractCallbackPhoneFromSpeech(trimmed, callerPhone, {
+          allowAffirmativeReuse: allowsCallbackAffirmativeReuse(pendingQuestion),
+        });
 
   if (callbackPhone) {
     extracted.callback_phone = callbackPhone;
   }
 
-  const insurance = extractInsuranceClaim(trimmed, pendingQuestion);
+  const insurance =
+    pendingQuestion === "photos_available" ? null : extractInsuranceClaim(trimmed, pendingQuestion);
   if (insurance !== null) {
     extracted.insurance_claim_started = insurance;
   }
 
-  const adjuster = extractAdjusterContact(trimmed, pendingQuestion);
+  const adjuster =
+    pendingQuestion === "photos_available"
+      ? null
+      : extractAdjusterContact(trimmed, pendingQuestion);
   if (adjuster !== null) {
     extracted.adjuster_contacted = adjuster;
   }
@@ -158,7 +179,8 @@ export function extractAllFieldsFromTranscript(
     extracted.photos_available = photos;
   }
 
-  const leak = extractActiveLeak(trimmed, pendingQuestion);
+  const leak =
+    pendingQuestion === "photos_available" ? null : extractActiveLeak(trimmed, pendingQuestion);
   if (leak !== null) {
     extracted.emergency_or_active_leak = leak;
   }
@@ -223,7 +245,10 @@ export function mergeExtractedFields(
   }
 
   if (extracted.photos_available !== undefined && extracted.photos_available !== null) {
-    updated.photos_available = extracted.photos_available;
+    if (!isPhotosFieldComplete(updated)) {
+      updated.photos_available = extracted.photos_available;
+      updated.pending_question = undefined;
+    }
   }
 
   if (
@@ -237,7 +262,7 @@ export function mergeExtractedFields(
     updated.emergency_acknowledged = true;
   }
 
-  return syncLegacyStringFields(updated);
+  return preserveConfirmedFieldState(fields, syncLegacyStringFields(updated));
 }
 
 export function applyPendingQuestionAnswer(
@@ -315,14 +340,16 @@ export function applyPendingQuestionAnswer(
         }
       }
       break;
-    case "photos_available":
+    case "photos_available": {
+      updated = applyPhotosPendingAnswer(updated, trimmed, pendingQuestion);
+      break;
+    }
     case "insurance_claim":
     case "adjuster_contacted":
     case "active_leak": {
       const parsed = parseExplicitBoolean(trimmed);
       if (parsed !== null) {
         const fieldMap = {
-          photos_available: "photos_available",
           insurance_claim: "insurance_claim_started",
           adjuster_contacted: "adjuster_contacted",
           active_leak: "emergency_or_active_leak",
@@ -345,5 +372,5 @@ export function applyPendingQuestionAnswer(
       break;
   }
 
-  return syncLegacyStringFields(updated);
+  return preserveConfirmedFieldState(fields, syncLegacyStringFields(updated));
 }

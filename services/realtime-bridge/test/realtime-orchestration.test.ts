@@ -87,11 +87,11 @@ const mockSession = {
 
 test("cedar is selected in initial session config before any response", () => {
   const update = buildRealtimeSessionUpdate("cedar", {
-    realtimeVadEagerness: "high",
+    turnDetectionSilenceDurationMs: 750,
   } as never);
 
   assert.equal(update.session.audio.output.voice, "cedar");
-  assert.equal(update.session.audio.input.turn_detection.eagerness, "high");
+  assert.equal(update.session.audio.input.turn_detection.type, "server_vad");
   assert.equal(DEFAULT_OPENAI_REALTIME_VOICE, "cedar");
 });
 
@@ -766,11 +766,13 @@ test("schedule clarification flow resolves vague afternoon", () => {
 
 test("response timing config targets about one second after caller finishes", () => {
   const update = buildRealtimeSessionUpdate("cedar", {
-    realtimeVadEagerness: "high",
-    turnDetectionSilenceDurationMs: 800,
+    turnDetectionSilenceDurationMs: 750,
+    turnDetectionPrefixPaddingMs: 200,
+    turnDetectionThreshold: 0.5,
   } as never);
 
-  assert.equal(update.session.audio.input.turn_detection.eagerness, "high");
+  assert.equal(update.session.audio.input.turn_detection.type, "server_vad");
+  assert.equal(update.session.audio.input.turn_detection.silence_duration_ms, 750);
 });
 
 test("turn timing records speech stopped to first audio delay", () => {

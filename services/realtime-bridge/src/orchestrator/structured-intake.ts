@@ -1,4 +1,6 @@
 import type { CollectedFields } from "../../../../lib/call-intake.js";
+import type { PhotosAvailability } from "./photos-field.js";
+import { normalizePhotosValue } from "./photos-field.js";
 import type { RealtimeFields } from "./realtime-prompts.js";
 
 export type TriStateBoolean = boolean | null;
@@ -166,7 +168,7 @@ export function toCollectedFields(fields: RealtimeFields): CollectedFields {
     ...fields,
     insurance_claim: triStateToLegacyString(fields.insurance_claim_started),
     adjuster_contacted: triStateToLegacyString(normalizeTriState(fields.adjuster_contacted)),
-    photos_available: triStateToLegacyString(normalizeTriState(fields.photos_available)),
+    photos_available: photosValueToLegacyString(normalizePhotosValue(fields.photos_available)),
     active_leak: triStateToLegacyString(fields.emergency_or_active_leak),
   };
 }
@@ -199,6 +201,22 @@ function triStateToLegacyString(value: TriStateBoolean | undefined): string | un
   }
   if (value === false) {
     return "no";
+  }
+  return undefined;
+}
+
+function photosValueToLegacyString(value: PhotosAvailability): string | undefined {
+  if (value === true) {
+    return "yes";
+  }
+  if (value === false) {
+    return "no";
+  }
+  if (value === "unknown") {
+    return "unknown";
+  }
+  if (value === "declined") {
+    return "declined";
   }
   return undefined;
 }

@@ -6,6 +6,7 @@ import {
   type TriStateBoolean,
 } from "./structured-intake.js";
 import { CLOSING_MESSAGE } from "./conversation-state.js";
+import type { PhotosAvailability } from "./photos-field.js";
 import { buildValidatedSpokenSummary } from "./summary-builder.js";
 
 export const REALTIME_OPENING_GREETING =
@@ -25,7 +26,7 @@ export type RealtimeFields = Omit<
 > & {
   insurance_claim_started?: TriStateBoolean;
   adjuster_contacted?: TriStateBoolean;
-  photos_available?: TriStateBoolean;
+  photos_available?: PhotosAvailability;
   emergency_or_active_leak?: TriStateBoolean;
   callback_phone_confirmed?: boolean;
   address_confirmed?: boolean;

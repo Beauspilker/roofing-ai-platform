@@ -14,12 +14,14 @@ const REALTIME_INSTRUCTIONS =
   "Never invent intake questions or confirm details that were not provided by the server.";
 
 export function buildRealtimeSessionUpdate(voice: string, config?: BridgeConfig) {
-  const eagerness =
-    config?.realtimeVadEagerness === "low" ||
-    config?.realtimeVadEagerness === "medium" ||
-    config?.realtimeVadEagerness === "high"
-      ? config.realtimeVadEagerness
-      : "high";
+  const silenceDurationMs = Math.min(
+    800,
+    Math.max(650, config?.turnDetectionSilenceDurationMs ?? 750),
+  );
+  const prefixPaddingMs = config?.turnDetectionPrefixPaddingMs ?? 200;
+  const threshold = Number.isFinite(config?.turnDetectionThreshold)
+    ? config!.turnDetectionThreshold
+    : 0.5;
 
   return {
     type: "session.update" as const,
@@ -34,8 +36,10 @@ export function buildRealtimeSessionUpdate(voice: string, config?: BridgeConfig)
             model: "whisper-1",
           },
           turn_detection: {
-            type: "semantic_vad" as const,
-            eagerness,
+            type: "server_vad" as const,
+            threshold,
+            prefix_padding_ms: prefixPaddingMs,
+            silence_duration_ms: silenceDurationMs,
             create_response: false,
             interrupt_response: true,
           },

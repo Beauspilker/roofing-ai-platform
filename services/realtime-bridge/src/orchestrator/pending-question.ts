@@ -1,4 +1,5 @@
 import type { RealtimeFields } from "./realtime-prompts.js";
+import { isPhotosFieldComplete } from "./photos-field.js";
 import { hasConfirmableAddress, isAddressConfirmed } from "./address-confirmation.js";
 import {
   needsScheduleClarification,
@@ -68,10 +69,55 @@ export function mapRequiredFieldToPending(field: RequiredFieldKey): PendingQuest
   }
 }
 
+export function isPendingQuestionKey(value: string): value is PendingQuestionKey {
+  return (
+    value === "caller_name" ||
+    value === "callback_phone" ||
+    value === "callback_confirmation" ||
+    value === "service_address" ||
+    value === "address_confirmation" ||
+    value === "call_reason" ||
+    value === "photos_available" ||
+    value === "insurance_claim" ||
+    value === "adjuster_contacted" ||
+    value === "active_leak" ||
+    value === "urgency" ||
+    value === "preferred_callback_time" ||
+    value === "schedule_confirmation" ||
+    value === "additional_notes" ||
+    value === "summary_confirmation"
+  );
+}
+
+function isStoredPendingQuestionStillValid(
+  fields: RealtimeFields,
+  pending: PendingQuestionKey,
+): boolean {
+  switch (pending) {
+    case "photos_available":
+      return !isPhotosFieldComplete(fields);
+    case "callback_confirmation":
+      return needsCallbackConfirmation(fields);
+    case "address_confirmation":
+      return needsAddressConfirmation(fields);
+    case "preferred_callback_time":
+      return needsScheduleClarification(fields);
+    case "schedule_confirmation":
+      return needsScheduleConfirmation(fields);
+    default:
+      return true;
+  }
+}
+
 export function resolvePendingQuestion(
   fields: RealtimeFields,
   conversationState: ConversationState,
 ): PendingQuestionKey | null {
+  const stored = fields.pending_question?.trim();
+
+  if (stored && isPendingQuestionKey(stored) && isStoredPendingQuestionStillValid(fields, stored)) {
+    return stored;
+  }
   if (conversationState === "awaiting_callback_confirmation") {
     return "callback_confirmation";
   }
@@ -116,6 +162,52 @@ export function resolvePendingQuestion(
 
   const next = getNextRequiredField(fields);
   return next ? mapRequiredFieldToPending(next) : null;
+}
+
+export function pendingQuestionForConversationState(
+  conversationState: ConversationState,
+): PendingQuestionKey | null {
+  switch (conversationState) {
+    case "awaiting_callback_confirmation":
+      return "callback_confirmation";
+    case "awaiting_address_confirmation":
+      return "address_confirmation";
+    case "awaiting_schedule_clarification":
+      return "preferred_callback_time";
+    case "awaiting_schedule_confirmation":
+      return "schedule_confirmation";
+    case "awaiting_additional_notes":
+      return "additional_notes";
+    case "awaiting_summary_confirmation":
+    case "handling_correction":
+    case "presenting_summary":
+      return "summary_confirmation";
+    default:
+      return null;
+  }
+}
+
+export function pendingQuestionForNextField(
+  field: RequiredFieldKey | null,
+): PendingQuestionKey | null {
+  return field ? mapRequiredFieldToPending(field) : null;
+}
+
+export function attachPendingQuestion(
+  fields: RealtimeFields,
+  pendingQuestion: PendingQuestionKey | null,
+): RealtimeFields {
+  if (!pendingQuestion) {
+    return {
+      ...fields,
+      pending_question: undefined,
+    };
+  }
+
+  return {
+    ...fields,
+    pending_question: pendingQuestion,
+  };
 }
 
 export function allowsCallbackAffirmativeReuse(

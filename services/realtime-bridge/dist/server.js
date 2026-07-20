@@ -34,7 +34,7 @@ function getConfig() {
     ),
     bargeInEnabled: isRealtimeBargeInEnabled(),
     turnDetectionSilenceDurationMs: Number.parseInt(
-      process.env.REALTIME_SILENCE_DURATION_MS ?? "800",
+      process.env.REALTIME_SILENCE_DURATION_MS ?? "750",
       10
     ),
     turnDetectionPrefixPaddingMs: Number.parseInt(
@@ -288,7 +288,12 @@ var TurnTimingTracker = class {
     logInfo("turn_timing", {
       callSid,
       milestone,
-      elapsedMs: now - (this.turnStartedAt ?? now)
+      elapsedMs: now - (this.turnStartedAt ?? now),
+      caller_speech_stopped_at: this.marks.get("speech_stopped"),
+      final_transcript_at: this.marks.get("transcript_completed"),
+      state_updated_at: this.marks.get("structured_state_updated"),
+      response_requested_at: this.marks.get("response_requested"),
+      first_audio_delta_at: this.marks.get("first_audio_received")
     });
     if (milestone === "first_audio_sent_to_twilio") {
       this.recordStageSegments(callSid);
@@ -519,7 +524,12 @@ import WebSocket from "ws";
 var REALTIME_DELIVERY_INSTRUCTIONS = "Professional, calm, confident, lower-pitched male receptionist. Natural American conversational delivery. Warm but not overly enthusiastic.";
 var REALTIME_INSTRUCTIONS = `${REALTIME_DELIVERY_INSTRUCTIONS} You are the live phone receptionist for Beau's Roofing. Deliver exactly one short script per turn. Never ask more than one question. Never invent intake questions or confirm details that were not provided by the server.`;
 function buildRealtimeSessionUpdate(voice, config2) {
-  const eagerness = config2?.realtimeVadEagerness === "low" || config2?.realtimeVadEagerness === "medium" || config2?.realtimeVadEagerness === "high" ? config2.realtimeVadEagerness : "high";
+  const silenceDurationMs = Math.min(
+    800,
+    Math.max(650, config2?.turnDetectionSilenceDurationMs ?? 750)
+  );
+  const prefixPaddingMs = config2?.turnDetectionPrefixPaddingMs ?? 200;
+  const threshold = Number.isFinite(config2?.turnDetectionThreshold) ? config2.turnDetectionThreshold : 0.5;
   return {
     type: "session.update",
     session: {
@@ -533,8 +543,10 @@ function buildRealtimeSessionUpdate(voice, config2) {
             model: "whisper-1"
           },
           turn_detection: {
-            type: "semantic_vad",
-            eagerness,
+            type: "server_vad",
+            threshold,
+            prefix_padding_ms: prefixPaddingMs,
+            silence_duration_ms: silenceDurationMs,
             create_response: false,
             interrupt_response: true
           }
@@ -3100,6 +3112,83 @@ function extractCallbackPhoneFromSpeech(speech, callerPhone, options = {}) {
   return null;
 }
 
+// src/orchestrator/photos-field.ts
+function isPhotosResolved(value) {
+  return value === true || value === false || value === "unknown" || value === "declined";
+}
+function isPhotosFieldComplete(fields) {
+  return isPhotosResolved(normalizePhotosValue(fields.photos_available));
+}
+function normalizePhotosValue(value) {
+  if (value === true || value === false || value === "unknown" || value === "declined") {
+    return value;
+  }
+  if (value === "yes") {
+    return true;
+  }
+  if (value === "no") {
+    return false;
+  }
+  if (value === "unknown") {
+    return "unknown";
+  }
+  if (value === "declined") {
+    return "declined";
+  }
+  if (value === null || value === void 0) {
+    return null;
+  }
+  return null;
+}
+function parsePhotosAnswerWhenPending(speech, pendingQuestion) {
+  if (pendingQuestion !== "photos_available") {
+    return null;
+  }
+  const normalized = speech.trim().toLowerCase().replace(/[^\w\s']/g, " ").replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return null;
+  }
+  if (/\b(rather not say|prefer not|rather not|don't want to say|do not want to say|won't say|will not say)\b/.test(
+    normalized
+  )) {
+    return "declined";
+  }
+  if (/\b(not sure|unsure|don't know|do not know|maybe|uncertain)\b/.test(normalized)) {
+    return "unknown";
+  }
+  if (/^(yes|yeah|yep|yup|sure|correct|right|i do|i have|i've got|we do|we have|i have some|we have some)\b/.test(
+    normalized
+  ) || /\b(i have (some )?(photos|pictures|images)|got (some )?(photos|pictures|images))\b/.test(
+    normalized
+  )) {
+    return true;
+  }
+  if (/^(no|nope|nah|none|don't|dont|i don't|i dont|we don't|we dont|not really)\b/.test(normalized)) {
+    return false;
+  }
+  if (/\b(no photos|no pictures|don't have|dont have|haven't taken|havent taken)\b/.test(normalized)) {
+    return false;
+  }
+  return null;
+}
+function applyPhotosPendingAnswer(fields, speech, pendingQuestion) {
+  const parsed = parsePhotosAnswerWhenPending(speech, pendingQuestion);
+  if (parsed === null || isPhotosResolved(fields.photos_available)) {
+    return fields;
+  }
+  return {
+    ...fields,
+    photos_available: parsed,
+    pending_question: void 0
+  };
+}
+function photosAffirmativeAcknowledgment(value) {
+  if (value === true) {
+    return "Great. You'll be able to send those safely after the call.";
+  }
+  return null;
+}
+
 // src/orchestrator/structured-intake.ts
 var EXPLICIT_YES = /^(yes|yeah|yep|yup|sure|correct|right|already|i have|i did|i've|we have|we've)\b/i;
 var EXPLICIT_NO = /^(no|nope|nah|not yet|haven't|havent|have not|none|negative|i haven't|i have not|we haven't|we have not)\b/i;
@@ -3150,7 +3239,7 @@ function toCollectedFields(fields) {
     ...fields,
     insurance_claim: triStateToLegacyString(fields.insurance_claim_started),
     adjuster_contacted: triStateToLegacyString(normalizeTriState(fields.adjuster_contacted)),
-    photos_available: triStateToLegacyString(normalizeTriState(fields.photos_available)),
+    photos_available: photosValueToLegacyString(normalizePhotosValue(fields.photos_available)),
     active_leak: triStateToLegacyString(fields.emergency_or_active_leak)
   };
 }
@@ -3175,6 +3264,21 @@ function triStateToLegacyString(value) {
   }
   if (value === false) {
     return "no";
+  }
+  return void 0;
+}
+function photosValueToLegacyString(value) {
+  if (value === true) {
+    return "yes";
+  }
+  if (value === false) {
+    return "no";
+  }
+  if (value === "unknown") {
+    return "unknown";
+  }
+  if (value === "declined") {
+    return "declined";
   }
   return void 0;
 }
@@ -3872,7 +3976,30 @@ function mapRequiredFieldToPending(field) {
       return "call_reason";
   }
 }
+function isPendingQuestionKey(value) {
+  return value === "caller_name" || value === "callback_phone" || value === "callback_confirmation" || value === "service_address" || value === "address_confirmation" || value === "call_reason" || value === "photos_available" || value === "insurance_claim" || value === "adjuster_contacted" || value === "active_leak" || value === "urgency" || value === "preferred_callback_time" || value === "schedule_confirmation" || value === "additional_notes" || value === "summary_confirmation";
+}
+function isStoredPendingQuestionStillValid(fields, pending) {
+  switch (pending) {
+    case "photos_available":
+      return !isPhotosFieldComplete(fields);
+    case "callback_confirmation":
+      return needsCallbackConfirmation(fields);
+    case "address_confirmation":
+      return needsAddressConfirmation(fields);
+    case "preferred_callback_time":
+      return needsScheduleClarification(fields);
+    case "schedule_confirmation":
+      return needsScheduleConfirmation(fields);
+    default:
+      return true;
+  }
+}
 function resolvePendingQuestion(fields, conversationState) {
+  const stored = fields.pending_question?.trim();
+  if (stored && isPendingQuestionKey(stored) && isStoredPendingQuestionStillValid(fields, stored)) {
+    return stored;
+  }
   if (conversationState === "awaiting_callback_confirmation") {
     return "callback_confirmation";
   }
@@ -3902,6 +4029,41 @@ function resolvePendingQuestion(fields, conversationState) {
   }
   const next = getNextRequiredField(fields);
   return next ? mapRequiredFieldToPending(next) : null;
+}
+function pendingQuestionForConversationState(conversationState) {
+  switch (conversationState) {
+    case "awaiting_callback_confirmation":
+      return "callback_confirmation";
+    case "awaiting_address_confirmation":
+      return "address_confirmation";
+    case "awaiting_schedule_clarification":
+      return "preferred_callback_time";
+    case "awaiting_schedule_confirmation":
+      return "schedule_confirmation";
+    case "awaiting_additional_notes":
+      return "additional_notes";
+    case "awaiting_summary_confirmation":
+    case "handling_correction":
+    case "presenting_summary":
+      return "summary_confirmation";
+    default:
+      return null;
+  }
+}
+function pendingQuestionForNextField(field) {
+  return field ? mapRequiredFieldToPending(field) : null;
+}
+function attachPendingQuestion(fields, pendingQuestion) {
+  if (!pendingQuestion) {
+    return {
+      ...fields,
+      pending_question: void 0
+    };
+  }
+  return {
+    ...fields,
+    pending_question: pendingQuestion
+  };
 }
 function allowsCallbackAffirmativeReuse(pendingQuestion) {
   return pendingQuestion === "callback_phone" || pendingQuestion === "callback_confirmation";
@@ -3982,7 +4144,7 @@ function isFieldComplete(field, fields) {
     case "appointment_preference":
       return isScheduleComplete(fields);
     case "photos_available":
-      return !isStructuredBooleanUnset(fields.photos_available);
+      return isPhotosFieldComplete(fields);
     default:
       return false;
   }
@@ -4112,11 +4274,18 @@ function applyDirectAnswerToMissingField(fields, answer, callerPhone, pendingQue
       break;
     case "emergency_or_active_leak":
     case "insurance_claim_started":
-    case "adjuster_contacted":
-    case "photos_available": {
+    case "adjuster_contacted": {
       const parsed = parseExplicitBoolean(trimmed);
       if (parsed !== null) {
         updated[target] = parsed;
+      }
+      break;
+    }
+    case "photos_available": {
+      const parsed = parseExplicitBoolean(trimmed);
+      if (parsed !== null && !isPhotosFieldComplete(updated)) {
+        updated.photos_available = parsed;
+        updated.pending_question = void 0;
       }
       break;
     }
@@ -4133,6 +4302,21 @@ function applyDirectAnswerToMissingField(fields, answer, callerPhone, pendingQue
 }
 function needsCallbackReadback(fields) {
   return needsCallbackConfirmation(fields);
+}
+
+// src/orchestrator/safe-field-merge.ts
+function preserveConfirmedFieldState(before, after) {
+  const callbackUnchanged = (before.callback_phone?.trim() ?? "") === (after.callback_phone?.trim() ?? "");
+  const addressUnchanged = (before.address?.trim() ?? "") === (after.address?.trim() ?? "");
+  const nameUnchanged = (before.full_name?.trim() ?? "") === (after.full_name?.trim() ?? "");
+  return {
+    ...after,
+    callback_phone_confirmed: callbackUnchanged && before.callback_phone_confirmed === true ? true : after.callback_phone_confirmed,
+    address_confirmed: addressUnchanged && before.address_confirmed === true ? true : after.address_confirmed,
+    full_name: nameUnchanged ? before.full_name ?? after.full_name : after.full_name,
+    caller_name_declined: nameUnchanged ? before.caller_name_declined : after.caller_name_declined,
+    caller_name_unavailable: nameUnchanged ? before.caller_name_unavailable : after.caller_name_unavailable
+  };
 }
 
 // src/orchestrator/multi-field-extraction.ts
@@ -4158,6 +4342,10 @@ function extractAdjusterContact(speech, pending) {
   return null;
 }
 function extractPhotosAvailable(speech, pending) {
+  const pendingAnswer = parsePhotosAnswerWhenPending(speech, pending);
+  if (pendingAnswer !== null) {
+    return pendingAnswer;
+  }
   if (allowsBooleanDirectAnswer(pending, "photos_available")) {
     return parseExplicitBoolean(speech);
   }
@@ -4216,17 +4404,17 @@ function extractAllFieldsFromTranscript(speech, callerPhone, pendingQuestion = n
   if (address) {
     extracted.address = address;
   }
-  const callbackPhone = extractCallbackPhoneFromSpeech(trimmed, callerPhone, {
+  const callbackPhone = pendingQuestion === "photos_available" ? null : extractCallbackPhoneFromSpeech(trimmed, callerPhone, {
     allowAffirmativeReuse: allowsCallbackAffirmativeReuse(pendingQuestion)
   });
   if (callbackPhone) {
     extracted.callback_phone = callbackPhone;
   }
-  const insurance = extractInsuranceClaim(trimmed, pendingQuestion);
+  const insurance = pendingQuestion === "photos_available" ? null : extractInsuranceClaim(trimmed, pendingQuestion);
   if (insurance !== null) {
     extracted.insurance_claim_started = insurance;
   }
-  const adjuster = extractAdjusterContact(trimmed, pendingQuestion);
+  const adjuster = pendingQuestion === "photos_available" ? null : extractAdjusterContact(trimmed, pendingQuestion);
   if (adjuster !== null) {
     extracted.adjuster_contacted = adjuster;
   }
@@ -4234,7 +4422,7 @@ function extractAllFieldsFromTranscript(speech, callerPhone, pendingQuestion = n
   if (photos !== null) {
     extracted.photos_available = photos;
   }
-  const leak = extractActiveLeak(trimmed, pendingQuestion);
+  const leak = pendingQuestion === "photos_available" ? null : extractActiveLeak(trimmed, pendingQuestion);
   if (leak !== null) {
     extracted.emergency_or_active_leak = leak;
   }
@@ -4276,7 +4464,10 @@ function mergeExtractedFields(fields, extracted) {
     updated.adjuster_contacted = extracted.adjuster_contacted;
   }
   if (extracted.photos_available !== void 0 && extracted.photos_available !== null) {
-    updated.photos_available = extracted.photos_available;
+    if (!isPhotosFieldComplete(updated)) {
+      updated.photos_available = extracted.photos_available;
+      updated.pending_question = void 0;
+    }
   }
   if (extracted.emergency_or_active_leak !== void 0 && extracted.emergency_or_active_leak !== null) {
     updated.emergency_or_active_leak = extracted.emergency_or_active_leak;
@@ -4284,7 +4475,7 @@ function mergeExtractedFields(fields, extracted) {
   if (extracted.emergency_acknowledged) {
     updated.emergency_acknowledged = true;
   }
-  return syncLegacyStringFields(updated);
+  return preserveConfirmedFieldState(fields, syncLegacyStringFields(updated));
 }
 function applyPendingQuestionAnswer(fields, answer, callerPhone, pendingQuestion) {
   const trimmed = answer.trim();
@@ -4350,14 +4541,16 @@ function applyPendingQuestionAnswer(fields, answer, callerPhone, pendingQuestion
         }
       }
       break;
-    case "photos_available":
+    case "photos_available": {
+      updated = applyPhotosPendingAnswer(updated, trimmed, pendingQuestion);
+      break;
+    }
     case "insurance_claim":
     case "adjuster_contacted":
     case "active_leak": {
       const parsed = parseExplicitBoolean(trimmed);
       if (parsed !== null) {
         const fieldMap = {
-          photos_available: "photos_available",
           insurance_claim: "insurance_claim_started",
           adjuster_contacted: "adjuster_contacted",
           active_leak: "emergency_or_active_leak"
@@ -4379,7 +4572,7 @@ function applyPendingQuestionAnswer(fields, answer, callerPhone, pendingQuestion
     default:
       break;
   }
-  return syncLegacyStringFields(updated);
+  return preserveConfirmedFieldState(fields, syncLegacyStringFields(updated));
 }
 
 // src/orchestrator/conversation-state.ts
@@ -4554,7 +4747,7 @@ function mergeRealtimeCallerAnswer(fields, answer, callerPhone, options = {}) {
   if (hasValue5(updated.appointment_preference_raw) && updated.schedule_confirmed !== true) {
     updated = processScheduleCapture(updated, answer).fields;
   }
-  return updated;
+  return preserveConfirmedFieldState(fields, updated);
 }
 function applyCallbackCorrection(fields, speech, callerPhone) {
   const phone = extractCallbackPhoneFromSpeech(speech, callerPhone);
@@ -4635,7 +4828,7 @@ function normalizeRealtimeFields(fields) {
     ...fields,
     insurance_claim_started: fields.insurance_claim_started ?? normalizeTriStateField(fields.insurance_claim),
     adjuster_contacted: normalizeTriStateField(fields.adjuster_contacted),
-    photos_available: normalizeTriStateField(fields.photos_available),
+    photos_available: normalizePhotosValue(fields.photos_available),
     emergency_or_active_leak: fields.emergency_or_active_leak ?? normalizeTriStateField(fields.active_leak)
   };
 }
@@ -4723,78 +4916,87 @@ function buildScheduleConfirmationReply(fields) {
   const label = spoken || fields.appointment_preference_raw?.trim() || "the requested time";
   return ensureSingleIntakeQuestion(buildScheduleConfirmationQuestion(label));
 }
+function finalizeIntakeFields(fields, nextState) {
+  const statePending = pendingQuestionForConversationState(nextState);
+  if (statePending) {
+    return attachPendingQuestion(fields, statePending);
+  }
+  return attachPendingQuestion(fields, pendingQuestionForNextField(getNextRequiredField(fields)));
+}
+function packagePostIntakeResult(fields, replyText, nextState) {
+  return {
+    replyText,
+    fields: finalizeIntakeFields(fields, nextState),
+    nextState
+  };
+}
 function buildPostIntakeReply(policy, fieldsBefore, updatedFields, trimmedSpeech, callerPhone, filledCount, options = {}) {
   if (needsCallbackReadback(updatedFields)) {
-    const reply = buildCallbackConfirmationReply(updatedFields);
-    return {
-      replyText: reply,
-      fields: updatedFields,
-      nextState: "awaiting_callback_confirmation"
-    };
+    return packagePostIntakeResult(
+      updatedFields,
+      buildCallbackConfirmationReply(updatedFields),
+      "awaiting_callback_confirmation"
+    );
   }
   if (needsAddressReadback(updatedFields)) {
-    const reply = buildAddressConfirmationReply(updatedFields);
-    return {
-      replyText: reply,
-      fields: updatedFields,
-      nextState: "awaiting_address_confirmation"
-    };
+    return packagePostIntakeResult(
+      updatedFields,
+      buildAddressConfirmationReply(updatedFields),
+      "awaiting_address_confirmation"
+    );
   }
   if (needsScheduleClarification(updatedFields)) {
     const prompt = updatedFields.schedule_clarification_prompt?.trim() || "What time works best?";
-    return {
-      replyText: ensureSingleIntakeQuestion(prompt),
-      fields: updatedFields,
-      nextState: "awaiting_schedule_clarification"
-    };
+    return packagePostIntakeResult(
+      updatedFields,
+      ensureSingleIntakeQuestion(prompt),
+      "awaiting_schedule_clarification"
+    );
   }
   if (needsScheduleConfirmation(updatedFields)) {
-    const reply = buildScheduleConfirmationReply(updatedFields);
-    return {
-      replyText: reply,
-      fields: updatedFields,
-      nextState: "awaiting_schedule_confirmation"
-    };
+    return packagePostIntakeResult(
+      updatedFields,
+      buildScheduleConfirmationReply(updatedFields),
+      "awaiting_schedule_confirmation"
+    );
   }
   const missing = getMissingRequiredFields(updatedFields);
   const sharedMissing = getSharedMissingFields(updatedFields).filter(
     (field) => field !== "additionalNotes"
   );
   if (missing.length === 0 && sharedMissing.length === 0) {
-    return {
-      replyText: ensureSingleIntakeQuestion(REALTIME_ANYTHING_ELSE_QUESTION),
-      fields: updatedFields,
-      nextState: "awaiting_additional_notes"
-    };
+    const photosJustResolved2 = !isPhotosFieldComplete(fieldsBefore) && isPhotosFieldComplete(updatedFields);
+    const photosAck2 = photosJustResolved2 ? photosAffirmativeAcknowledgment(normalizePhotosValue(updatedFields.photos_available)) : null;
+    const anythingElseQuestion = REALTIME_ANYTHING_ELSE_QUESTION;
+    const reply = photosAck2 ? ensureSingleIntakeQuestion(`${photosAck2} ${anythingElseQuestion}`.replace(/\s+/g, " ").trim()) : ensureSingleIntakeQuestion(anythingElseQuestion);
+    return packagePostIntakeResult(updatedFields, reply, "awaiting_additional_notes");
   }
   if (options.isFirstCallerTurn === true && updatedFields.intake_intro_delivered !== true && updatedFields.problem_description?.trim()) {
     const nextField = getNextRequiredField(updatedFields);
     const question = nextField === "full_name" ? EARLY_CALLER_NAME_QUESTION : nextField ? getNaturalTransitionQuestion(nextField, updatedFields, callerPhone) : EARLY_CALLER_NAME_QUESTION;
-    return {
-      replyText: ensureSingleIntakeQuestion(
-        `${REALTIME_INTRO_TRANSITION} ${question}`.replace(/\s+/g, " ").trim()
-      ),
-      fields: {
+    return packagePostIntakeResult(
+      {
         ...updatedFields,
         intake_intro_delivered: true
       },
-      nextState: "collecting_intake"
-    };
+      ensureSingleIntakeQuestion(
+        `${REALTIME_INTRO_TRANSITION} ${question}`.replace(/\s+/g, " ").trim()
+      ),
+      "collecting_intake"
+    );
   }
-  return {
-    replyText: ensureSingleIntakeQuestion(
-      buildIntakeReply(
-        policy,
-        updatedFields,
-        trimmedSpeech,
-        callerPhone,
-        filledCount,
-        options.afterConfirmation === true
-      )
-    ),
-    fields: updatedFields,
-    nextState: "collecting_intake"
-  };
+  const photosJustResolved = !isPhotosFieldComplete(fieldsBefore) && isPhotosFieldComplete(updatedFields);
+  const photosAck = photosJustResolved ? photosAffirmativeAcknowledgment(normalizePhotosValue(updatedFields.photos_available)) : null;
+  const intakeReply = buildIntakeReply(
+    policy,
+    updatedFields,
+    trimmedSpeech,
+    callerPhone,
+    filledCount,
+    options.afterConfirmation === true
+  );
+  const combinedReply = photosAck ? ensureSingleIntakeQuestion(`${photosAck} ${intakeReply}`.replace(/\s+/g, " ").trim()) : ensureSingleIntakeQuestion(intakeReply);
+  return packagePostIntakeResult(updatedFields, combinedReply, "collecting_intake");
 }
 function isNameCaptureTurn(fields, conversationState) {
   if (isAwaitingNameConfirmation(fields) || fields.name_awaiting_repeat === true) {

@@ -48,6 +48,11 @@ import {
 } from "./structured-intake.js";
 import type { PendingQuestionKey } from "./pending-question.js";
 import { resolvePendingQuestion } from "./pending-question.js";
+import {
+  isPhotosFieldComplete,
+  normalizePhotosValue,
+} from "./photos-field.js";
+import { preserveConfirmedFieldState } from "./safe-field-merge.js";
 import type { ConversationState } from "./conversation-state.js";
 
 export type RealtimeIntakeStage = RequiredFieldKey;
@@ -115,7 +120,7 @@ export function mergeRealtimeCallerAnswer(
     updated = processScheduleCapture(updated, answer).fields;
   }
 
-  return updated;
+  return preserveConfirmedFieldState(fields, updated);
 }
 
 export function applyCallbackCorrection(
@@ -256,7 +261,7 @@ export function normalizeRealtimeFields(fields: RealtimeFields): RealtimeFields 
       fields.insurance_claim_started ??
       normalizeTriStateField(fields.insurance_claim),
     adjuster_contacted: normalizeTriStateField(fields.adjuster_contacted),
-    photos_available: normalizeTriStateField(fields.photos_available),
+    photos_available: normalizePhotosValue(fields.photos_available),
     emergency_or_active_leak:
       fields.emergency_or_active_leak ?? normalizeTriStateField(fields.active_leak),
   };

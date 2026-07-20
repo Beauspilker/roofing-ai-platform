@@ -28,7 +28,7 @@ export function getConfig() {
     ),
     bargeInEnabled: isRealtimeBargeInEnabled(),
     turnDetectionSilenceDurationMs: Number.parseInt(
-      process.env.REALTIME_SILENCE_DURATION_MS ?? "800",
+      process.env.REALTIME_SILENCE_DURATION_MS ?? "750",
       10,
     ),
     turnDetectionPrefixPaddingMs: Number.parseInt(

@@ -40,6 +40,11 @@ export class TurnTimingTracker {
       callSid,
       milestone,
       elapsedMs: now - (this.turnStartedAt ?? now),
+      caller_speech_stopped_at: this.marks.get("speech_stopped"),
+      final_transcript_at: this.marks.get("transcript_completed"),
+      state_updated_at: this.marks.get("structured_state_updated"),
+      response_requested_at: this.marks.get("response_requested"),
+      first_audio_delta_at: this.marks.get("first_audio_received"),
     });
 
     if (milestone === "first_audio_sent_to_twilio") {

@@ -34,7 +34,7 @@ function getConfig() {
     ),
     bargeInEnabled: isRealtimeBargeInEnabled(),
     turnDetectionSilenceDurationMs: Number.parseInt(
-      process.env.REALTIME_SILENCE_DURATION_MS ?? "300",
+      process.env.REALTIME_SILENCE_DURATION_MS ?? "800",
       10
     ),
     turnDetectionPrefixPaddingMs: Number.parseInt(
@@ -43,7 +43,9 @@ function getConfig() {
     ),
     turnDetectionThreshold: Number.parseFloat(
       process.env.REALTIME_VAD_THRESHOLD ?? "0.5"
-    )
+    ),
+    realtimeVadEagerness: process.env.REALTIME_VAD_EAGERNESS?.trim() || "high",
+    companyTimezone: process.env.COMPANY_TIMEZONE?.trim() || "America/Chicago"
   };
 }
 function assertBridgeConfig(config2) {
@@ -329,6 +331,7 @@ var TurnTimingTracker = class {
       callSid,
       stage: largest.stage,
       delayMs: largest.ms,
+      speechStoppedToFirstAudioMs: firstReceived !== void 0 && speechStopped !== void 0 ? firstReceived - speechStopped : void 0,
       stageAveragesMs: averages
     });
   }
@@ -478,7 +481,8 @@ var ResponseStateGuard = class {
 import WebSocket from "ws";
 var REALTIME_DELIVERY_INSTRUCTIONS = "Professional, calm, confident, lower-pitched male receptionist. Natural American conversational delivery. Warm but not overly enthusiastic.";
 var REALTIME_INSTRUCTIONS = `${REALTIME_DELIVERY_INSTRUCTIONS} You are the live phone receptionist for Beau's Roofing. Deliver exactly one short script per turn. Never ask more than one question. Never invent intake questions or confirm details that were not provided by the server.`;
-function buildRealtimeSessionUpdate(voice) {
+function buildRealtimeSessionUpdate(voice, config2) {
+  const eagerness = config2?.realtimeVadEagerness === "low" || config2?.realtimeVadEagerness === "medium" || config2?.realtimeVadEagerness === "high" ? config2.realtimeVadEagerness : "high";
   return {
     type: "session.update",
     session: {
@@ -493,7 +497,7 @@ function buildRealtimeSessionUpdate(voice) {
           },
           turn_detection: {
             type: "semantic_vad",
-            eagerness: "medium",
+            eagerness,
             create_response: true,
             interrupt_response: true
           }
@@ -574,7 +578,7 @@ var OpenAiRealtimeSession = class {
     return this.connectPromise;
   }
   configureSession() {
-    this.send(buildRealtimeSessionUpdate(this.config.openAiRealtimeVoice));
+    this.send(buildRealtimeSessionUpdate(this.config.openAiRealtimeVoice, this.config));
   }
   handleMessage(raw) {
     let event;
@@ -2908,13 +2912,16 @@ async function completeCallSession(callSid, status = "completed") {
 }
 
 // src/orchestrator/acknowledgment-policy.ts
-var SPARING_ACKNOWLEDGMENTS = [
-  "Okay.",
-  "That helps.",
-  "All right.",
-  "Understood.",
-  "Thanks."
-];
+var CONTEXT_ACKNOWLEDGMENTS = {
+  callback_phone: ["Absolutely.", "Thank you."],
+  address: ["Thank you.", "All right."],
+  emergency_or_active_leak: ["I'm glad everyone is safe.", "Understood."],
+  insurance_claim_started: ["That helps.", "Okay."],
+  adjuster_contacted: ["That helps.", "Thanks for clarifying."],
+  appointment_preference: ["Okay, and", "All right."],
+  photos_available: ["Thanks.", "Understood."],
+  default: ["Okay.", "Thank you.", "All right.", "That helps."]
+};
 var CLOSING_PHRASES = [
   "sounds good",
   "perfect",
@@ -2941,47 +2948,37 @@ var CLOSING_PHRASES = [
 ];
 var AcknowledgmentPolicy = class {
   lastAcknowledgment = null;
-  gotItCount = 0;
-  selectionIndex = 0;
-  turnsSinceAck = 0;
+  turnCount = 0;
   selectAcknowledgment(options) {
-    this.turnsSinceAck += 1;
+    this.turnCount += 1;
     if (options.isEmergency && !options.emergencyAlreadyAcknowledged) {
-      const ack = "I'll flag this as urgent.";
+      const ack = "I'm glad everyone is safe.";
       this.recordUsed(ack);
       return ack;
     }
-    if ((options.fieldsFilledCount ?? 0) >= 3) {
+    const shouldAcknowledge = options.forceAck === true || this.turnCount % 5 === 1 || this.turnCount % 5 === 3;
+    if (!shouldAcknowledge) {
       this.recordUsed(null);
       return null;
     }
-    if (this.turnsSinceAck < 2) {
-      this.recordUsed(null);
-      return null;
-    }
-    const candidates = SPARING_ACKNOWLEDGMENTS.filter((ack) => ack !== this.lastAcknowledgment);
+    const pool = CONTEXT_ACKNOWLEDGMENTS[options.nextField ?? "default"] ?? CONTEXT_ACKNOWLEDGMENTS.default;
+    const candidates = pool.filter((ack) => ack !== this.lastAcknowledgment);
     if (candidates.length === 0) {
       this.recordUsed(null);
       return null;
     }
-    const index = this.selectionIndex % candidates.length;
-    this.selectionIndex += 1;
-    const selected = candidates[index] ?? null;
+    const selected = candidates[(this.turnCount + candidates.length) % candidates.length] ?? null;
     this.recordUsed(selected);
     return selected;
   }
   recordUsed(acknowledgment) {
     this.lastAcknowledgment = acknowledgment;
-    this.turnsSinceAck = 0;
-    if (acknowledgment === "Got it.") {
-      this.gotItCount += 1;
-    }
   }
   getLastAcknowledgment() {
     return this.lastAcknowledgment;
   }
-  getGotItCount() {
-    return this.gotItCount;
+  resetTurnCounter() {
+    this.turnCount = 0;
   }
 };
 function containsClosingPhrase(text) {
@@ -3009,6 +3006,16 @@ function guardIntakeReply(reply, fallbackQuestion) {
     return fallbackQuestion;
   }
   return sanitized;
+}
+function joinAcknowledgmentAndQuestion(acknowledgment, question) {
+  if (!acknowledgment) {
+    return question;
+  }
+  const trimmedQuestion = question.trim();
+  if (/^(okay, and|all right\.|thank you\.)/i.test(trimmedQuestion)) {
+    return `${acknowledgment} ${trimmedQuestion}`.replace(/\s+/g, " ").trim();
+  }
+  return `${acknowledgment} ${trimmedQuestion}`.replace(/\s+/g, " ").trim();
 }
 
 // ../../lib/call-name-capture.ts
@@ -3444,12 +3451,71 @@ function applyCorrectionToStructuredField(fields, speech) {
   return syncLegacyStringFields(updated);
 }
 
-// src/orchestrator/multi-field-extraction.ts
+// src/orchestrator/address-confirmation.ts
 function hasValue2(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
+function hasConfirmableAddress(address) {
+  if (!hasValue2(address)) {
+    return false;
+  }
+  const trimmed = address.trim();
+  return /\d/.test(trimmed) && trimmed.length >= 8;
+}
+function formatAddressForSpeech(address) {
+  let formatted = address.trim().replace(/\s+/g, " ");
+  if (/\bin\b/i.test(formatted) && !/,/.test(formatted)) {
+    formatted = formatted.replace(/\s+in\s+/i, ", ");
+  }
+  if (/beatrice/i.test(formatted) && !/nebraska/i.test(formatted)) {
+    formatted = `${formatted.replace(/,?\s*$/i, "")}, Nebraska`;
+  }
+  return formatted;
+}
+function buildAddressReadbackConfirmation(address) {
+  return `I have ${formatAddressForSpeech(address)}. Is that right?`;
+}
+function needsAddressReadback(fields) {
+  return hasConfirmableAddress(fields.address) && fields.address_confirmed !== true;
+}
+function isAddressConfirmed(fields) {
+  return hasConfirmableAddress(fields.address) && fields.address_confirmed === true;
+}
+function isAddressConfirmedSpeech(speech) {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  return /^(yes|yeah|yep|yup|correct|right|that's right|thats right|that's correct|thats correct)\b/.test(
+    normalized
+  );
+}
+function isAddressRejectedSpeech(speech) {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  return /^(no|nope|nah|not quite|incorrect|wrong|change|fix|update)\b/.test(normalized);
+}
+function applyAddressCorrection(fields, speech) {
+  const trimmed = speech.trim();
+  if (!trimmed) {
+    return fields;
+  }
+  return syncLegacyStringFields({
+    ...fields,
+    address: trimmed.slice(0, 500),
+    address_confirmed: false
+  });
+}
+function confirmAddress(fields) {
+  return syncLegacyStringFields({
+    ...fields,
+    address: fields.address ? formatAddressForSpeech(fields.address) : fields.address,
+    address_confirmed: true
+  });
+}
+
+// src/orchestrator/multi-field-extraction.ts
+function hasValue3(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
 function mergeStringField(current, extracted) {
-  if (!hasValue2(extracted)) {
+  if (!hasValue3(extracted)) {
     return current;
   }
   return extracted.trim().slice(0, 500);
@@ -3537,7 +3603,7 @@ function extractAllFieldsFromTranscript(speech, callerPhone) {
   }
   const libExtracted = extractFieldsFromSpeech(trimmed, callerPhone);
   const extracted = {};
-  if (hasValue2(libExtracted.full_name)) {
+  if (hasValue3(libExtracted.full_name)) {
     extracted.full_name = libExtracted.full_name;
   } else {
     const looseName = trimmed.match(
@@ -3547,23 +3613,23 @@ function extractAllFieldsFromTranscript(speech, callerPhone) {
       extracted.full_name = looseName.trim();
     }
   }
-  if (hasValue2(libExtracted.address)) {
+  if (hasValue3(libExtracted.address)) {
     extracted.address = libExtracted.address;
   }
-  if (hasValue2(libExtracted.project_type)) {
+  if (hasValue3(libExtracted.project_type)) {
     extracted.project_type = libExtracted.project_type;
   }
-  if (hasValue2(libExtracted.urgency)) {
+  if (hasValue3(libExtracted.urgency)) {
     extracted.urgency = libExtracted.urgency;
   }
-  if (hasValue2(libExtracted.appointment_preference)) {
+  if (hasValue3(libExtracted.appointment_preference)) {
     extracted.appointment_preference = libExtracted.appointment_preference;
   }
-  if (hasValue2(libExtracted.storm_damage)) {
+  if (hasValue3(libExtracted.storm_damage)) {
     extracted.storm_damage = libExtracted.storm_damage;
   }
   const problem = extractProblemDescription(trimmed) ?? libExtracted.problem_description;
-  if (hasValue2(problem)) {
+  if (hasValue3(problem)) {
     extracted.problem_description = problem;
   }
   const callbackPhone = extractCallbackPhoneFromSpeech(trimmed, callerPhone);
@@ -3584,19 +3650,22 @@ function extractAllFieldsFromTranscript(speech, callerPhone) {
 function mergeExtractedFields(fields, extracted) {
   let updated = { ...fields };
   updated.full_name = mergeStringField(updated.full_name, extracted.full_name);
-  updated.address = mergeStringField(updated.address, extracted.address);
+  if (hasValue3(extracted.address) && !hasValue3(updated.address)) {
+    updated.address = extracted.address;
+    updated.address_confirmed = false;
+  }
   updated.project_type = mergeStringField(updated.project_type, extracted.project_type);
   updated.urgency = mergeStringField(updated.urgency, extracted.urgency);
-  updated.appointment_preference = mergeStringField(
-    updated.appointment_preference,
-    extracted.appointment_preference
-  );
+  if (hasValue3(extracted.appointment_preference) && !hasValue3(updated.appointment_preference_raw)) {
+    updated.appointment_preference_raw = extracted.appointment_preference;
+    updated.schedule_confirmed = false;
+  }
   updated.storm_damage = mergeStringField(updated.storm_damage, extracted.storm_damage);
   updated.problem_description = mergeStringField(
     updated.problem_description,
     extracted.problem_description
   );
-  if (hasValue2(extracted.callback_phone)) {
+  if (hasValue3(extracted.callback_phone)) {
     const normalized = normalizeCallbackPhoneE164(extracted.callback_phone);
     if (!isCompanyPhoneNumber(normalized)) {
       updated.callback_phone = normalized;
@@ -3761,6 +3830,316 @@ function isSummaryRejected(speech) {
   return /^(no|nope|nah|not quite|incorrect|wrong|change|fix|update)\b/.test(normalized);
 }
 
+// src/orchestrator/schedule-normalizer.ts
+var COMPANY_TIMEZONE = process.env.COMPANY_TIMEZONE?.trim() || "America/Chicago";
+function getLocalParts(date, timeZone) {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    weekday: "short"
+  });
+  const parts = formatter.formatToParts(date);
+  const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const weekdayMap = {
+    Sun: 0,
+    Mon: 1,
+    Tue: 2,
+    Wed: 3,
+    Thu: 4,
+    Fri: 5,
+    Sat: 6
+  };
+  return {
+    year: Number.parseInt(lookup.year ?? "1970", 10),
+    month: Number.parseInt(lookup.month ?? "1", 10),
+    day: Number.parseInt(lookup.day ?? "1", 10),
+    weekday: weekdayMap[lookup.weekday ?? "Sun"] ?? 0
+  };
+}
+function makeUtcDate(year, month, day, hour, minute, timeZone) {
+  let guess = Date.UTC(year, month - 1, day, hour, minute);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const parts = getLocalParts(new Date(guess), timeZone);
+    const deltaHours = hour - deriveHour(new Date(guess), timeZone);
+    const deltaDays = day - parts.day;
+    guess += deltaDays * 864e5 + deltaHours * 36e5;
+  }
+  return new Date(guess);
+}
+function deriveHour(date, timeZone) {
+  const hour = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour: "numeric",
+    minute: "numeric",
+    hour12: false
+  }).formatToParts(date);
+  const lookup = Object.fromEntries(hour.map((part) => [part.type, part.value]));
+  return Number.parseInt(lookup.hour ?? "0", 10);
+}
+function addDays(parts, days) {
+  const date = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + days));
+  return {
+    year: date.getUTCFullYear(),
+    month: date.getUTCMonth() + 1,
+    day: date.getUTCDate(),
+    weekday: date.getUTCDay()
+  };
+}
+function resolveWeekday(parts, targetWeekday, useNextWeek) {
+  let delta = (targetWeekday - parts.weekday + 7) % 7;
+  if (delta === 0 && useNextWeek) {
+    delta = 7;
+  }
+  if (delta === 0 && !useNextWeek) {
+    return parts;
+  }
+  return addDays(parts, delta);
+}
+function formatSpokenDate(parts) {
+  const monthNames = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December"
+  ];
+  return `${monthNames[parts.month - 1] ?? "January"} ${parts.day}`;
+}
+function formatSpokenTime(hour, minute) {
+  const suffix = hour >= 12 ? "PM" : "AM";
+  const hour12 = hour % 12 === 0 ? 12 : hour % 12;
+  const minutePart = minute === 0 ? "" : `:${String(minute).padStart(2, "0")}`;
+  return `${hour12}${minutePart} ${suffix}`.replace("  ", " ");
+}
+function parseTimeFromSpeech(normalized) {
+  const atTime = normalized.match(/\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+  if (atTime) {
+    let hour = Number.parseInt(atTime[1] ?? "0", 10);
+    const minute = Number.parseInt(atTime[2] ?? "0", 10);
+    const meridiem = atTime[3]?.toLowerCase();
+    if (meridiem === "pm" && hour < 12) {
+      hour += 12;
+    }
+    if (meridiem === "am" && hour === 12) {
+      hour = 0;
+    }
+    if (!meridiem && hour <= 7) {
+      hour += 12;
+    }
+    return { hour, minute };
+  }
+  const aboutTime = normalized.match(/\babout\s+(\d{1,2})(?::(\d{2}))?\b/i);
+  if (aboutTime) {
+    let hour = Number.parseInt(aboutTime[1] ?? "0", 10);
+    const minute = Number.parseInt(aboutTime[2] ?? "0", 10);
+    if (hour <= 7) {
+      hour += 12;
+    }
+    return { hour, minute };
+  }
+  const aroundTime = normalized.match(/\baround\s+(\d{1,2})(?::(\d{2}))?\b/i);
+  if (aroundTime) {
+    let hour = Number.parseInt(aroundTime[1] ?? "0", 10);
+    const minute = Number.parseInt(aroundTime[2] ?? "0", 10);
+    if (hour <= 7) {
+      hour += 12;
+    }
+    return { hour, minute };
+  }
+  return null;
+}
+function weekdayIndex(name) {
+  const map = {
+    sunday: 0,
+    monday: 1,
+    tuesday: 2,
+    wednesday: 3,
+    thursday: 4,
+    friday: 5,
+    saturday: 6
+  };
+  return map[name.toLowerCase()] ?? null;
+}
+function parseScheduleSpeech(speech, now = /* @__PURE__ */ new Date(), timeZone = COMPANY_TIMEZONE) {
+  const raw = speech.trim();
+  const normalized = raw.toLowerCase().replace(/[^\w\s:]/g, " ").replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return { status: "nothing_schedulable", raw };
+  }
+  if (/\bafter work\b|\bafter i get off\b|\bwhen i get off\b/.test(normalized)) {
+    return {
+      status: "needs_time_clarification",
+      prompt: "What time should I put down?",
+      raw
+    };
+  }
+  const today = getLocalParts(now, timeZone);
+  let targetDate = { ...today };
+  let useNextWeek = false;
+  if (/\btomorrow\b/.test(normalized)) {
+    targetDate = addDays(today, 1);
+  } else if (/\bnext week\b/.test(normalized)) {
+    targetDate = addDays(today, 7);
+  } else {
+    const weekdayMatch = normalized.match(/\b(next\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i);
+    if (weekdayMatch) {
+      useNextWeek = Boolean(weekdayMatch[1]);
+      const weekday = weekdayIndex(weekdayMatch[2] ?? "");
+      if (weekday !== null) {
+        targetDate = resolveWeekday(today, weekday, useNextWeek);
+      }
+    }
+  }
+  const time = parseTimeFromSpeech(normalized);
+  const hasMorning = /\bmorning\b/.test(normalized);
+  const hasAfternoon = /\bafternoon\b/.test(normalized);
+  const hasEvening = /\bevening\b/.test(normalized);
+  if ((hasMorning || hasAfternoon || hasEvening) && !time) {
+    const dateLabel = formatSpokenDate(targetDate);
+    if (hasMorning) {
+      return {
+        status: "needs_confirmation",
+        spoken: `Would ${dateLabel} between 8:00 and 11:00 AM work?`,
+        isoStart: makeUtcDate(targetDate.year, targetDate.month, targetDate.day, 8, 0, timeZone).toISOString(),
+        isoEnd: makeUtcDate(targetDate.year, targetDate.month, targetDate.day, 11, 0, timeZone).toISOString(),
+        raw
+      };
+    }
+    if (hasAfternoon) {
+      const afternoonLabel = /\btomorrow\b/.test(normalized) ? "tomorrow afternoon" : `${formatSpokenDate(targetDate)} afternoon`;
+      return {
+        status: "needs_time_clarification",
+        prompt: `What time ${afternoonLabel} works best?`,
+        raw
+      };
+    }
+    if (hasEvening) {
+      return {
+        status: "needs_time_clarification",
+        prompt: "What time in the evening works best?",
+        raw
+      };
+    }
+  }
+  if (!time && /\btomorrow\b|\bnext\b|\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/.test(normalized)) {
+    return {
+      status: "needs_time_clarification",
+      prompt: "What time works best?",
+      raw
+    };
+  }
+  if (time) {
+    const dateLabel = formatSpokenDate(targetDate);
+    const spokenTime = formatSpokenTime(time.hour, time.minute);
+    const isoStart = makeUtcDate(
+      targetDate.year,
+      targetDate.month,
+      targetDate.day,
+      time.hour,
+      time.minute,
+      timeZone
+    ).toISOString();
+    return {
+      status: "needs_confirmation",
+      spoken: `${dateLabel} at ${spokenTime}`,
+      isoStart,
+      raw
+    };
+  }
+  return { status: "nothing_schedulable", raw };
+}
+function buildScheduleConfirmationQuestion(spoken) {
+  return `Just to confirm, you mean ${spoken}. Is that right?`;
+}
+function isScheduleConfirmedSpeech(speech) {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  return /^(yes|yeah|yep|yup|correct|right|that's right|thats right|that works|sounds good)\b/.test(
+    normalized
+  );
+}
+function isScheduleRejectedSpeech(speech) {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  return /^(no|nope|nah|not quite|incorrect|wrong|change|fix|update)\b/.test(normalized);
+}
+function applyScheduleParseResult(fields, result) {
+  if (result.status === "nothing_schedulable") {
+    return fields;
+  }
+  return syncLegacyStringFields({
+    ...fields,
+    appointment_preference_raw: result.raw,
+    schedule_confirmed: false,
+    appointment_schedule_iso: result.status === "needs_confirmation" ? result.isoStart : void 0,
+    appointment_schedule_iso_end: result.status === "needs_confirmation" ? result.isoEnd : void 0,
+    appointment_preference: result.status === "needs_confirmation" ? result.spoken : fields.appointment_preference
+  });
+}
+function confirmSchedule(fields) {
+  const spoken = fields.appointment_preference?.trim() || fields.appointment_preference_raw?.trim() || "the requested time";
+  return syncLegacyStringFields({
+    ...fields,
+    appointment_preference: spoken,
+    schedule_confirmed: true
+  });
+}
+function needsScheduleClarification(fields) {
+  return Boolean(fields.schedule_pending_clarification);
+}
+function needsScheduleConfirmation(fields) {
+  return Boolean(fields.appointment_schedule_iso || fields.appointment_preference) && fields.schedule_confirmed !== true && !fields.schedule_pending_clarification;
+}
+function isScheduleComplete(fields) {
+  return typeof fields.appointment_preference === "string" && fields.appointment_preference.trim().length > 0 && fields.schedule_confirmed === true;
+}
+function processScheduleCapture(fields, speech, now = /* @__PURE__ */ new Date()) {
+  const combined = `${fields.appointment_preference_raw ?? ""} ${speech}`.trim();
+  const parsed = parseScheduleSpeech(combined, now);
+  let updated = applyScheduleParseResult(
+    {
+      ...fields,
+      appointment_preference_raw: combined
+    },
+    parsed
+  );
+  if (parsed.status === "needs_time_clarification") {
+    updated = {
+      ...updated,
+      schedule_pending_clarification: true,
+      schedule_clarification_prompt: parsed.prompt
+    };
+    return { fields: updated, clarificationPrompt: parsed.prompt };
+  }
+  if (parsed.status === "needs_date_clarification") {
+    updated = {
+      ...updated,
+      schedule_pending_clarification: true,
+      schedule_clarification_prompt: parsed.prompt
+    };
+    return { fields: updated, clarificationPrompt: parsed.prompt };
+  }
+  if (parsed.status === "needs_confirmation") {
+    updated = {
+      ...updated,
+      schedule_pending_clarification: false,
+      schedule_clarification_prompt: void 0
+    };
+    return {
+      fields: updated,
+      confirmationPrompt: buildScheduleConfirmationQuestion(parsed.spoken)
+    };
+  }
+  return { fields: updated };
+}
+
 // src/orchestrator/required-intake.ts
 var REQUIRED_FIELD_ORDER = [
   "problem_description",
@@ -3774,24 +4153,24 @@ var REQUIRED_FIELD_ORDER = [
   "appointment_preference",
   "photos_available"
 ];
-function hasValue3(value) {
+function hasValue4(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 function isCallbackComplete(fields) {
-  return hasValue3(fields.callback_phone) && fields.callback_phone_confirmed === true;
+  return hasValue4(fields.callback_phone) && fields.callback_phone_confirmed === true;
 }
 function isFieldComplete(field, fields) {
   switch (field) {
     case "full_name":
-      return hasValue3(fields.full_name);
+      return hasValue4(fields.full_name);
     case "callback_phone":
       return isCallbackComplete(fields);
     case "address":
-      return hasValue3(fields.address);
+      return isAddressConfirmed(fields);
     case "problem_description":
-      return hasValue3(fields.problem_description);
+      return hasValue4(fields.problem_description);
     case "urgency":
-      return hasValue3(fields.urgency);
+      return hasValue4(fields.urgency);
     case "emergency_or_active_leak":
       return !isStructuredBooleanUnset(fields.emergency_or_active_leak);
     case "insurance_claim_started":
@@ -3802,7 +4181,7 @@ function isFieldComplete(field, fields) {
       }
       return !isStructuredBooleanUnset(fields.adjuster_contacted);
     case "appointment_preference":
-      return hasValue3(fields.appointment_preference);
+      return isScheduleComplete(fields);
     case "photos_available":
       return !isStructuredBooleanUnset(fields.photos_available);
     default:
@@ -3824,7 +4203,7 @@ var FIELD_QUESTIONS = {
   urgency: "How urgent is this?",
   insurance_claim_started: "Have you started an insurance claim?",
   adjuster_contacted: "Have you contacted your adjuster yet?",
-  appointment_preference: "What's the best time for the roofing team to reach you?",
+  appointment_preference: "When would be a good time for the roofing team to contact you?",
   photos_available: "Do you have photos of the damage?"
 };
 function getRequiredFieldQuestion(field, fields, callerPhone) {
@@ -3843,7 +4222,7 @@ var CONTEXTUAL_TRANSITIONS = {
   urgency: "How urgent is this?",
   insurance_claim_started: "Have you started an insurance claim?",
   adjuster_contacted: "Have you contacted your adjuster yet?",
-  appointment_preference: "What's the best time for the roofing team to reach you?",
+  appointment_preference: "When would be a good time for the roofing team to contact you?",
   photos_available: "Do you have photos of the damage?"
 };
 function getNaturalTransitionQuestion(field, fields, callerPhone) {
@@ -3864,28 +4243,30 @@ function applyDirectAnswerToMissingField(fields, answer, callerPhone) {
   let updated = { ...fields };
   switch (target) {
     case "full_name":
-      if (!hasValue3(updated.full_name)) {
+      if (!hasValue4(updated.full_name)) {
         updated.full_name = trimmed.slice(0, 100);
       }
       break;
     case "address":
-      if (!hasValue3(updated.address)) {
+      if (!hasValue4(updated.address)) {
         updated.address = trimmed.slice(0, 500);
+        updated.address_confirmed = false;
       }
       break;
     case "problem_description":
-      if (!hasValue3(updated.problem_description)) {
+      if (!hasValue4(updated.problem_description)) {
         updated.problem_description = trimmed.slice(0, 500);
       }
       break;
     case "urgency":
-      if (!hasValue3(updated.urgency)) {
+      if (!hasValue4(updated.urgency)) {
         updated.urgency = trimmed.slice(0, 200);
       }
       break;
     case "appointment_preference":
-      if (!hasValue3(updated.appointment_preference)) {
-        updated.appointment_preference = trimmed.slice(0, 200);
+      if (!hasValue4(updated.appointment_preference_raw)) {
+        updated.appointment_preference_raw = trimmed.slice(0, 200);
+        updated.schedule_confirmed = false;
       }
       break;
     case "emergency_or_active_leak":
@@ -3910,10 +4291,13 @@ function applyDirectAnswerToMissingField(fields, answer, callerPhone) {
   return syncLegacyStringFields(updated);
 }
 function needsCallbackReadback(fields) {
-  return hasValue3(fields.callback_phone) && fields.callback_phone_confirmed !== true;
+  return hasValue4(fields.callback_phone) && fields.callback_phone_confirmed !== true;
 }
 
 // src/orchestrator/realtime-intake.ts
+function hasValue5(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
 function getRealtimeNextMissingStage(fields) {
   const next = getNextRequiredField(fields);
   return next ?? "wrap_up";
@@ -3924,6 +4308,9 @@ function mergeRealtimeCallerAnswer(fields, answer, callerPhone) {
   const missingBeforeDirect = getMissingRequiredFields(updated);
   if (missingBeforeDirect.length > 0) {
     updated = applyDirectAnswerToMissingField(updated, answer, callerPhone);
+  }
+  if (hasValue5(updated.appointment_preference_raw) && updated.schedule_confirmed !== true) {
+    updated = processScheduleCapture(updated, answer).fields;
   }
   return updated;
 }
@@ -3944,8 +4331,9 @@ function confirmCallbackPhone(fields) {
     callback_phone_confirmed: true
   });
 }
-function buildRealtimeAcknowledgment(policy, answer, fields, filledCount) {
+function buildRealtimeAcknowledgment(policy, answer, fields, filledCount, nextField) {
   return policy.selectAcknowledgment({
+    nextField,
     isEmergency: detectEmergency(answer),
     emergencyAlreadyAcknowledged: fields.emergency_acknowledged === true,
     fieldsFilledCount: filledCount,
@@ -3958,12 +4346,16 @@ function buildIntakeReply(policy, fields, answer, callerPhone, filledCount) {
     return REALTIME_ANYTHING_ELSE_QUESTION;
   }
   const question = getNaturalTransitionQuestion(nextField, fields, callerPhone);
-  const ack = buildRealtimeAcknowledgment(policy, answer, fields, filledCount);
+  const ack = buildRealtimeAcknowledgment(
+    policy,
+    answer,
+    fields,
+    filledCount,
+    nextField
+  );
   const fallback = getRequiredFieldQuestion(nextField, fields, callerPhone);
-  if (!ack) {
-    return guardIntakeReply(question, fallback);
-  }
-  return guardIntakeReply(`${ack} ${question}`.replace(/\s+/g, " ").trim(), fallback);
+  const combined = joinAcknowledgmentAndQuestion(ack, question);
+  return guardIntakeReply(combined, fallback);
 }
 function appendAnythingElseNotes(fields, speech) {
   const trimmed = speech.trim();
@@ -4044,6 +4436,19 @@ function buildCallbackConfirmationReply(fields) {
     buildCallbackReadbackConfirmation(fields.callback_phone ?? "")
   );
 }
+function buildAddressConfirmationReply(fields) {
+  return ensureSingleIntakeQuestion(
+    buildAddressReadbackConfirmation(fields.address ?? "")
+  );
+}
+function buildScheduleConfirmationReply(fields) {
+  const spoken = fields.appointment_preference?.trim();
+  if (spoken?.startsWith("Would ")) {
+    return ensureSingleIntakeQuestion(spoken);
+  }
+  const label = spoken || fields.appointment_preference_raw?.trim() || "the requested time";
+  return ensureSingleIntakeQuestion(buildScheduleConfirmationQuestion(label));
+}
 function buildPostIntakeReply(policy, fieldsBefore, updatedFields, trimmedSpeech, callerPhone, filledCount) {
   if (needsCallbackReadback(updatedFields)) {
     const reply = buildCallbackConfirmationReply(updatedFields);
@@ -4051,6 +4456,30 @@ function buildPostIntakeReply(policy, fieldsBefore, updatedFields, trimmedSpeech
       replyText: reply,
       fields: updatedFields,
       nextState: "awaiting_callback_confirmation"
+    };
+  }
+  if (needsAddressReadback(updatedFields)) {
+    const reply = buildAddressConfirmationReply(updatedFields);
+    return {
+      replyText: reply,
+      fields: updatedFields,
+      nextState: "awaiting_address_confirmation"
+    };
+  }
+  if (needsScheduleClarification(updatedFields)) {
+    const prompt = updatedFields.schedule_clarification_prompt?.trim() || "What time works best?";
+    return {
+      replyText: ensureSingleIntakeQuestion(prompt),
+      fields: updatedFields,
+      nextState: "awaiting_schedule_clarification"
+    };
+  }
+  if (needsScheduleConfirmation(updatedFields)) {
+    const reply = buildScheduleConfirmationReply(updatedFields);
+    return {
+      replyText: reply,
+      fields: updatedFields,
+      nextState: "awaiting_schedule_confirmation"
     };
   }
   const missing = getMissingRequiredFields(updatedFields);
@@ -4172,6 +4601,237 @@ async function processRealtimeCallerTurn(input) {
         hangupAfterMark: false,
         session,
         nextConversationState: "awaiting_callback_confirmation"
+      });
+    }
+  }
+  if (conversationState === "awaiting_address_confirmation") {
+    if (!trimmedSpeech) {
+      return {
+        replyText: "",
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: "awaiting_address_confirmation"
+      };
+    }
+    if (isAddressConfirmedSpeech(trimmedSpeech)) {
+      const confirmedFields = confirmAddress(fieldsBefore);
+      const filledCount2 = countNewlyFilledFields(fieldsBefore, confirmedFields);
+      const post2 = buildPostIntakeReply(
+        acknowledgmentPolicy,
+        fieldsBefore,
+        confirmedFields,
+        trimmedSpeech,
+        callerPhone,
+        filledCount2
+      );
+      session = applyLocalSessionUpdate(session, {
+        collectedFields: post2.fields,
+        currentQuestion: post2.replyText
+      });
+      persistTurnAsync(callSid, {
+        collectedFields: post2.fields,
+        currentQuestion: post2.replyText,
+        callerSpeech: trimmedSpeech,
+        assistantReply: post2.replyText
+      });
+      return finishTurn(input, {
+        replyText: post2.replyText,
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: post2.nextState
+      });
+    }
+    if (isAddressRejectedSpeech(trimmedSpeech) || trimmedSpeech.length > 0) {
+      const correctedFields = applyAddressCorrection(fieldsBefore, trimmedSpeech);
+      const reply = buildAddressConfirmationReply(correctedFields);
+      session = applyLocalSessionUpdate(session, {
+        collectedFields: correctedFields,
+        currentQuestion: reply
+      });
+      persistTurnAsync(callSid, {
+        collectedFields: correctedFields,
+        currentQuestion: reply,
+        callerSpeech: trimmedSpeech,
+        assistantReply: reply
+      });
+      return finishTurn(input, {
+        replyText: reply,
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: "awaiting_address_confirmation"
+      });
+    }
+  }
+  if (conversationState === "awaiting_schedule_clarification") {
+    if (!trimmedSpeech) {
+      return {
+        replyText: "",
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: "awaiting_schedule_clarification"
+      };
+    }
+    const capture = processScheduleCapture(fieldsBefore, trimmedSpeech);
+    let nextFields = capture.fields;
+    if (capture.clarificationPrompt) {
+      const reply = ensureSingleIntakeQuestion(capture.clarificationPrompt);
+      session = applyLocalSessionUpdate(session, {
+        collectedFields: nextFields,
+        currentQuestion: reply
+      });
+      persistTurnAsync(callSid, {
+        collectedFields: nextFields,
+        currentQuestion: reply,
+        callerSpeech: trimmedSpeech,
+        assistantReply: reply
+      });
+      return finishTurn(input, {
+        replyText: reply,
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: "awaiting_schedule_clarification"
+      });
+    }
+    if (capture.confirmationPrompt) {
+      const reply = ensureSingleIntakeQuestion(capture.confirmationPrompt);
+      session = applyLocalSessionUpdate(session, {
+        collectedFields: nextFields,
+        currentQuestion: reply
+      });
+      persistTurnAsync(callSid, {
+        collectedFields: nextFields,
+        currentQuestion: reply,
+        callerSpeech: trimmedSpeech,
+        assistantReply: reply
+      });
+      return finishTurn(input, {
+        replyText: reply,
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: "awaiting_schedule_confirmation"
+      });
+    }
+    const filledCount2 = countNewlyFilledFields(fieldsBefore, nextFields);
+    const post2 = buildPostIntakeReply(
+      acknowledgmentPolicy,
+      fieldsBefore,
+      nextFields,
+      trimmedSpeech,
+      callerPhone,
+      filledCount2
+    );
+    session = applyLocalSessionUpdate(session, {
+      collectedFields: post2.fields,
+      currentQuestion: post2.replyText
+    });
+    persistTurnAsync(callSid, {
+      collectedFields: post2.fields,
+      currentQuestion: post2.replyText,
+      callerSpeech: trimmedSpeech,
+      assistantReply: post2.replyText
+    });
+    return finishTurn(input, {
+      replyText: post2.replyText,
+      hangup: false,
+      hangupAfterMark: false,
+      session,
+      nextConversationState: post2.nextState
+    });
+  }
+  if (conversationState === "awaiting_schedule_confirmation") {
+    if (!trimmedSpeech) {
+      return {
+        replyText: "",
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: "awaiting_schedule_confirmation"
+      };
+    }
+    if (isScheduleConfirmedSpeech(trimmedSpeech)) {
+      const confirmedFields = confirmSchedule(fieldsBefore);
+      const filledCount2 = countNewlyFilledFields(fieldsBefore, confirmedFields);
+      const post2 = buildPostIntakeReply(
+        acknowledgmentPolicy,
+        fieldsBefore,
+        confirmedFields,
+        trimmedSpeech,
+        callerPhone,
+        filledCount2
+      );
+      session = applyLocalSessionUpdate(session, {
+        collectedFields: post2.fields,
+        currentQuestion: post2.replyText
+      });
+      persistTurnAsync(callSid, {
+        collectedFields: post2.fields,
+        currentQuestion: post2.replyText,
+        callerSpeech: trimmedSpeech,
+        assistantReply: post2.replyText
+      });
+      return finishTurn(input, {
+        replyText: post2.replyText,
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: post2.nextState
+      });
+    }
+    if (isScheduleRejectedSpeech(trimmedSpeech) || trimmedSpeech.length > 0) {
+      const resetFields = {
+        ...fieldsBefore,
+        appointment_preference_raw: trimmedSpeech,
+        appointment_preference: void 0,
+        appointment_schedule_iso: void 0,
+        appointment_schedule_iso_end: void 0,
+        schedule_confirmed: false,
+        schedule_pending_clarification: false
+      };
+      const capture = processScheduleCapture(resetFields, trimmedSpeech);
+      const nextFields = capture.fields;
+      if (capture.clarificationPrompt) {
+        const reply2 = ensureSingleIntakeQuestion(capture.clarificationPrompt);
+        session = applyLocalSessionUpdate(session, {
+          collectedFields: nextFields,
+          currentQuestion: reply2
+        });
+        persistTurnAsync(callSid, {
+          collectedFields: nextFields,
+          currentQuestion: reply2,
+          callerSpeech: trimmedSpeech,
+          assistantReply: reply2
+        });
+        return finishTurn(input, {
+          replyText: reply2,
+          hangup: false,
+          hangupAfterMark: false,
+          session,
+          nextConversationState: "awaiting_schedule_clarification"
+        });
+      }
+      const reply = capture.confirmationPrompt ? ensureSingleIntakeQuestion(capture.confirmationPrompt) : buildScheduleConfirmationReply(nextFields);
+      session = applyLocalSessionUpdate(session, {
+        collectedFields: nextFields,
+        currentQuestion: reply
+      });
+      persistTurnAsync(callSid, {
+        collectedFields: nextFields,
+        currentQuestion: reply,
+        callerSpeech: trimmedSpeech,
+        assistantReply: reply
+      });
+      return finishTurn(input, {
+        replyText: reply,
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: capture.confirmationPrompt ? "awaiting_schedule_confirmation" : "awaiting_schedule_confirmation"
       });
     }
   }

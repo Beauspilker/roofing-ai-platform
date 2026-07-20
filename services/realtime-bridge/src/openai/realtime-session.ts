@@ -13,7 +13,14 @@ const REALTIME_INSTRUCTIONS =
   "Deliver exactly one short script per turn. Never ask more than one question. " +
   "Never invent intake questions or confirm details that were not provided by the server.";
 
-export function buildRealtimeSessionUpdate(voice: string) {
+export function buildRealtimeSessionUpdate(voice: string, config?: BridgeConfig) {
+  const eagerness =
+    config?.realtimeVadEagerness === "low" ||
+    config?.realtimeVadEagerness === "medium" ||
+    config?.realtimeVadEagerness === "high"
+      ? config.realtimeVadEagerness
+      : "high";
+
   return {
     type: "session.update" as const,
     session: {
@@ -28,7 +35,7 @@ export function buildRealtimeSessionUpdate(voice: string) {
           },
           turn_detection: {
             type: "semantic_vad" as const,
-            eagerness: "medium" as const,
+            eagerness,
             create_response: true,
             interrupt_response: true,
           },
@@ -133,7 +140,7 @@ export class OpenAiRealtimeSession {
   }
 
   private configureSession(): void {
-    this.send(buildRealtimeSessionUpdate(this.config.openAiRealtimeVoice));
+    this.send(buildRealtimeSessionUpdate(this.config.openAiRealtimeVoice, this.config));
   }
 
   private handleMessage(raw: string): void {

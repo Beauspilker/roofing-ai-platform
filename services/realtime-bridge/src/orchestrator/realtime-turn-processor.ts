@@ -29,9 +29,26 @@ import {
   getRealtimeNextMissingStage,
   mergeRealtimeCallerAnswer,
   needsCallbackReadback,
+  needsAddressReadback,
+  needsScheduleClarification,
+  needsScheduleConfirmation,
   normalizeRealtimeFields,
   toPersistedFields,
 } from "./realtime-intake.js";
+import {
+  applyAddressCorrection,
+  buildAddressReadbackConfirmation,
+  confirmAddress,
+  isAddressConfirmedSpeech,
+  isAddressRejectedSpeech,
+} from "./address-confirmation.js";
+import {
+  buildScheduleConfirmationQuestion,
+  confirmSchedule,
+  isScheduleConfirmedSpeech,
+  isScheduleRejectedSpeech,
+  processScheduleCapture,
+} from "./schedule-normalizer.js";
 import {
   buildClosingMessage,
   buildStructuredSpokenSummary,
@@ -138,6 +155,25 @@ function buildCallbackConfirmationReply(fields: RealtimeFields): string {
   );
 }
 
+function buildAddressConfirmationReply(fields: RealtimeFields): string {
+  return ensureSingleIntakeQuestion(
+    buildAddressReadbackConfirmation(fields.address ?? ""),
+  );
+}
+
+function buildScheduleConfirmationReply(fields: RealtimeFields): string {
+  const spoken = fields.appointment_preference?.trim();
+
+  if (spoken?.startsWith("Would ")) {
+    return ensureSingleIntakeQuestion(spoken);
+  }
+
+  const label =
+    spoken || fields.appointment_preference_raw?.trim() || "the requested time";
+
+  return ensureSingleIntakeQuestion(buildScheduleConfirmationQuestion(label));
+}
+
 function buildPostIntakeReply(
   policy: AcknowledgmentPolicy,
   fieldsBefore: RealtimeFields,
@@ -152,6 +188,35 @@ function buildPostIntakeReply(
       replyText: reply,
       fields: updatedFields,
       nextState: "awaiting_callback_confirmation",
+    };
+  }
+
+  if (needsAddressReadback(updatedFields)) {
+    const reply = buildAddressConfirmationReply(updatedFields);
+    return {
+      replyText: reply,
+      fields: updatedFields,
+      nextState: "awaiting_address_confirmation",
+    };
+  }
+
+  if (needsScheduleClarification(updatedFields)) {
+    const prompt =
+      updatedFields.schedule_clarification_prompt?.trim() ||
+      "What time works best?";
+    return {
+      replyText: ensureSingleIntakeQuestion(prompt),
+      fields: updatedFields,
+      nextState: "awaiting_schedule_clarification",
+    };
+  }
+
+  if (needsScheduleConfirmation(updatedFields)) {
+    const reply = buildScheduleConfirmationReply(updatedFields);
+    return {
+      replyText: reply,
+      fields: updatedFields,
+      nextState: "awaiting_schedule_confirmation",
     };
   }
 
@@ -296,6 +361,278 @@ export async function processRealtimeCallerTurn(
         hangupAfterMark: false,
         session,
         nextConversationState: "awaiting_callback_confirmation",
+      });
+    }
+  }
+
+  if (conversationState === "awaiting_address_confirmation") {
+    if (!trimmedSpeech) {
+      return {
+        replyText: "",
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: "awaiting_address_confirmation",
+      };
+    }
+
+    if (isAddressConfirmedSpeech(trimmedSpeech)) {
+      const confirmedFields = confirmAddress(fieldsBefore);
+      const filledCount = countNewlyFilledFields(fieldsBefore, confirmedFields);
+      const post = buildPostIntakeReply(
+        acknowledgmentPolicy,
+        fieldsBefore,
+        confirmedFields,
+        trimmedSpeech,
+        callerPhone,
+        filledCount,
+      );
+
+      session = applyLocalSessionUpdate(session, {
+        collectedFields: post.fields,
+        currentQuestion: post.replyText,
+      });
+
+      persistTurnAsync(callSid, {
+        collectedFields: post.fields,
+        currentQuestion: post.replyText,
+        callerSpeech: trimmedSpeech,
+        assistantReply: post.replyText,
+      });
+
+      return finishTurn(input, {
+        replyText: post.replyText,
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: post.nextState,
+      });
+    }
+
+    if (isAddressRejectedSpeech(trimmedSpeech) || trimmedSpeech.length > 0) {
+      const correctedFields = applyAddressCorrection(fieldsBefore, trimmedSpeech);
+      const reply = buildAddressConfirmationReply(correctedFields);
+
+      session = applyLocalSessionUpdate(session, {
+        collectedFields: correctedFields,
+        currentQuestion: reply,
+      });
+
+      persistTurnAsync(callSid, {
+        collectedFields: correctedFields,
+        currentQuestion: reply,
+        callerSpeech: trimmedSpeech,
+        assistantReply: reply,
+      });
+
+      return finishTurn(input, {
+        replyText: reply,
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: "awaiting_address_confirmation",
+      });
+    }
+  }
+
+  if (conversationState === "awaiting_schedule_clarification") {
+    if (!trimmedSpeech) {
+      return {
+        replyText: "",
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: "awaiting_schedule_clarification",
+      };
+    }
+
+    const capture = processScheduleCapture(fieldsBefore, trimmedSpeech);
+    let nextFields = capture.fields;
+
+    if (capture.clarificationPrompt) {
+      const reply = ensureSingleIntakeQuestion(capture.clarificationPrompt);
+
+      session = applyLocalSessionUpdate(session, {
+        collectedFields: nextFields,
+        currentQuestion: reply,
+      });
+
+      persistTurnAsync(callSid, {
+        collectedFields: nextFields,
+        currentQuestion: reply,
+        callerSpeech: trimmedSpeech,
+        assistantReply: reply,
+      });
+
+      return finishTurn(input, {
+        replyText: reply,
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: "awaiting_schedule_clarification",
+      });
+    }
+
+    if (capture.confirmationPrompt) {
+      const reply = ensureSingleIntakeQuestion(capture.confirmationPrompt);
+
+      session = applyLocalSessionUpdate(session, {
+        collectedFields: nextFields,
+        currentQuestion: reply,
+      });
+
+      persistTurnAsync(callSid, {
+        collectedFields: nextFields,
+        currentQuestion: reply,
+        callerSpeech: trimmedSpeech,
+        assistantReply: reply,
+      });
+
+      return finishTurn(input, {
+        replyText: reply,
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: "awaiting_schedule_confirmation",
+      });
+    }
+
+    const filledCount = countNewlyFilledFields(fieldsBefore, nextFields);
+    const post = buildPostIntakeReply(
+      acknowledgmentPolicy,
+      fieldsBefore,
+      nextFields,
+      trimmedSpeech,
+      callerPhone,
+      filledCount,
+    );
+
+    session = applyLocalSessionUpdate(session, {
+      collectedFields: post.fields,
+      currentQuestion: post.replyText,
+    });
+
+    persistTurnAsync(callSid, {
+      collectedFields: post.fields,
+      currentQuestion: post.replyText,
+      callerSpeech: trimmedSpeech,
+      assistantReply: post.replyText,
+    });
+
+    return finishTurn(input, {
+      replyText: post.replyText,
+      hangup: false,
+      hangupAfterMark: false,
+      session,
+      nextConversationState: post.nextState,
+    });
+  }
+
+  if (conversationState === "awaiting_schedule_confirmation") {
+    if (!trimmedSpeech) {
+      return {
+        replyText: "",
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: "awaiting_schedule_confirmation",
+      };
+    }
+
+    if (isScheduleConfirmedSpeech(trimmedSpeech)) {
+      const confirmedFields = confirmSchedule(fieldsBefore);
+      const filledCount = countNewlyFilledFields(fieldsBefore, confirmedFields);
+      const post = buildPostIntakeReply(
+        acknowledgmentPolicy,
+        fieldsBefore,
+        confirmedFields,
+        trimmedSpeech,
+        callerPhone,
+        filledCount,
+      );
+
+      session = applyLocalSessionUpdate(session, {
+        collectedFields: post.fields,
+        currentQuestion: post.replyText,
+      });
+
+      persistTurnAsync(callSid, {
+        collectedFields: post.fields,
+        currentQuestion: post.replyText,
+        callerSpeech: trimmedSpeech,
+        assistantReply: post.replyText,
+      });
+
+      return finishTurn(input, {
+        replyText: post.replyText,
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: post.nextState,
+      });
+    }
+
+    if (isScheduleRejectedSpeech(trimmedSpeech) || trimmedSpeech.length > 0) {
+      const resetFields: RealtimeFields = {
+        ...fieldsBefore,
+        appointment_preference_raw: trimmedSpeech,
+        appointment_preference: undefined,
+        appointment_schedule_iso: undefined,
+        appointment_schedule_iso_end: undefined,
+        schedule_confirmed: false,
+        schedule_pending_clarification: false,
+      };
+      const capture = processScheduleCapture(resetFields, trimmedSpeech);
+      const nextFields = capture.fields;
+
+      if (capture.clarificationPrompt) {
+        const reply = ensureSingleIntakeQuestion(capture.clarificationPrompt);
+
+        session = applyLocalSessionUpdate(session, {
+          collectedFields: nextFields,
+          currentQuestion: reply,
+        });
+
+        persistTurnAsync(callSid, {
+          collectedFields: nextFields,
+          currentQuestion: reply,
+          callerSpeech: trimmedSpeech,
+          assistantReply: reply,
+        });
+
+        return finishTurn(input, {
+          replyText: reply,
+          hangup: false,
+          hangupAfterMark: false,
+          session,
+          nextConversationState: "awaiting_schedule_clarification",
+        });
+      }
+
+      const reply = capture.confirmationPrompt
+        ? ensureSingleIntakeQuestion(capture.confirmationPrompt)
+        : buildScheduleConfirmationReply(nextFields);
+
+      session = applyLocalSessionUpdate(session, {
+        collectedFields: nextFields,
+        currentQuestion: reply,
+      });
+
+      persistTurnAsync(callSid, {
+        collectedFields: nextFields,
+        currentQuestion: reply,
+        callerSpeech: trimmedSpeech,
+        assistantReply: reply,
+      });
+
+      return finishTurn(input, {
+        replyText: reply,
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: capture.confirmationPrompt
+          ? "awaiting_schedule_confirmation"
+          : "awaiting_schedule_confirmation",
       });
     }
   }

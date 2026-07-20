@@ -1,7 +1,14 @@
 import type { CollectedFields } from "../../../../lib/call-intake.js";
 import { detectEmergency } from "../../../../lib/call-intelligence.js";
 import type { AcknowledgmentPolicy } from "./acknowledgment-policy.js";
-import { guardIntakeReply, sanitizeIntakeReply } from "./acknowledgment-policy.js";
+import {
+  guardIntakeReply,
+  joinAcknowledgmentAndQuestion,
+} from "./acknowledgment-policy.js";
+import {
+  buildAddressReadbackConfirmation,
+  needsAddressReadback,
+} from "./address-confirmation.js";
 import {
   buildCallbackReadbackConfirmation,
   extractCallbackPhoneFromSpeech,
@@ -23,6 +30,11 @@ import {
   needsCallbackReadback,
   type RequiredFieldKey,
 } from "./required-intake.js";
+import {
+  needsScheduleClarification,
+  needsScheduleConfirmation,
+  processScheduleCapture,
+} from "./schedule-normalizer.js";
 import {
   isStructuredBooleanUnset,
   normalizeTriStateField,
@@ -49,7 +61,12 @@ export function getRealtimeNextMissingStage(
   return next ?? "wrap_up";
 }
 
-export { getMissingRequiredFields, isRequiredIntakeComplete, needsCallbackReadback };
+export {
+  getMissingRequiredFields,
+  isRequiredIntakeComplete,
+  needsCallbackReadback,
+  needsAddressReadback,
+};
 
 export function mergeRealtimeCallerAnswer(
   fields: RealtimeFields,
@@ -62,6 +79,13 @@ export function mergeRealtimeCallerAnswer(
   const missingBeforeDirect = getMissingRequiredFields(updated);
   if (missingBeforeDirect.length > 0) {
     updated = applyDirectAnswerToMissingField(updated, answer, callerPhone);
+  }
+
+  if (
+    hasValue(updated.appointment_preference_raw) &&
+    updated.schedule_confirmed !== true
+  ) {
+    updated = processScheduleCapture(updated, answer).fields;
   }
 
   return updated;
@@ -109,8 +133,10 @@ export function buildRealtimeAcknowledgment(
   answer: string,
   fields: RealtimeFields,
   filledCount: number,
+  nextField?: RequiredFieldKey,
 ): string | null {
   return policy.selectAcknowledgment({
+    nextField,
     isEmergency: detectEmergency(answer),
     emergencyAlreadyAcknowledged: fields.emergency_acknowledged === true,
     fieldsFilledCount: filledCount,
@@ -132,14 +158,17 @@ export function buildIntakeReply(
   }
 
   const question = getNaturalTransitionQuestion(nextField, fields, callerPhone);
-  const ack = buildRealtimeAcknowledgment(policy, answer, fields, filledCount);
+  const ack = buildRealtimeAcknowledgment(
+    policy,
+    answer,
+    fields,
+    filledCount,
+    nextField,
+  );
   const fallback = getRequiredFieldQuestion(nextField, fields, callerPhone);
+  const combined = joinAcknowledgmentAndQuestion(ack, question);
 
-  if (!ack) {
-    return guardIntakeReply(question, fallback);
-  }
-
-  return guardIntakeReply(`${ack} ${question}`.replace(/\s+/g, " ").trim(), fallback);
+  return guardIntakeReply(combined, fallback);
 }
 
 export function appendAnythingElseNotes(
@@ -206,4 +235,10 @@ export function toPersistedFields(fields: RealtimeFields): CollectedFields {
   return toCollectedFields(normalizeRealtimeFields(fields));
 }
 
-export { buildCallbackReadbackConfirmation, shouldCollectAdjuster };
+export {
+  buildAddressReadbackConfirmation,
+  buildCallbackReadbackConfirmation,
+  needsScheduleClarification,
+  needsScheduleConfirmation,
+  shouldCollectAdjuster,
+};

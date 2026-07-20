@@ -44,6 +44,16 @@ import {
   summaryContainsKnownFields,
   type RealtimeFields,
 } from "../src/orchestrator/realtime-prompts.js";
+import {
+  buildAddressReadbackConfirmation,
+  hasConfirmableAddress,
+} from "../src/orchestrator/address-confirmation.js";
+import {
+  COMPANY_TIMEZONE,
+  parseScheduleSpeech,
+  processScheduleCapture,
+} from "../src/orchestrator/schedule-normalizer.js";
+import { buildIntakeReply } from "../src/orchestrator/realtime-intake.js";
 import { processRealtimeCallerTurn } from "../src/orchestrator/realtime-turn-processor.js";
 import {
   applyCorrectionToStructuredField,
@@ -76,10 +86,12 @@ const mockSession = {
 };
 
 test("cedar is selected in initial session config before any response", () => {
-  const update = buildRealtimeSessionUpdate("cedar");
+  const update = buildRealtimeSessionUpdate("cedar", {
+    realtimeVadEagerness: "high",
+  } as never);
 
   assert.equal(update.session.audio.output.voice, "cedar");
-  assert.equal(update.session.audio.input.turn_detection.eagerness, "medium");
+  assert.equal(update.session.audio.input.turn_detection.eagerness, "high");
   assert.equal(DEFAULT_OPENAI_REALTIME_VOICE, "cedar");
 });
 
@@ -101,10 +113,33 @@ test("Got it is not overused during one call", () => {
   const results: Array<string | null> = [];
 
   for (let index = 0; index < 12; index += 1) {
-    results.push(policy.selectAcknowledgment({ fieldsFilledCount: 0 }));
+    results.push(
+      policy.selectAcknowledgment({
+        fieldsFilledCount: index % 3,
+        nextField: "address",
+      }),
+    );
   }
 
   assert.equal(results.filter((value) => value === "Got it.").length, 0);
+});
+
+test("natural acknowledgment appears on some turns but not every turn", () => {
+  const policy = new AcknowledgmentPolicy();
+  const results: Array<string | null> = [];
+
+  for (let index = 0; index < 10; index += 1) {
+    results.push(
+      policy.selectAcknowledgment({
+        fieldsFilledCount: index,
+        nextField: "address",
+      }),
+    );
+  }
+
+  const ackCount = results.filter((value) => value !== null).length;
+  assert.ok(ackCount >= 3);
+  assert.ok(ackCount <= 7);
 });
 
 test("intake wording never uses closing language", () => {
@@ -209,7 +244,7 @@ test("multiple fields in one caller response are all stored", () => {
   assert.equal(merged.full_name, "John");
   assert.match(merged.address ?? "", /123 Main Street/i);
   assert.match(merged.problem_description ?? "", /tree hit the roof/i);
-  assert.equal(countNewlyFilledFields({}, merged), 3);
+  assert.equal(countNewlyFilledFields({}, merged), 2);
 });
 
 test("already answered fields are not asked again after multi-field capture", () => {
@@ -221,8 +256,8 @@ test("already answered fields are not asked again after multi-field capture", ()
 
   const nextStage = getRealtimeNextMissingStage(fields);
   assert.notEqual(nextStage, "full_name");
-  assert.notEqual(nextStage, "address");
-  assert.notEqual(nextStage, "problem");
+  assert.notEqual(nextStage, "problem_description");
+  assert.equal(nextStage, "callback_phone");
 });
 
 test("no claim yet and no adjuster stores both booleans as false", () => {
@@ -340,11 +375,13 @@ test("summary confirmation does not include closing in the same response", async
     full_name: "Beau",
     callback_phone: "+15551234567",
     callback_phone_confirmed: true,
-    address: "123 Main Street",
+    address: "123 Main Street, Beatrice, Nebraska",
+    address_confirmed: true,
     urgency: "standard",
     emergency_or_active_leak: false,
     insurance_claim_started: false,
-    appointment_preference: "tomorrow afternoon",
+    appointment_preference: "July 21 at 2:00 PM",
+    schedule_confirmed: true,
     photos_available: false,
   };
 
@@ -522,4 +559,209 @@ test("unrelated statements cannot change confirmed boolean", () => {
   let fields: RealtimeFields = { insurance_claim_started: false };
   fields = applyCorrectionToStructuredField(fields, "The storm was last Tuesday");
   assert.equal(fields.insurance_claim_started, false);
+});
+
+const JULY_20_2026 = new Date("2026-07-20T18:00:00.000Z");
+
+test("address is read back and confirmed", async () => {
+  const policy = new AcknowledgmentPolicy();
+  let fields: RealtimeFields = {
+    problem_description: "leak",
+    full_name: "John",
+    callback_phone: "+14025551234",
+    callback_phone_confirmed: true,
+  };
+
+  fields = mergeRealtimeCallerAnswer(fields, "123 Main Street in Beatrice", "+14025551234");
+
+  const outcome = await processRealtimeCallerTurn({
+    session: { ...mockSession, collected_fields: fields },
+    callSid: "CA123",
+    callerPhone: "+14025551234",
+    speechResult: "123 Main Street in Beatrice",
+    conversationState: "collecting_intake",
+    acknowledgmentPolicy: policy,
+  });
+
+  assert.match(outcome.replyText, /123 Main Street/i);
+  assert.match(outcome.replyText, /Is that right\?/);
+  assert.equal(outcome.nextConversationState, "awaiting_address_confirmation");
+});
+
+test("address correction replaces the previous address", async () => {
+  const policy = new AcknowledgmentPolicy();
+  const fields: RealtimeFields = {
+    address: "123 Main Street, Beatrice, Nebraska",
+    address_confirmed: false,
+  };
+
+  const outcome = await processRealtimeCallerTurn({
+    session: { ...mockSession, collected_fields: fields },
+    callSid: "CA123",
+    callerPhone: "+14025551234",
+    speechResult: "No, it's 456 Oak Avenue in Beatrice",
+    conversationState: "awaiting_address_confirmation",
+    acknowledgmentPolicy: policy,
+  });
+
+  assert.match(outcome.session?.collected_fields.address ?? "", /456 Oak Avenue/i);
+  assert.match(outcome.replyText, /456 Oak Avenue/i);
+  assert.equal(outcome.nextConversationState, "awaiting_address_confirmation");
+});
+
+test("confirmable address requires enough detail", () => {
+  assert.equal(hasConfirmableAddress("Beatrice"), false);
+  assert.equal(hasConfirmableAddress("123 Main Street in Beatrice"), true);
+  assert.match(
+    buildAddressReadbackConfirmation("123 Main Street in Beatrice"),
+    /123 Main Street, Beatrice, Nebraska/,
+  );
+});
+
+test("tomorrow at 2 resolves to exact calendar date and 2 PM", () => {
+  const parsed = parseScheduleSpeech("Tomorrow around 2", JULY_20_2026, "America/Chicago");
+
+  assert.equal(parsed.status, "needs_confirmation");
+  if (parsed.status === "needs_confirmation") {
+    assert.match(parsed.spoken, /July 21 at 2 PM/i);
+    assert.ok(parsed.isoStart);
+  }
+});
+
+test("Friday morning requires a defined window or clarification", () => {
+  const parsed = parseScheduleSpeech("Friday morning", JULY_20_2026, "America/Chicago");
+
+  assert.equal(parsed.status, "needs_confirmation");
+  if (parsed.status === "needs_confirmation") {
+    assert.match(parsed.spoken, /between 8:00 and 11:00 AM/i);
+    assert.ok(parsed.isoEnd);
+  }
+});
+
+test("after work requires a specific time", () => {
+  const parsed = parseScheduleSpeech("After work", JULY_20_2026, "America/Chicago");
+
+  assert.equal(parsed.status, "needs_time_clarification");
+  if (parsed.status === "needs_time_clarification") {
+    assert.match(parsed.prompt, /What time should I put down/i);
+  }
+});
+
+test("exact resolved date and time is read back and confirmed", async () => {
+  const policy = new AcknowledgmentPolicy();
+  let fields: RealtimeFields = {
+    problem_description: "leak",
+    full_name: "John",
+    callback_phone: "+14025551234",
+    callback_phone_confirmed: true,
+    address: "123 Main Street, Beatrice, Nebraska",
+    address_confirmed: true,
+    emergency_or_active_leak: false,
+    urgency: "standard",
+    insurance_claim_started: false,
+  };
+
+  fields = mergeRealtimeCallerAnswer(fields, "Tomorrow at 2", "+14025551234");
+  const outcome = await processRealtimeCallerTurn({
+    session: { ...mockSession, collected_fields: fields },
+    callSid: "CA123",
+    callerPhone: "+14025551234",
+    speechResult: "Tomorrow at 2",
+    conversationState: "collecting_intake",
+    acknowledgmentPolicy: policy,
+  });
+
+  assert.match(outcome.replyText, /July 21 at 2 PM/i);
+  assert.match(outcome.replyText, /Is that right/i);
+  assert.equal(outcome.nextConversationState, "awaiting_schedule_confirmation");
+});
+
+test("relative dates use server clock and company timezone", () => {
+  assert.equal(COMPANY_TIMEZONE, "America/Chicago");
+  const parsed = parseScheduleSpeech("tomorrow at 2", JULY_20_2026, COMPANY_TIMEZONE);
+  assert.equal(parsed.status, "needs_confirmation");
+});
+
+test("month and year rollover works for next week", () => {
+  const yearEnd = new Date("2026-12-30T18:00:00.000Z");
+  const parsed = parseScheduleSpeech("tomorrow at 3", yearEnd, "America/Chicago");
+  assert.equal(parsed.status, "needs_confirmation");
+  if (parsed.status === "needs_confirmation") {
+    assert.match(parsed.spoken, /December 31 at 3 PM/i);
+  }
+});
+
+test("schedule clarification flow resolves vague afternoon", () => {
+  const initial = processScheduleCapture(
+    { appointment_preference_raw: "tomorrow afternoon" },
+    "tomorrow afternoon",
+    JULY_20_2026,
+  );
+
+  assert.match(initial.clarificationPrompt ?? "", /tomorrow afternoon works best/i);
+
+  const resolved = processScheduleCapture(
+    initial.fields,
+    "About 2",
+    JULY_20_2026,
+  );
+
+  assert.match(resolved.confirmationPrompt ?? "", /July 21 at 2 PM/i);
+});
+
+test("response timing config targets about one second after caller finishes", () => {
+  const update = buildRealtimeSessionUpdate("cedar", {
+    realtimeVadEagerness: "high",
+    turnDetectionSilenceDurationMs: 800,
+  } as never);
+
+  assert.equal(update.session.audio.input.turn_detection.eagerness, "high");
+});
+
+test("turn timing records speech stopped to first audio delay", () => {
+  const tracker = new TurnTimingTracker();
+  tracker.beginTurn("CA123");
+  tracker.record("speech_stopped", "CA123");
+  tracker.record("transcript_completed", "CA123");
+  tracker.record("structured_state_updated", "CA123");
+  tracker.record("response_requested", "CA123");
+  tracker.record("first_audio_received", "CA123");
+  tracker.record("first_audio_sent_to_twilio", "CA123");
+});
+
+test("intake reply can include brief acknowledgment before next question", () => {
+  const policy = new AcknowledgmentPolicy();
+  const fields: RealtimeFields = {
+    problem_description: "leak",
+    full_name: "John",
+    callback_phone: "+14025551234",
+    callback_phone_confirmed: true,
+  };
+
+  const reply = buildIntakeReply(policy, fields, "yes", "+14025551234", 1);
+  assert.match(reply, /property address/i);
+});
+
+test("confirmed address is not read back again", async () => {
+  const policy = new AcknowledgmentPolicy();
+  const fields: RealtimeFields = {
+    problem_description: "leak",
+    full_name: "John",
+    callback_phone: "+14025551234",
+    callback_phone_confirmed: true,
+    address: "123 Main Street, Beatrice, Nebraska",
+    address_confirmed: true,
+  };
+
+  const outcome = await processRealtimeCallerTurn({
+    session: { ...mockSession, collected_fields: fields },
+    callSid: "CA123",
+    callerPhone: "+14025551234",
+    speechResult: "No active leak",
+    conversationState: "collecting_intake",
+    acknowledgmentPolicy: policy,
+  });
+
+  assert.doesNotMatch(outcome.replyText, /Is that right/i);
+  assert.notEqual(outcome.nextConversationState, "awaiting_address_confirmation");
 });

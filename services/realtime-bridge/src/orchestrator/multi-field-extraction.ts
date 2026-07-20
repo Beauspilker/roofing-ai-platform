@@ -205,13 +205,22 @@ export function mergeExtractedFields(
   let updated: RealtimeFields = { ...fields };
 
   updated.full_name = mergeStringField(updated.full_name, extracted.full_name);
-  updated.address = mergeStringField(updated.address, extracted.address);
+
+  if (hasValue(extracted.address) && !hasValue(updated.address)) {
+    updated.address = extracted.address;
+    updated.address_confirmed = false;
+  }
+
   updated.project_type = mergeStringField(updated.project_type, extracted.project_type);
   updated.urgency = mergeStringField(updated.urgency, extracted.urgency);
-  updated.appointment_preference = mergeStringField(
-    updated.appointment_preference,
-    extracted.appointment_preference,
-  );
+
+  if (
+    hasValue(extracted.appointment_preference) &&
+    !hasValue(updated.appointment_preference_raw)
+  ) {
+    updated.appointment_preference_raw = extracted.appointment_preference;
+    updated.schedule_confirmed = false;
+  }
   updated.storm_damage = mergeStringField(updated.storm_damage, extracted.storm_damage);
   updated.problem_description = mergeStringField(
     updated.problem_description,

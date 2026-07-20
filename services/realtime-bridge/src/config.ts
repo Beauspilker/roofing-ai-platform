@@ -28,7 +28,7 @@ export function getConfig() {
     ),
     bargeInEnabled: isRealtimeBargeInEnabled(),
     turnDetectionSilenceDurationMs: Number.parseInt(
-      process.env.REALTIME_SILENCE_DURATION_MS ?? "300",
+      process.env.REALTIME_SILENCE_DURATION_MS ?? "800",
       10,
     ),
     turnDetectionPrefixPaddingMs: Number.parseInt(
@@ -38,6 +38,10 @@ export function getConfig() {
     turnDetectionThreshold: Number.parseFloat(
       process.env.REALTIME_VAD_THRESHOLD ?? "0.5",
     ),
+    realtimeVadEagerness:
+      (process.env.REALTIME_VAD_EAGERNESS?.trim() as "low" | "medium" | "high" | undefined) ||
+      "high",
+    companyTimezone: process.env.COMPANY_TIMEZONE?.trim() || "America/Chicago",
   };
 }
 

@@ -1,6 +1,9 @@
 export type ConversationState =
   | "collecting_intake"
   | "awaiting_callback_confirmation"
+  | "awaiting_address_confirmation"
+  | "awaiting_schedule_clarification"
+  | "awaiting_schedule_confirmation"
   | "presenting_summary"
   | "awaiting_summary_confirmation"
   | "handling_correction"
@@ -21,6 +24,9 @@ export function isAwaitingCallerInput(state: ConversationState): boolean {
   return (
     state === "collecting_intake" ||
     state === "awaiting_callback_confirmation" ||
+    state === "awaiting_address_confirmation" ||
+    state === "awaiting_schedule_clarification" ||
+    state === "awaiting_schedule_confirmation" ||
     state === "awaiting_additional_notes" ||
     state === "awaiting_summary_confirmation" ||
     state === "handling_correction"
@@ -32,7 +38,10 @@ export function blocksAutomatedClosing(state: ConversationState): boolean {
     state === "presenting_summary" ||
     state === "awaiting_summary_confirmation" ||
     state === "handling_correction" ||
-    state === "awaiting_callback_confirmation"
+    state === "awaiting_callback_confirmation" ||
+    state === "awaiting_address_confirmation" ||
+    state === "awaiting_schedule_clarification" ||
+    state === "awaiting_schedule_confirmation"
   );
 }
 

@@ -24,6 +24,13 @@ export type RealtimeFields = Omit<
   photos_available?: TriStateBoolean;
   emergency_or_active_leak?: TriStateBoolean;
   callback_phone_confirmed?: boolean;
+  address_confirmed?: boolean;
+  appointment_preference_raw?: string;
+  appointment_schedule_iso?: string;
+  appointment_schedule_iso_end?: string;
+  schedule_confirmed?: boolean;
+  schedule_pending_clarification?: boolean;
+  schedule_clarification_prompt?: string;
   insurance_claim?: string;
   adjuster_contacted_legacy?: string;
   photos_available_legacy?: string;

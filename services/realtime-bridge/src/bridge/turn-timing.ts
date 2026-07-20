@@ -97,6 +97,10 @@ export class TurnTimingTracker {
       callSid,
       stage: largest.stage,
       delayMs: largest.ms,
+      speechStoppedToFirstAudioMs:
+        firstReceived !== undefined && speechStopped !== undefined
+          ? firstReceived - speechStopped
+          : undefined,
       stageAveragesMs: averages,
     });
   }

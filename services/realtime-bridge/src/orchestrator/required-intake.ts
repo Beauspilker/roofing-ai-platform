@@ -1,5 +1,7 @@
 import type { RealtimeFields } from "./realtime-prompts.js";
 import { normalizeCallbackPhoneE164 } from "./callback-phone.js";
+import { isAddressConfirmed } from "./address-confirmation.js";
+import { isScheduleComplete } from "./schedule-normalizer.js";
 import {
   isStructuredBooleanUnset,
   parseExplicitBoolean,
@@ -47,7 +49,7 @@ function isFieldComplete(field: RequiredFieldKey, fields: RealtimeFields): boole
     case "callback_phone":
       return isCallbackComplete(fields);
     case "address":
-      return hasValue(fields.address);
+      return isAddressConfirmed(fields);
     case "problem_description":
       return hasValue(fields.problem_description);
     case "urgency":
@@ -62,7 +64,7 @@ function isFieldComplete(field: RequiredFieldKey, fields: RealtimeFields): boole
       }
       return !isStructuredBooleanUnset(fields.adjuster_contacted);
     case "appointment_preference":
-      return hasValue(fields.appointment_preference);
+      return isScheduleComplete(fields);
     case "photos_available":
       return !isStructuredBooleanUnset(fields.photos_available);
     default:
@@ -92,7 +94,7 @@ const FIELD_QUESTIONS: Record<RequiredFieldKey, string> = {
   urgency: "How urgent is this?",
   insurance_claim_started: "Have you started an insurance claim?",
   adjuster_contacted: "Have you contacted your adjuster yet?",
-  appointment_preference: "What's the best time for the roofing team to reach you?",
+  appointment_preference: "When would be a good time for the roofing team to contact you?",
   photos_available: "Do you have photos of the damage?",
 };
 
@@ -119,7 +121,7 @@ const CONTEXTUAL_TRANSITIONS: Partial<Record<RequiredFieldKey, string>> = {
   urgency: "How urgent is this?",
   insurance_claim_started: "Have you started an insurance claim?",
   adjuster_contacted: "Have you contacted your adjuster yet?",
-  appointment_preference: "What's the best time for the roofing team to reach you?",
+  appointment_preference: "When would be a good time for the roofing team to contact you?",
   photos_available: "Do you have photos of the damage?",
 };
 
@@ -163,6 +165,7 @@ export function applyDirectAnswerToMissingField(
     case "address":
       if (!hasValue(updated.address)) {
         updated.address = trimmed.slice(0, 500);
+        updated.address_confirmed = false;
       }
       break;
     case "problem_description":
@@ -176,8 +179,9 @@ export function applyDirectAnswerToMissingField(
       }
       break;
     case "appointment_preference":
-      if (!hasValue(updated.appointment_preference)) {
-        updated.appointment_preference = trimmed.slice(0, 200);
+      if (!hasValue(updated.appointment_preference_raw)) {
+        updated.appointment_preference_raw = trimmed.slice(0, 200);
+        updated.schedule_confirmed = false;
       }
       break;
     case "emergency_or_active_leak":

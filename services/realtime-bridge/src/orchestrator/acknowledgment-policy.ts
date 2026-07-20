@@ -1,10 +1,13 @@
-const SPARING_ACKNOWLEDGMENTS = [
-  "Okay.",
-  "That helps.",
-  "All right.",
-  "Understood.",
-  "Thanks.",
-] as const;
+const CONTEXT_ACKNOWLEDGMENTS: Record<string, readonly string[]> = {
+  callback_phone: ["Absolutely.", "Thank you."],
+  address: ["Thank you.", "All right."],
+  emergency_or_active_leak: ["I'm glad everyone is safe.", "Understood."],
+  insurance_claim_started: ["That helps.", "Okay."],
+  adjuster_contacted: ["That helps.", "Thanks for clarifying."],
+  appointment_preference: ["Okay, and", "All right."],
+  photos_available: ["Thanks.", "Understood."],
+  default: ["Okay.", "Thank you.", "All right.", "That helps."],
+} as const;
 
 export const CLOSING_PHRASES = [
   "sounds good",
@@ -33,63 +36,58 @@ export const CLOSING_PHRASES = [
 
 export class AcknowledgmentPolicy {
   private lastAcknowledgment: string | null = null;
-  private gotItCount = 0;
-  private selectionIndex = 0;
-  private turnsSinceAck = 0;
+  private turnCount = 0;
 
   selectAcknowledgment(options: {
+    nextField?: string;
     isEmergency?: boolean;
     emergencyAlreadyAcknowledged?: boolean;
     fieldsFilledCount?: number;
-    hasActiveLeak?: boolean;
+    forceAck?: boolean;
   }): string | null {
-    this.turnsSinceAck += 1;
+    this.turnCount += 1;
 
     if (options.isEmergency && !options.emergencyAlreadyAcknowledged) {
-      const ack = "I'll flag this as urgent.";
+      const ack = "I'm glad everyone is safe.";
       this.recordUsed(ack);
       return ack;
     }
 
-    if ((options.fieldsFilledCount ?? 0) >= 3) {
+    const shouldAcknowledge =
+      options.forceAck === true ||
+      this.turnCount % 5 === 1 ||
+      this.turnCount % 5 === 3;
+
+    if (!shouldAcknowledge) {
       this.recordUsed(null);
       return null;
     }
 
-    if (this.turnsSinceAck < 2) {
-      this.recordUsed(null);
-      return null;
-    }
-
-    const candidates = SPARING_ACKNOWLEDGMENTS.filter((ack) => ack !== this.lastAcknowledgment);
+    const pool =
+      CONTEXT_ACKNOWLEDGMENTS[options.nextField ?? "default"] ??
+      CONTEXT_ACKNOWLEDGMENTS.default;
+    const candidates = pool.filter((ack) => ack !== this.lastAcknowledgment);
 
     if (candidates.length === 0) {
       this.recordUsed(null);
       return null;
     }
 
-    const index = this.selectionIndex % candidates.length;
-    this.selectionIndex += 1;
-    const selected = candidates[index] ?? null;
+    const selected = candidates[(this.turnCount + candidates.length) % candidates.length] ?? null;
     this.recordUsed(selected);
     return selected;
   }
 
   recordUsed(acknowledgment: string | null): void {
     this.lastAcknowledgment = acknowledgment;
-    this.turnsSinceAck = 0;
-
-    if (acknowledgment === "Got it.") {
-      this.gotItCount += 1;
-    }
   }
 
   getLastAcknowledgment(): string | null {
     return this.lastAcknowledgment;
   }
 
-  getGotItCount(): number {
-    return this.gotItCount;
+  resetTurnCounter(): void {
+    this.turnCount = 0;
   }
 }
 
@@ -127,4 +125,21 @@ export function guardIntakeReply(reply: string, fallbackQuestion: string): strin
   }
 
   return sanitized;
+}
+
+export function joinAcknowledgmentAndQuestion(
+  acknowledgment: string | null,
+  question: string,
+): string {
+  if (!acknowledgment) {
+    return question;
+  }
+
+  const trimmedQuestion = question.trim();
+
+  if (/^(okay, and|all right\.|thank you\.)/i.test(trimmedQuestion)) {
+    return `${acknowledgment} ${trimmedQuestion}`.replace(/\s+/g, " ").trim();
+  }
+
+  return `${acknowledgment} ${trimmedQuestion}`.replace(/\s+/g, " ").trim();
 }

@@ -26,6 +26,7 @@ import {
   confirmCallbackPhone,
   countNewlyFilledFields,
   getMissingRequiredFields,
+  getSharedMissingFields,
   getRealtimeNextMissingStage,
   mergeRealtimeCallerAnswer,
   needsCallbackReadback,
@@ -48,6 +49,7 @@ import {
   isScheduleConfirmedSpeech,
   isScheduleRejectedSpeech,
   processScheduleCapture,
+  SCHEDULE_PARSE_FALLBACK_PROMPT,
 } from "./schedule-normalizer.js";
 import {
   buildClosingMessage,
@@ -61,11 +63,17 @@ import {
   REALTIME_INTRO_TRANSITION,
   type RealtimeFields,
 } from "./realtime-prompts.js";
-import { buildNameClarificationPrompt } from "./field-validation.js";
+import {
+  buildNameClarificationPrompt,
+  EARLY_CALLER_NAME_QUESTION,
+  isPlausibleCallerName,
+} from "./field-validation.js";
 import { resolvePendingQuestion } from "./pending-question.js";
 import {
   getNaturalTransitionQuestion,
   getNextRequiredField,
+  getSharedMissingFields,
+  isSharedIntakeComplete,
 } from "./required-intake.js";
 import { applyCorrectionToStructuredField, syncLegacyStringFields } from "./structured-intake.js";
 import { logError } from "../logger.js";
@@ -152,7 +160,46 @@ function finishTurn(
 ): RealtimeTurnOutcome {
   return {
     ...outcome,
+    replyText: outcome.replyText.trim(),
     structuredStateUpdated: true,
+  };
+}
+
+function ensureNonEmptyReply(replyText: string, fallback: string): string {
+  const trimmed = replyText.trim();
+  return trimmed || fallback;
+}
+
+function processValidatedNameCaptureTurn(input: {
+  fields: RealtimeFields;
+  speech: string;
+}): ReturnType<typeof processNameCaptureTurn> {
+  const outcome = processNameCaptureTurn({
+    fields: input.fields,
+    speech: input.speech,
+    confidence: null,
+  });
+
+  if (outcome.status !== "accepted") {
+    return outcome;
+  }
+
+  const acceptedName = outcome.fields.full_name?.trim();
+
+  if (acceptedName && isPlausibleCallerName(acceptedName)) {
+    return outcome;
+  }
+
+  return {
+    status: "repeat",
+    fields: {
+      ...input.fields,
+      name_awaiting_repeat: true,
+      name_clarification_attempts: (input.fields.name_clarification_attempts ?? 0) + 1,
+    },
+    replyText: buildNameRepeatPrompt(),
+    nameConfirmationRequested: false,
+    nameCorrected: false,
   };
 }
 
@@ -229,8 +276,11 @@ function buildPostIntakeReply(
   }
 
   const missing = getMissingRequiredFields(updatedFields);
+  const sharedMissing = getSharedMissingFields(updatedFields).filter(
+    (field) => field !== "additionalNotes",
+  );
 
-  if (missing.length === 0) {
+  if (missing.length === 0 && sharedMissing.length === 0) {
     return {
       replyText: ensureSingleIntakeQuestion(REALTIME_ANYTHING_ELSE_QUESTION),
       fields: updatedFields,
@@ -244,9 +294,12 @@ function buildPostIntakeReply(
     updatedFields.problem_description?.trim()
   ) {
     const nextField = getNextRequiredField(updatedFields);
-    const question = nextField
-      ? getNaturalTransitionQuestion(nextField, updatedFields, callerPhone)
-      : "What's your name?";
+    const question =
+      nextField === "full_name"
+        ? EARLY_CALLER_NAME_QUESTION
+        : nextField
+          ? getNaturalTransitionQuestion(nextField, updatedFields, callerPhone)
+          : EARLY_CALLER_NAME_QUESTION;
 
     return {
       replyText: ensureSingleIntakeQuestion(
@@ -284,10 +337,11 @@ function isNameCaptureTurn(
     return true;
   }
 
-  return (
-    resolvePendingQuestion(fields, conversationState) === "caller_name" &&
-    getNextRequiredField(fields) === "full_name"
-  );
+  if (conversationState !== "collecting_intake") {
+    return false;
+  }
+
+  return getNextRequiredField(fields) === "full_name";
 }
 
 export async function processRealtimeCallerTurn(
@@ -485,13 +539,13 @@ export async function processRealtimeCallerTurn(
 
   if (conversationState === "awaiting_schedule_clarification") {
     if (!trimmedSpeech) {
-      return {
-        replyText: "",
+      return finishTurn(input, {
+        replyText: SCHEDULE_PARSE_FALLBACK_PROMPT,
         hangup: false,
         hangupAfterMark: false,
         session,
         nextConversationState: "awaiting_schedule_clarification",
-      };
+      });
     }
 
     const capture = processScheduleCapture(fieldsBefore, trimmedSpeech);
@@ -568,7 +622,10 @@ export async function processRealtimeCallerTurn(
     });
 
     return finishTurn(input, {
-      replyText: post.replyText,
+      replyText: ensureNonEmptyReply(
+        post.replyText,
+        SCHEDULE_PARSE_FALLBACK_PROMPT,
+      ),
       hangup: false,
       hangupAfterMark: false,
       session,
@@ -578,13 +635,13 @@ export async function processRealtimeCallerTurn(
 
   if (conversationState === "awaiting_schedule_confirmation") {
     if (!trimmedSpeech) {
-      return {
-        replyText: "",
+      return finishTurn(input, {
+        replyText: buildScheduleConfirmationReply(fieldsBefore),
         hangup: false,
         hangupAfterMark: false,
         session,
         nextConversationState: "awaiting_schedule_confirmation",
-      };
+      });
     }
 
     if (isScheduleConfirmedSpeech(trimmedSpeech)) {
@@ -660,7 +717,10 @@ export async function processRealtimeCallerTurn(
 
       const reply = capture.confirmationPrompt
         ? ensureSingleIntakeQuestion(capture.confirmationPrompt)
-        : buildScheduleConfirmationReply(nextFields);
+        : ensureNonEmptyReply(
+            buildScheduleConfirmationReply(nextFields),
+            SCHEDULE_PARSE_FALLBACK_PROMPT,
+          );
 
       session = applyLocalSessionUpdate(session, {
         collectedFields: nextFields,
@@ -687,7 +747,11 @@ export async function processRealtimeCallerTurn(
   }
 
   if (conversationState === "awaiting_additional_notes") {
-    if (getMissingRequiredFields(fieldsBefore).length > 0) {
+    const sharedMissing = getSharedMissingFields(fieldsBefore).filter(
+      (field) => field !== "additionalNotes",
+    );
+
+    if (getMissingRequiredFields(fieldsBefore).length > 0 || sharedMissing.length > 0) {
       const reply = ensureSingleIntakeQuestion(
         buildIntakeReply(acknowledgmentPolicy, fieldsBefore, trimmedSpeech, callerPhone, 0),
       );
@@ -701,10 +765,27 @@ export async function processRealtimeCallerTurn(
       });
     }
 
-    let updatedFields = fieldsBefore;
+    let updatedFields = syncLegacyStringFields({
+      ...fieldsBefore,
+      additional_notes_responded: true,
+    });
 
     if (!isAnythingElseDeclined(trimmedSpeech)) {
-      updatedFields = appendAnythingElseNotes(fieldsBefore, trimmedSpeech);
+      updatedFields = appendAnythingElseNotes(updatedFields, trimmedSpeech);
+    }
+
+    if (!isSharedIntakeComplete(updatedFields)) {
+      const reply = ensureSingleIntakeQuestion(
+        buildIntakeReply(acknowledgmentPolicy, updatedFields, trimmedSpeech, callerPhone, 0),
+      );
+
+      return finishTurn(input, {
+        replyText: reply,
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: "collecting_intake",
+      });
     }
 
     const reply = ensureSingleIntakeQuestion(buildSummaryWithConfirmation(updatedFields));
@@ -811,7 +892,7 @@ export async function processRealtimeCallerTurn(
   }
 
   if (isNameCaptureTurn(fieldsBefore, conversationState)) {
-    const nameOutcome = processNameCaptureTurn({
+    const nameOutcome = processValidatedNameCaptureTurn({
       fields: fieldsBefore,
       speech: trimmedSpeech,
     });
@@ -886,7 +967,49 @@ export async function processRealtimeCallerTurn(
     updatedFields.name_needs_clarification &&
     resolvePendingQuestion(updatedFields, conversationState) === "caller_name"
   ) {
-    const reply = ensureSingleIntakeQuestion(buildNameClarificationPrompt(trimmedSpeech));
+    const attempts = updatedFields.name_clarification_attempts ?? 0;
+
+    if (attempts >= 3) {
+      updatedFields = syncLegacyStringFields({
+        ...updatedFields,
+        caller_name_unavailable: true,
+        name_needs_clarification: false,
+      });
+
+      const filledCount = countNewlyFilledFields(fieldsBefore, updatedFields);
+      const post = buildPostIntakeReply(
+        acknowledgmentPolicy,
+        fieldsBefore,
+        updatedFields,
+        trimmedSpeech,
+        callerPhone,
+        filledCount,
+      );
+
+      session = applyLocalSessionUpdate(session, {
+        collectedFields: post.fields,
+        currentQuestion: post.replyText,
+      });
+
+      persistTurnAsync(callSid, {
+        collectedFields: post.fields,
+        currentQuestion: post.replyText,
+        callerSpeech: trimmedSpeech,
+        assistantReply: post.replyText,
+      });
+
+      return finishTurn(input, {
+        replyText: post.replyText,
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: post.nextState,
+      });
+    }
+
+    const reply = ensureSingleIntakeQuestion(
+      buildNameClarificationPrompt(trimmedSpeech, { askToSpell: attempts >= 2 }),
+    );
 
     session = applyLocalSessionUpdate(session, {
       collectedFields: updatedFields,
@@ -936,7 +1059,10 @@ export async function processRealtimeCallerTurn(
   });
 
   return finishTurn(input, {
-    replyText: post.replyText,
+    replyText: ensureNonEmptyReply(
+      post.replyText,
+      "Thanks for your patience. Could you repeat that last answer for me?",
+    ),
     hangup: false,
     hangupAfterMark: false,
     session,

@@ -90,11 +90,41 @@ export class ResponseStateGuard {
   }
 
   onResponseCancelled(): void {
+    this.releaseActiveResponse({ waitingForCaller: true });
+  }
+
+  onResponseFailed(): void {
+    this.releaseActiveResponse({ waitingForCaller: true });
+  }
+
+  onOpenAiError(): void {
+    this.releaseActiveResponse({ waitingForCaller: true, preserveCallerTurnReady: true });
+  }
+
+  onWebSocketClosed(): void {
+    this.releaseActiveResponse({ waitingForCaller: false });
+  }
+
+  /** Idempotent release for recovery paths and terminal response events. */
+  releaseActiveResponse(
+    options: { waitingForCaller?: boolean; preserveCallerTurnReady?: boolean } = {},
+  ): void {
     this.activeResponse = false;
     this.clientInitiatedResponse = false;
     this.assistantAudioPending = false;
-    this.waitingForCaller = true;
-    this.callerTurnReady = false;
+
+    if (options.waitingForCaller !== undefined) {
+      this.waitingForCaller = options.waitingForCaller;
+    }
+
+    if (!options.preserveCallerTurnReady) {
+      this.callerTurnReady = false;
+    }
+  }
+
+  prepareCallerTurnRecovery(): void {
+    this.releaseActiveResponse({ waitingForCaller: true, preserveCallerTurnReady: true });
+    this.callerTurnReady = true;
   }
 
   onCallerSpeechStarted(): void {

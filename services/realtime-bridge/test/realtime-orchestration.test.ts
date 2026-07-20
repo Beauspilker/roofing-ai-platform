@@ -678,7 +678,7 @@ test("tomorrow at 2 resolves to exact calendar date and 2 PM", () => {
 
   assert.equal(parsed.status, "needs_confirmation");
   if (parsed.status === "needs_confirmation") {
-    assert.match(parsed.spoken, /July 21 at 2 PM/i);
+    assert.match(parsed.spoken, /July 21 at 2:00 PM/i);
     assert.ok(parsed.isoStart);
   }
 });
@@ -726,8 +726,8 @@ test("exact resolved date and time is read back and confirmed", async () => {
     acknowledgmentPolicy: policy,
   });
 
-  assert.match(outcome.replyText, /July 21 at 2 PM/i);
-  assert.match(outcome.replyText, /Is that right/i);
+  assert.match(outcome.replyText, /July 21 at 2:00 PM/i);
+  assert.match(outcome.replyText, /Is that correct/i);
   assert.equal(outcome.nextConversationState, "awaiting_schedule_confirmation");
 });
 
@@ -742,7 +742,7 @@ test("month and year rollover works for next week", () => {
   const parsed = parseScheduleSpeech("tomorrow at 3", yearEnd, "America/Chicago");
   assert.equal(parsed.status, "needs_confirmation");
   if (parsed.status === "needs_confirmation") {
-    assert.match(parsed.spoken, /December 31 at 3 PM/i);
+    assert.match(parsed.spoken, /December 31 at 3:00 PM/i);
   }
 });
 
@@ -761,7 +761,7 @@ test("schedule clarification flow resolves vague afternoon", () => {
     JULY_20_2026,
   );
 
-  assert.match(resolved.confirmationPrompt ?? "", /July 21 at 2 PM/i);
+  assert.match(resolved.confirmationPrompt ?? "", /July 21 at 2:00 PM/i);
 });
 
 test("response timing config targets about one second after caller finishes", () => {

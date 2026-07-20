@@ -104,4 +104,24 @@ export class TurnTimingTracker {
       stageAveragesMs: averages,
     });
   }
+
+  getStageAveragesMs(): Record<string, number> {
+    return Object.fromEntries(
+      [...this.stageTotals.entries()].map(([stage, stats]) => [
+        stage,
+        Math.round(stats.totalMs / stats.count),
+      ]),
+    );
+  }
+
+  getSpeechStoppedToFirstAudioMs(): number | undefined {
+    const speechStopped = this.marks.get("speech_stopped");
+    const firstReceived = this.marks.get("first_audio_received");
+
+    if (speechStopped === undefined || firstReceived === undefined) {
+      return undefined;
+    }
+
+    return firstReceived - speechStopped;
+  }
 }

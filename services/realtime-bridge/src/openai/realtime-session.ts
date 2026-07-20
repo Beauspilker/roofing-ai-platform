@@ -173,7 +173,8 @@ export class OpenAiRealtimeSession {
     if (
       event.type === "response.done" ||
       event.type === "response.cancelled" ||
-      event.type === "response.canceled"
+      event.type === "response.canceled" ||
+      event.type === "response.failed"
     ) {
       this.activeResponseId = null;
     }

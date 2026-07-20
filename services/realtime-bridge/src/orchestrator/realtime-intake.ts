@@ -20,14 +20,17 @@ import {
   extractAllFieldsFromTranscript,
   mergeExtractedFields,
 } from "./multi-field-extraction.js";
-import { REALTIME_ANYTHING_ELSE_QUESTION } from "./realtime-prompts.js";
+import { REALTIME_ANYTHING_ELSE_QUESTION, type RealtimeFields } from "./realtime-prompts.js";
 import {
   applyDirectAnswerToMissingField,
   getMissingRequiredFields,
   getNaturalTransitionQuestion,
   getNextRequiredField,
   getRequiredFieldQuestion,
+  getSharedMissingFields,
+  isCallerNameResolved,
   isRequiredIntakeComplete,
+  isSharedIntakeComplete,
   needsCallbackReadback,
   type RequiredFieldKey,
 } from "./required-intake.js";
@@ -66,7 +69,10 @@ export function getRealtimeNextMissingStage(
 
 export {
   getMissingRequiredFields,
+  getSharedMissingFields,
   isRequiredIntakeComplete,
+  isSharedIntakeComplete,
+  isCallerNameResolved,
   needsCallbackReadback,
   needsAddressReadback,
 };

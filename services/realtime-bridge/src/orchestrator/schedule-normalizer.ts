@@ -1,7 +1,11 @@
 import type { RealtimeFields } from "./realtime-prompts.js";
+import { logError } from "../logger.js";
 import { syncLegacyStringFields } from "./structured-intake.js";
 
 export const COMPANY_TIMEZONE = process.env.COMPANY_TIMEZONE?.trim() || "America/Chicago";
+
+export const SCHEDULE_PARSE_FALLBACK_PROMPT =
+  "I'm sorry, I had trouble understanding the timing. What specific day and time would work best for you?";
 
 export type ScheduleParseResult =
   | {
@@ -145,14 +149,44 @@ function formatSpokenDate(parts: LocalDateParts): string {
 function formatSpokenTime(hour: number, minute: number): string {
   const suffix = hour >= 12 ? "PM" : "AM";
   const hour12 = hour % 12 === 0 ? 12 : hour % 12;
-  const minutePart = minute === 0 ? "" : `:${String(minute).padStart(2, "0")}`;
+  const minutePart = `:${String(minute).padStart(2, "0")}`;
   return `${hour12}${minutePart} ${suffix}`.replace("  ", " ");
 }
 
+const SPOKEN_HOUR_WORDS: Record<string, number> = {
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  eleven: 11,
+  twelve: 12,
+};
+
+function parseHourToken(token: string): number | null {
+  const numeric = Number.parseInt(token, 10);
+
+  if (Number.isFinite(numeric) && numeric >= 1 && numeric <= 12) {
+    return numeric;
+  }
+
+  return SPOKEN_HOUR_WORDS[token.toLowerCase()] ?? null;
+}
+
 function parseTimeFromSpeech(normalized: string): { hour: number; minute: number } | null {
-  const atTime = normalized.match(/\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+  const atTime = normalized.match(/\bat\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(am|pm)?/i);
   if (atTime) {
-    let hour = Number.parseInt(atTime[1] ?? "0", 10);
+    const parsedHour = parseHourToken(atTime[1] ?? "");
+    if (parsedHour === null) {
+      return null;
+    }
+
+    let hour = parsedHour;
     const minute = Number.parseInt(atTime[2] ?? "0", 10);
     const meridiem = atTime[3]?.toLowerCase();
 
@@ -169,9 +203,16 @@ function parseTimeFromSpeech(normalized: string): { hour: number; minute: number
     return { hour, minute };
   }
 
-  const aboutTime = normalized.match(/\babout\s+(\d{1,2})(?::(\d{2}))?\b/i);
+  const aboutTime = normalized.match(
+    /\babout\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\b/i,
+  );
   if (aboutTime) {
-    let hour = Number.parseInt(aboutTime[1] ?? "0", 10);
+    const parsedHour = parseHourToken(aboutTime[1] ?? "");
+    if (parsedHour === null) {
+      return null;
+    }
+
+    let hour = parsedHour;
     const minute = Number.parseInt(aboutTime[2] ?? "0", 10);
     if (hour <= 7) {
       hour += 12;
@@ -179,13 +220,47 @@ function parseTimeFromSpeech(normalized: string): { hour: number; minute: number
     return { hour, minute };
   }
 
-  const aroundTime = normalized.match(/\baround\s+(\d{1,2})(?::(\d{2}))?\b/i);
+  const aroundTime = normalized.match(
+    /\baround\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\b/i,
+  );
   if (aroundTime) {
-    let hour = Number.parseInt(aroundTime[1] ?? "0", 10);
+    const parsedHour = parseHourToken(aroundTime[1] ?? "");
+    if (parsedHour === null) {
+      return null;
+    }
+
+    let hour = parsedHour;
     const minute = Number.parseInt(aroundTime[2] ?? "0", 10);
     if (hour <= 7) {
       hour += 12;
     }
+    return { hour, minute };
+  }
+
+  const betweenTimes = normalized.match(
+    /\bbetween\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(?:am|pm)?\s+and\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(am|pm)?/i,
+  );
+  if (betweenTimes) {
+    const startHour = parseHourToken(betweenTimes[1] ?? "");
+    const endHour = parseHourToken(betweenTimes[3] ?? "");
+    if (startHour === null || endHour === null) {
+      return null;
+    }
+
+    let hour = startHour;
+    const minute = Number.parseInt(betweenTimes[2] ?? "0", 10);
+    const meridiem = betweenTimes[5]?.toLowerCase();
+
+    if (meridiem === "pm" && hour < 12) {
+      hour += 12;
+    }
+    if (meridiem === "am" && hour === 12) {
+      hour = 0;
+    }
+    if (!meridiem && hour <= 7) {
+      hour += 12;
+    }
+
     return { hour, minute };
   }
 
@@ -207,6 +282,27 @@ function weekdayIndex(name: string): number | null {
 }
 
 export function parseScheduleSpeech(
+  speech: string,
+  now: Date = new Date(),
+  timeZone: string = COMPANY_TIMEZONE,
+): ScheduleParseResult {
+  try {
+    return parseScheduleSpeechInternal(speech, now, timeZone);
+  } catch (error) {
+    logScheduleParseError(error, speech);
+    return {
+      status: "needs_date_clarification",
+      prompt: SCHEDULE_PARSE_FALLBACK_PROMPT,
+      raw: speech.trim(),
+    };
+  }
+}
+
+function logScheduleParseError(error: unknown, speech: string): void {
+  logError("schedule_parse_failed", { speechLength: speech.trim().length }, error);
+}
+
+function parseScheduleSpeechInternal(
   speech: string,
   now: Date = new Date(),
   timeZone: string = COMPANY_TIMEZONE,
@@ -291,6 +387,59 @@ export function parseScheduleSpeech(
   }
 
   if (time) {
+    const betweenTimes = normalized.match(
+      /\bbetween\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(?:am|pm)?\s+and\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(am|pm)?/i,
+    );
+
+    if (betweenTimes) {
+      const startHour = parseHourToken(betweenTimes[1] ?? "");
+      const endHour = parseHourToken(betweenTimes[3] ?? "");
+      if (startHour !== null && endHour !== null) {
+        let endHour24 = endHour;
+        const meridiem = betweenTimes[5]?.toLowerCase();
+        if (meridiem === "pm" && endHour24 < 12) {
+          endHour24 += 12;
+        }
+        if (!meridiem && endHour24 <= 7) {
+          endHour24 += 12;
+        }
+
+        let startHour24 = startHour;
+        if (meridiem === "pm" && startHour24 < 12) {
+          startHour24 += 12;
+        }
+        if (!meridiem && startHour24 <= 7) {
+          startHour24 += 12;
+        }
+
+        const dateLabel = formatSpokenDate(targetDate);
+        const startLabel = formatSpokenTime(startHour24, Number.parseInt(betweenTimes[2] ?? "0", 10));
+        const endLabel = formatSpokenTime(endHour24, Number.parseInt(betweenTimes[4] ?? "0", 10));
+
+        return {
+          status: "needs_confirmation",
+          spoken: `${dateLabel} between ${startLabel.replace(/ AM| PM/, "")} and ${endLabel}`,
+          isoStart: makeUtcDate(
+            targetDate.year,
+            targetDate.month,
+            targetDate.day,
+            startHour24,
+            Number.parseInt(betweenTimes[2] ?? "0", 10),
+            timeZone,
+          ).toISOString(),
+          isoEnd: makeUtcDate(
+            targetDate.year,
+            targetDate.month,
+            targetDate.day,
+            endHour24,
+            Number.parseInt(betweenTimes[4] ?? "0", 10),
+            timeZone,
+          ).toISOString(),
+          raw,
+        };
+      }
+    }
+
     const dateLabel = formatSpokenDate(targetDate);
     const spokenTime = formatSpokenTime(time.hour, time.minute);
     const isoStart = makeUtcDate(
@@ -314,7 +463,11 @@ export function parseScheduleSpeech(
 }
 
 export function buildScheduleConfirmationQuestion(spoken: string): string {
-  return `Just to confirm, you mean ${spoken}. Is that right?`;
+  if (spoken.startsWith("Would ")) {
+    return `${spoken} Is that correct?`;
+  }
+
+  return `Just to confirm, you'd prefer a call on ${spoken.replace(/^on /i, "")}. Is that correct?`;
 }
 
 export function isScheduleConfirmedSpeech(speech: string): boolean {
@@ -393,45 +546,71 @@ export function processScheduleCapture(
   clarificationPrompt?: string;
   confirmationPrompt?: string;
 } {
-  const combined = `${fields.appointment_preference_raw ?? ""} ${speech}`.trim();
-  const parsed = parseScheduleSpeech(combined, now);
-  let updated = applyScheduleParseResult(
-    {
-      ...fields,
-      appointment_preference_raw: combined,
-    },
-    parsed,
-  );
+  try {
+    const combined = `${fields.appointment_preference_raw ?? ""} ${speech}`.trim();
+    const parsed = parseScheduleSpeech(combined, now);
+    let updated = applyScheduleParseResult(
+      {
+        ...fields,
+        appointment_preference_raw: combined,
+      },
+      parsed,
+    );
 
-  if (parsed.status === "needs_time_clarification") {
+    if (parsed.status === "needs_time_clarification") {
+      updated = {
+        ...updated,
+        schedule_pending_clarification: true,
+        schedule_clarification_prompt: parsed.prompt,
+      };
+      return { fields: updated, clarificationPrompt: parsed.prompt };
+    }
+
+    if (parsed.status === "needs_date_clarification") {
+      updated = {
+        ...updated,
+        schedule_pending_clarification: true,
+        schedule_clarification_prompt: parsed.prompt,
+      };
+      return { fields: updated, clarificationPrompt: parsed.prompt };
+    }
+
+    if (parsed.status === "needs_confirmation") {
+      updated = {
+        ...updated,
+        schedule_pending_clarification: false,
+        schedule_clarification_prompt: undefined,
+      };
+      return {
+        fields: updated,
+        confirmationPrompt: buildScheduleConfirmationQuestion(parsed.spoken),
+      };
+    }
+
     updated = {
       ...updated,
       schedule_pending_clarification: true,
-      schedule_clarification_prompt: parsed.prompt,
+      schedule_clarification_prompt: SCHEDULE_PARSE_FALLBACK_PROMPT,
     };
-    return { fields: updated, clarificationPrompt: parsed.prompt };
-  }
 
-  if (parsed.status === "needs_date_clarification") {
-    updated = {
-      ...updated,
-      schedule_pending_clarification: true,
-      schedule_clarification_prompt: parsed.prompt,
-    };
-    return { fields: updated, clarificationPrompt: parsed.prompt };
-  }
-
-  if (parsed.status === "needs_confirmation") {
-    updated = {
-      ...updated,
-      schedule_pending_clarification: false,
-      schedule_clarification_prompt: undefined,
-    };
     return {
       fields: updated,
-      confirmationPrompt: buildScheduleConfirmationQuestion(parsed.spoken),
+      clarificationPrompt: SCHEDULE_PARSE_FALLBACK_PROMPT,
+    };
+  } catch (error) {
+    logScheduleParseError(error, speech);
+    const combined = `${fields.appointment_preference_raw ?? ""} ${speech}`.trim();
+    const updated: RealtimeFields = {
+      ...fields,
+      appointment_preference_raw: combined,
+      schedule_pending_clarification: true,
+      schedule_clarification_prompt: SCHEDULE_PARSE_FALLBACK_PROMPT,
+      schedule_confirmed: false,
+    };
+
+    return {
+      fields: updated,
+      clarificationPrompt: SCHEDULE_PARSE_FALLBACK_PROMPT,
     };
   }
-
-  return { fields: updated };
 }

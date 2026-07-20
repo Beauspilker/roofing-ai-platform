@@ -8,10 +8,13 @@ import {
 import {
   extractDamageOrCallReason,
   extractExplicitCallerName,
+  isCallerNameDeclinedSpeech,
+  isCallerNameUnavailableSpeech,
   isPlausibleCallerName,
   isPlausibleServiceAddress,
   validateCallerNameCandidate,
 } from "./field-validation.js";
+import { isCallerNameResolved } from "./required-intake.js";
 import type { PendingQuestionKey } from "./pending-question.js";
 import {
   allowsBooleanDirectAnswer,
@@ -253,12 +256,32 @@ export function applyPendingQuestionAnswer(
 
   switch (pendingQuestion) {
     case "caller_name": {
-      const validated = validateCallerNameCandidate(trimmed, { isDirectNameAnswer: true });
-      if (validated.value) {
-        updated.full_name = validated.value.slice(0, 100);
+      if (isCallerNameDeclinedSpeech(trimmed)) {
+        updated.caller_name_declined = true;
+        updated.full_name = undefined;
         updated.name_needs_clarification = false;
-      } else if (validated.needsClarification) {
-        updated.name_needs_clarification = true;
+        break;
+      }
+
+      if (isCallerNameUnavailableSpeech(trimmed)) {
+        updated.caller_name_unavailable = true;
+        updated.full_name = undefined;
+        updated.name_needs_clarification = false;
+        break;
+      }
+
+      if (!isCallerNameResolved(updated)) {
+        const validated = validateCallerNameCandidate(trimmed, { isDirectNameAnswer: true });
+        if (validated.value) {
+          updated.full_name = validated.value.slice(0, 100);
+          updated.name_needs_clarification = false;
+          updated.caller_name_declined = false;
+          updated.caller_name_unavailable = false;
+        } else if (validated.needsClarification) {
+          updated.name_needs_clarification = true;
+          updated.name_clarification_attempts =
+            (updated.name_clarification_attempts ?? 0) + 1;
+        }
       }
       break;
     }
@@ -312,6 +335,11 @@ export function applyPendingQuestionAnswer(
       if (!hasValue(updated.urgency)) {
         updated.urgency = trimmed.slice(0, 200);
       }
+      break;
+    case "preferred_callback_time":
+      updated.appointment_preference_raw = trimmed.slice(0, 200);
+      updated.schedule_confirmed = false;
+      updated.schedule_pending_clarification = false;
       break;
     default:
       break;

@@ -20,6 +20,7 @@ import {
 
 const CLOSING_MARK_NAME = "closing-final";
 const OPENING_GREETING_DEADLINE_MS = 4_000;
+const TURN_RECOVERY_TIMEOUT_MS = 2_500;
 const OPENING_FALLBACK_GREETING =
   "Thank you for calling Beau's Roofing. One moment while I get ready to help you.";
 
@@ -56,6 +57,9 @@ export class CallBridge {
   private pendingClientResponse = false;
   private pendingSpeech: PendingSpeechRequest | null = null;
   private openingFallbackTimer: NodeJS.Timeout | null = null;
+  private turnRecoveryTimer: NodeJS.Timeout | null = null;
+  private turnRecoveryTranscript: string | null = null;
+  private turnRecoveryUsed = false;
 
   constructor(private readonly params: CallBridgeParams) {}
 
@@ -362,6 +366,16 @@ export class CallBridge {
         this.bargeIn?.handleResponseCompleted();
         this.responseGuard.onResponseDone();
         this.orchestrator?.onAssistantResponseDone();
+        this.clearTurnRecoveryTimer();
+        this.flushPendingSpeech();
+        void this.processQueuedCallerTranscript();
+        break;
+      case "response.failed":
+        logWarn("openai_response_failed", { callSid: this.callSid ?? undefined });
+        this.bargeIn?.handleResponseCancelled();
+        this.responseGuard.onResponseFailed();
+        this.pendingClientResponse = false;
+        this.awaitingClosingMark = false;
         this.flushPendingSpeech();
         void this.processQueuedCallerTranscript();
         break;
@@ -369,6 +383,7 @@ export class CallBridge {
       case "response.canceled":
         this.bargeIn?.handleResponseCancelled();
         this.responseGuard.onResponseCancelled();
+        this.pendingClientResponse = false;
         this.awaitingClosingMark = false;
         this.flushPendingSpeech();
         void this.processQueuedCallerTranscript();
@@ -377,6 +392,10 @@ export class CallBridge {
         logError("openai_event_error", {
           errorType: String(event.error ?? "unknown"),
         });
+        this.responseGuard.onOpenAiError();
+        this.pendingClientResponse = false;
+        this.flushPendingSpeech();
+        void this.processQueuedCallerTranscript();
         break;
       default:
         break;
@@ -412,7 +431,66 @@ export class CallBridge {
 
     this.turnTiming.record("transcript_completed", this.callSid ?? undefined);
 
+    this.scheduleTurnRecovery(transcript);
     void this.processCallerTurnReply(transcript);
+  }
+
+  private scheduleTurnRecovery(transcript: string): void {
+    this.clearTurnRecoveryTimer();
+    this.turnRecoveryTranscript = transcript;
+    this.turnRecoveryUsed = false;
+
+    this.turnRecoveryTimer = setTimeout(() => {
+      this.handleTurnRecoveryTimeout();
+    }, TURN_RECOVERY_TIMEOUT_MS);
+  }
+
+  private clearTurnRecoveryTimer(): void {
+    if (this.turnRecoveryTimer) {
+      clearTimeout(this.turnRecoveryTimer);
+      this.turnRecoveryTimer = null;
+    }
+  }
+
+  private handleTurnRecoveryTimeout(): void {
+    if (this.closed || this.turnRecoveryUsed) {
+      return;
+    }
+
+    logWarn("turn_recovery_timeout", {
+      callSid: this.callSid ?? undefined,
+      activeResponse: this.responseGuard.isActiveResponse(),
+      hasPendingSpeech: Boolean(this.pendingSpeech),
+    });
+
+    this.turnRecoveryUsed = true;
+    this.responseGuard.prepareCallerTurnRecovery();
+    this.pendingClientResponse = false;
+    this.flushPendingSpeech();
+
+    this.enqueueOrSpeakSpeech({
+      text: "Thanks for your patience. Could you repeat that last answer for me?",
+      reason: "caller_turn_reply",
+    });
+  }
+
+  private attemptEmptyReplyRecovery(transcript: string): void {
+    if (this.turnRecoveryUsed) {
+      return;
+    }
+
+    logWarn("caller_turn_empty_reply_recovery", {
+      callSid: this.callSid ?? undefined,
+      transcriptLength: transcript.length,
+    });
+
+    this.turnRecoveryUsed = true;
+    this.responseGuard.prepareCallerTurnRecovery();
+
+    this.enqueueOrSpeakSpeech({
+      text: "Thanks for your patience. Could you repeat that last answer for me?",
+      reason: "caller_turn_reply",
+    });
   }
 
   private processCallerTurnReply(transcript: string): void {
@@ -421,9 +499,14 @@ export class CallBridge {
     }
 
     void this.orchestrator.handleCallerTranscript(transcript).then((result) => {
+      this.clearTurnRecoveryTimer();
+
       if (!result?.replyText) {
+        this.attemptEmptyReplyRecovery(transcript);
         return;
       }
+
+      this.turnRecoveryUsed = false;
 
       if (result.structuredStateUpdated) {
         this.turnTiming.record("structured_state_updated", this.callSid ?? undefined);
@@ -445,6 +528,14 @@ export class CallBridge {
       if (!sent) {
         return;
       }
+    }).catch((error) => {
+      this.clearTurnRecoveryTimer();
+      logError("caller_turn_processing_failed", { callSid: this.callSid ?? undefined }, error);
+      this.responseGuard.prepareCallerTurnRecovery();
+      this.enqueueOrSpeakSpeech({
+        text: "Thanks for your patience. Could you repeat that last answer for me?",
+        reason: "caller_turn_reply",
+      });
     });
   }
 
@@ -543,6 +634,7 @@ export class CallBridge {
     }
 
     this.clearOpeningFallbackTimer();
+    this.clearTurnRecoveryTimer();
     this.pendingSpeech = null;
 
     this.openAi?.close();

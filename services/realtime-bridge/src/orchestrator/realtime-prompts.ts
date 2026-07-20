@@ -36,6 +36,10 @@ export type RealtimeFields = Omit<
   schedule_pending_clarification?: boolean;
   schedule_clarification_prompt?: string;
   intake_intro_delivered?: boolean;
+  caller_name_declined?: boolean;
+  caller_name_unavailable?: boolean;
+  name_clarification_attempts?: number;
+  additional_notes_responded?: boolean;
   name_needs_clarification?: boolean;
   pending_question?: string;
   insurance_claim?: string;

@@ -120,10 +120,37 @@ export function extractDamageOrCallReason(speech: string): string | null {
   return trimmed.slice(0, 500);
 }
 
-export function buildNameClarificationPrompt(currentGuess?: string): string {
+export function buildNameClarificationPrompt(
+  currentGuess?: string,
+  options: { askToSpell?: boolean } = {},
+): string {
+  if (options.askToSpell) {
+    return "Could you spell your name for me?";
+  }
+
   if (currentGuess && currentGuess.length <= 12) {
     return `I'm sorry, I heard "${currentGuess}," but I want to make sure I have your name right. Could you say or spell it one more time?`;
   }
 
   return "I'm sorry, I didn't catch your name clearly. Could you say it one more time?";
 }
+
+export function isCallerNameDeclinedSpeech(speech: string): boolean {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+
+  return (
+    /\b(prefer not to|rather not|don't want to|do not want to|won't give|will not give|no name|not giving my name)\b/.test(
+      normalized,
+    ) || /\b(i'd rather not say|id rather not say)\b/.test(normalized)
+  );
+}
+
+export function isCallerNameUnavailableSpeech(speech: string): boolean {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+
+  return /\b(don't know|do not know|not sure|can't remember|cant remember|unavailable)\b/.test(
+    normalized,
+  );
+}
+
+export const EARLY_CALLER_NAME_QUESTION = "Could I start with your name?";

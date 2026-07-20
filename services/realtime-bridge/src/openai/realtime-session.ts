@@ -223,8 +223,10 @@ export class OpenAiRealtimeSession {
       response: {
         output_modalities: ["audio"],
         instructions:
-          `${REALTIME_DELIVERY_INSTRUCTIONS} Deliver this as one natural live phone response for Beau's Roofing. ` +
-          "Ask at most one question. Keep the same facts as the script below:\n\n" +
+          `${REALTIME_DELIVERY_INSTRUCTIONS} Deliver ONLY the script below as one natural live phone response for Beau's Roofing. ` +
+          "Ask at most one question. Do not add any extra sentences. " +
+          "Do not say the caller is all set. Do not say someone will reach out. Do not say thanks for calling. " +
+          "Intake is not complete — keep the conversation going. Keep the same facts as the script:\n\n" +
           trimmed,
       },
     });

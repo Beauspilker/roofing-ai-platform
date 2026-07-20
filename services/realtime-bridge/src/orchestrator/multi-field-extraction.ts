@@ -186,9 +186,13 @@ export function extractAllFieldsFromTranscript(
   const withBooleans = applyExtractedBooleans(extracted as RealtimeFields, trimmed);
 
   if (detectEmergency(trimmed)) {
-    withBooleans.emergency_or_active_leak = withBooleans.emergency_or_active_leak ?? true;
     withBooleans.urgency = withBooleans.urgency ?? "emergency";
-    withBooleans.emergency_acknowledged = withBooleans.emergency_acknowledged ?? true;
+    if (
+      /water.*(inside|getting in|coming into)|active leak|leaking inside|flooding/i.test(trimmed)
+    ) {
+      withBooleans.emergency_or_active_leak = withBooleans.emergency_or_active_leak ?? true;
+      withBooleans.emergency_acknowledged = withBooleans.emergency_acknowledged ?? true;
+    }
   }
 
   return withBooleans;

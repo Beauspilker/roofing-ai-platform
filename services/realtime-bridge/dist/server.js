@@ -637,7 +637,7 @@ var OpenAiRealtimeSession = class {
       type: "response.create",
       response: {
         output_modalities: ["audio"],
-        instructions: `${REALTIME_DELIVERY_INSTRUCTIONS} Deliver this as one natural live phone response for Beau's Roofing. Ask at most one question. Keep the same facts as the script below:
+        instructions: `${REALTIME_DELIVERY_INSTRUCTIONS} Deliver ONLY the script below as one natural live phone response for Beau's Roofing. Ask at most one question. Do not add any extra sentences. Do not say the caller is all set. Do not say someone will reach out. Do not say thanks for calling. Intake is not complete \u2014 keep the conversation going. Keep the same facts as the script:
 
 ` + trimmed
       }
@@ -2908,51 +2908,58 @@ async function completeCallSession(callSid, status = "completed") {
 }
 
 // src/orchestrator/acknowledgment-policy.ts
-var ALLOWED_ACKNOWLEDGMENTS = [
-  "Got it.",
+var SPARING_ACKNOWLEDGMENTS = [
   "Okay.",
-  "Understood.",
-  "Thanks for clarifying.",
   "That helps.",
   "All right.",
-  "I've noted that.",
+  "Understood.",
   "Thanks."
 ];
 var CLOSING_PHRASES = [
   "sounds good",
+  "perfect",
   "perfect, we're all set",
   "perfect we're all set",
+  "you're all set",
+  "you are all set",
   "that should be everything",
+  "that should be it",
+  "we have everything we need",
+  "we've got everything",
   "we'll get that taken care of",
-  "someone will contact you soon",
+  "someone will reach out",
+  "someone will contact you",
+  "someone from the team will reach out",
+  "roofing team will reach out",
+  "team will reach out",
   "thanks for calling",
   "have a great day",
   "we're all set",
-  "all set"
+  "all set",
+  "follow up with you",
+  "send this information"
 ];
 var AcknowledgmentPolicy = class {
   lastAcknowledgment = null;
   gotItCount = 0;
   selectionIndex = 0;
+  turnsSinceAck = 0;
   selectAcknowledgment(options) {
+    this.turnsSinceAck += 1;
     if (options.isEmergency && !options.emergencyAlreadyAcknowledged) {
       const ack = "I'll flag this as urgent.";
       this.recordUsed(ack);
       return ack;
     }
-    if ((options.fieldsFilledCount ?? 0) >= 2) {
+    if ((options.fieldsFilledCount ?? 0) >= 3) {
       this.recordUsed(null);
       return null;
     }
-    const candidates = ALLOWED_ACKNOWLEDGMENTS.filter((ack) => {
-      if (ack === this.lastAcknowledgment) {
-        return false;
-      }
-      if (ack === "Got it." && this.gotItCount >= 2) {
-        return false;
-      }
-      return true;
-    });
+    if (this.turnsSinceAck < 2) {
+      this.recordUsed(null);
+      return null;
+    }
+    const candidates = SPARING_ACKNOWLEDGMENTS.filter((ack) => ack !== this.lastAcknowledgment);
     if (candidates.length === 0) {
       this.recordUsed(null);
       return null;
@@ -2965,6 +2972,7 @@ var AcknowledgmentPolicy = class {
   }
   recordUsed(acknowledgment) {
     this.lastAcknowledgment = acknowledgment;
+    this.turnsSinceAck = 0;
     if (acknowledgment === "Got it.") {
       this.gotItCount += 1;
     }
@@ -2991,6 +2999,16 @@ function sanitizeIntakeReply(text) {
     sanitized = sanitized.replace(new RegExp(phrase, "gi"), "").trim();
   }
   return sanitized.replace(/\s+/g, " ").trim();
+}
+function guardIntakeReply(reply, fallbackQuestion) {
+  const sanitized = sanitizeIntakeReply(reply).trim();
+  if (!sanitized || sanitized.length < 8) {
+    return fallbackQuestion;
+  }
+  if (containsClosingPhrase(sanitized)) {
+    return fallbackQuestion;
+  }
+  return sanitized;
 }
 
 // ../../lib/call-name-capture.ts
@@ -3319,9 +3337,6 @@ function parseExplicitBoolean(speech) {
   }
   return null;
 }
-function shouldCollectAdjuster(fields) {
-  return fields.insurance_claim_started === true;
-}
 function isStructuredBooleanUnset(value) {
   return value === void 0 || value === null;
 }
@@ -3558,9 +3573,11 @@ function extractAllFieldsFromTranscript(speech, callerPhone) {
   }
   const withBooleans = applyExtractedBooleans(extracted, trimmed);
   if (detectEmergency(trimmed)) {
-    withBooleans.emergency_or_active_leak = withBooleans.emergency_or_active_leak ?? true;
     withBooleans.urgency = withBooleans.urgency ?? "emergency";
-    withBooleans.emergency_acknowledged = withBooleans.emergency_acknowledged ?? true;
+    if (/water.*(inside|getting in|coming into)|active leak|leaking inside|flooding/i.test(trimmed)) {
+      withBooleans.emergency_or_active_leak = withBooleans.emergency_or_active_leak ?? true;
+      withBooleans.emergency_acknowledged = withBooleans.emergency_acknowledged ?? true;
+    }
   }
   return withBooleans;
 }
@@ -3744,80 +3761,171 @@ function isSummaryRejected(speech) {
   return /^(no|nope|nah|not quite|incorrect|wrong|change|fix|update)\b/.test(normalized);
 }
 
-// src/orchestrator/realtime-intake.ts
-var REALTIME_INTAKE_STAGES = [
-  "problem",
+// src/orchestrator/required-intake.ts
+var REQUIRED_FIELD_ORDER = [
+  "problem_description",
   "full_name",
   "callback_phone",
   "address",
-  "project_type",
-  "active_leak",
-  "storm_damage",
-  "insurance_claim",
-  "adjuster_contacted",
+  "emergency_or_active_leak",
   "urgency",
-  "appointment",
+  "insurance_claim_started",
+  "adjuster_contacted",
+  "appointment_preference",
   "photos_available"
 ];
-var STAGE_BOOLEAN_FIELDS = {
-  active_leak: "emergency_or_active_leak",
-  insurance_claim: "insurance_claim_started",
-  adjuster_contacted: "adjuster_contacted",
-  photos_available: "photos_available"
-};
 function hasValue3(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
-function isCallbackStageComplete(fields) {
+function isCallbackComplete(fields) {
   return hasValue3(fields.callback_phone) && fields.callback_phone_confirmed === true;
 }
-function isStageComplete(stage, fields) {
-  if (stage === "callback_phone") {
-    return isCallbackStageComplete(fields);
-  }
-  const booleanField = STAGE_BOOLEAN_FIELDS[stage];
-  if (booleanField) {
-    return !isStructuredBooleanUnset(fields[booleanField]);
-  }
-  switch (stage) {
-    case "problem":
-      return hasValue3(fields.problem_description);
+function isFieldComplete(field, fields) {
+  switch (field) {
     case "full_name":
       return hasValue3(fields.full_name);
+    case "callback_phone":
+      return isCallbackComplete(fields);
     case "address":
       return hasValue3(fields.address);
-    case "project_type":
-      return hasValue3(fields.project_type);
-    case "storm_damage":
-      return hasValue3(fields.storm_damage);
+    case "problem_description":
+      return hasValue3(fields.problem_description);
     case "urgency":
       return hasValue3(fields.urgency);
-    case "appointment":
+    case "emergency_or_active_leak":
+      return !isStructuredBooleanUnset(fields.emergency_or_active_leak);
+    case "insurance_claim_started":
+      return !isStructuredBooleanUnset(fields.insurance_claim_started);
+    case "adjuster_contacted":
+      if (fields.insurance_claim_started !== true) {
+        return true;
+      }
+      return !isStructuredBooleanUnset(fields.adjuster_contacted);
+    case "appointment_preference":
       return hasValue3(fields.appointment_preference);
+    case "photos_available":
+      return !isStructuredBooleanUnset(fields.photos_available);
     default:
       return false;
   }
 }
-function isRealtimeIntakeComplete(fields) {
-  return getRealtimeNextMissingStage(fields) === "wrap_up";
+function getMissingRequiredFields(fields) {
+  return REQUIRED_FIELD_ORDER.filter((field) => !isFieldComplete(field, fields));
 }
-function getRealtimeNextMissingStage(fields) {
-  for (const stage of REALTIME_INTAKE_STAGES) {
-    if (stage === "adjuster_contacted" && !shouldCollectAdjuster(fields)) {
-      continue;
+function getNextRequiredField(fields) {
+  return getMissingRequiredFields(fields)[0] ?? null;
+}
+var FIELD_QUESTIONS = {
+  problem_description: "What's going on with the roof?",
+  full_name: "What's your name?",
+  callback_phone: "What's the best callback number?",
+  address: "What's the property address?",
+  emergency_or_active_leak: "Is there an active leak or water getting inside right now?",
+  urgency: "How urgent is this?",
+  insurance_claim_started: "Have you started an insurance claim?",
+  adjuster_contacted: "Have you contacted your adjuster yet?",
+  appointment_preference: "What's the best time for the roofing team to reach you?",
+  photos_available: "Do you have photos of the damage?"
+};
+function getRequiredFieldQuestion(field, fields, callerPhone) {
+  const firstName = fields.full_name?.trim().split(/\s+/)[0];
+  if (field === "callback_phone" && callerPhone) {
+    if (firstName) {
+      return `${firstName}, is this the best number to reach you?`;
     }
-    if (!isStageComplete(stage, fields)) {
-      return stage;
-    }
+    return "Is this the best number to reach you?";
   }
-  return "wrap_up";
+  return FIELD_QUESTIONS[field];
+}
+var CONTEXTUAL_TRANSITIONS = {
+  address: "What's the property address?",
+  emergency_or_active_leak: "Is there an active leak or water getting inside right now?",
+  urgency: "How urgent is this?",
+  insurance_claim_started: "Have you started an insurance claim?",
+  adjuster_contacted: "Have you contacted your adjuster yet?",
+  appointment_preference: "What's the best time for the roofing team to reach you?",
+  photos_available: "Do you have photos of the damage?"
+};
+function getNaturalTransitionQuestion(field, fields, callerPhone) {
+  if (field === "callback_phone") {
+    return getRequiredFieldQuestion(field, fields, callerPhone);
+  }
+  return CONTEXTUAL_TRANSITIONS[field] ?? getRequiredFieldQuestion(field, fields, callerPhone);
+}
+function applyDirectAnswerToMissingField(fields, answer, callerPhone) {
+  const trimmed = answer.trim();
+  if (!trimmed) {
+    return fields;
+  }
+  const target = getNextRequiredField(fields);
+  if (!target) {
+    return fields;
+  }
+  let updated = { ...fields };
+  switch (target) {
+    case "full_name":
+      if (!hasValue3(updated.full_name)) {
+        updated.full_name = trimmed.slice(0, 100);
+      }
+      break;
+    case "address":
+      if (!hasValue3(updated.address)) {
+        updated.address = trimmed.slice(0, 500);
+      }
+      break;
+    case "problem_description":
+      if (!hasValue3(updated.problem_description)) {
+        updated.problem_description = trimmed.slice(0, 500);
+      }
+      break;
+    case "urgency":
+      if (!hasValue3(updated.urgency)) {
+        updated.urgency = trimmed.slice(0, 200);
+      }
+      break;
+    case "appointment_preference":
+      if (!hasValue3(updated.appointment_preference)) {
+        updated.appointment_preference = trimmed.slice(0, 200);
+      }
+      break;
+    case "emergency_or_active_leak":
+    case "insurance_claim_started":
+    case "adjuster_contacted":
+    case "photos_available": {
+      const parsed = parseExplicitBoolean(trimmed);
+      if (parsed !== null) {
+        updated[target] = parsed;
+      }
+      break;
+    }
+    case "callback_phone":
+      if (/^(yes|yeah|yep|correct|this one|that one|same number)\b/i.test(trimmed) && callerPhone) {
+        updated.callback_phone = normalizeCallbackPhoneE164(callerPhone);
+        updated.callback_phone_confirmed = false;
+      }
+      break;
+    default:
+      break;
+  }
+  return syncLegacyStringFields(updated);
 }
 function needsCallbackReadback(fields) {
   return hasValue3(fields.callback_phone) && fields.callback_phone_confirmed !== true;
 }
+
+// src/orchestrator/realtime-intake.ts
+function getRealtimeNextMissingStage(fields) {
+  const next = getNextRequiredField(fields);
+  return next ?? "wrap_up";
+}
 function mergeRealtimeCallerAnswer(fields, answer, callerPhone) {
   const extracted = extractAllFieldsFromTranscript(answer, callerPhone);
-  return mergeExtractedFields(fields, extracted);
+  let updated = mergeExtractedFields(fields, extracted);
+  const missingBeforeDirect = getMissingRequiredFields(updated);
+  if (missingBeforeDirect.length > 0) {
+    updated = applyDirectAnswerToMissingField(updated, answer, callerPhone);
+  }
+  return updated;
 }
 function applyCallbackCorrection(fields, speech, callerPhone) {
   const phone = extractCallbackPhoneFromSpeech(speech, callerPhone);
@@ -3836,62 +3944,26 @@ function confirmCallbackPhone(fields) {
     callback_phone_confirmed: true
   });
 }
-var STAGE_TRANSITIONS = {
-  address: "Next, what's the property address?",
-  project_type: "Is this a repair, replacement, inspection, or storm damage?",
-  active_leak: "Any water getting inside right now?",
-  storm_damage: "Was this from recent storm damage?",
-  insurance_claim: "Have you started an insurance claim?",
-  adjuster_contacted: "One more thing\u2014have you contacted an adjuster?",
-  urgency: "And how urgent is the issue?",
-  appointment: "What day or time works best for a visit?",
-  photos_available: "Do you have photos of the damage?"
-};
-function getRealtimeStageQuestion(stage, fields = {}, callerPhone) {
-  const firstName = fields.full_name?.trim().split(/\s+/)[0];
-  switch (stage) {
-    case "problem":
-      return "What's going on with the roof?";
-    case "full_name":
-      return "What's your name?";
-    case "callback_phone":
-      if (firstName && callerPhone) {
-        return `${firstName}, is this the best number to reach you?`;
-      }
-      return callerPhone ? "Is this the best number to reach you?" : "What's the best callback number?";
-    case "address":
-    case "project_type":
-    case "active_leak":
-    case "storm_damage":
-    case "insurance_claim":
-    case "adjuster_contacted":
-    case "urgency":
-    case "appointment":
-    case "photos_available":
-      return STAGE_TRANSITIONS[stage] ?? "What's the next detail?";
-    default:
-      return REALTIME_ANYTHING_ELSE_QUESTION;
-  }
-}
 function buildRealtimeAcknowledgment(policy, answer, fields, filledCount) {
   return policy.selectAcknowledgment({
     isEmergency: detectEmergency(answer),
     emergencyAlreadyAcknowledged: fields.emergency_acknowledged === true,
-    fieldsFilledCount: filledCount
+    fieldsFilledCount: filledCount,
+    hasActiveLeak: fields.emergency_or_active_leak === true
   });
 }
 function buildIntakeReply(policy, fields, answer, callerPhone, filledCount) {
-  const nextStage = getRealtimeNextMissingStage(fields);
-  const ack = buildRealtimeAcknowledgment(policy, answer, fields, filledCount);
-  const question = getRealtimeStageQuestion(
-    nextStage === "wrap_up" ? "photos_available" : nextStage,
-    fields,
-    callerPhone
-  );
-  if (!ack) {
-    return sanitizeIntakeReply(question);
+  const nextField = getNextRequiredField(fields);
+  if (!nextField) {
+    return REALTIME_ANYTHING_ELSE_QUESTION;
   }
-  return sanitizeIntakeReply(`${ack} ${question}`.replace(/\s+/g, " ").trim());
+  const question = getNaturalTransitionQuestion(nextField, fields, callerPhone);
+  const ack = buildRealtimeAcknowledgment(policy, answer, fields, filledCount);
+  const fallback = getRequiredFieldQuestion(nextField, fields, callerPhone);
+  if (!ack) {
+    return guardIntakeReply(question, fallback);
+  }
+  return guardIntakeReply(`${ack} ${question}`.replace(/\s+/g, " ").trim(), fallback);
 }
 function appendAnythingElseNotes(fields, speech) {
   const trimmed = speech.trim();
@@ -3912,28 +3984,11 @@ function isAnythingElseDeclined2(speech) {
   ) || normalized.includes("nothing else");
 }
 function countNewlyFilledFields(before, after) {
+  const beforeMissing = new Set(getMissingRequiredFields(before));
+  const afterMissing = new Set(getMissingRequiredFields(after));
   let count = 0;
-  for (const key of [
-    "problem_description",
-    "full_name",
-    "callback_phone",
-    "address",
-    "project_type",
-    "urgency",
-    "appointment_preference",
-    "storm_damage"
-  ]) {
-    if (!hasValue3(before[key]) && hasValue3(after[key])) {
-      count += 1;
-    }
-  }
-  for (const key of [
-    "insurance_claim_started",
-    "adjuster_contacted",
-    "photos_available",
-    "emergency_or_active_leak"
-  ]) {
-    if (isStructuredBooleanUnset(before[key]) && !isStructuredBooleanUnset(after[key])) {
+  for (const field of beforeMissing) {
+    if (!afterMissing.has(field)) {
       count += 1;
     }
   }
@@ -3998,7 +4053,8 @@ function buildPostIntakeReply(policy, fieldsBefore, updatedFields, trimmedSpeech
       nextState: "awaiting_callback_confirmation"
     };
   }
-  if (isRealtimeIntakeComplete(updatedFields)) {
+  const missing = getMissingRequiredFields(updatedFields);
+  if (missing.length === 0) {
     return {
       replyText: ensureSingleIntakeQuestion(REALTIME_ANYTHING_ELSE_QUESTION),
       fields: updatedFields,
@@ -4120,6 +4176,18 @@ async function processRealtimeCallerTurn(input) {
     }
   }
   if (conversationState === "awaiting_additional_notes") {
+    if (getMissingRequiredFields(fieldsBefore).length > 0) {
+      const reply2 = ensureSingleIntakeQuestion(
+        buildIntakeReply(acknowledgmentPolicy, fieldsBefore, trimmedSpeech, callerPhone, 0)
+      );
+      return finishTurn(input, {
+        replyText: reply2,
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: "collecting_intake"
+      });
+    }
     let updatedFields2 = fieldsBefore;
     if (!isAnythingElseDeclined(trimmedSpeech)) {
       updatedFields2 = appendAnythingElseNotes(fieldsBefore, trimmedSpeech);

@@ -25,8 +25,8 @@ import {
   buildIntakeReply,
   confirmCallbackPhone,
   countNewlyFilledFields,
+  getMissingRequiredFields,
   getRealtimeNextMissingStage,
-  isRealtimeIntakeComplete,
   mergeRealtimeCallerAnswer,
   needsCallbackReadback,
   normalizeRealtimeFields,
@@ -155,7 +155,9 @@ function buildPostIntakeReply(
     };
   }
 
-  if (isRealtimeIntakeComplete(updatedFields)) {
+  const missing = getMissingRequiredFields(updatedFields);
+
+  if (missing.length === 0) {
     return {
       replyText: ensureSingleIntakeQuestion(REALTIME_ANYTHING_ELSE_QUESTION),
       fields: updatedFields,
@@ -299,6 +301,20 @@ export async function processRealtimeCallerTurn(
   }
 
   if (conversationState === "awaiting_additional_notes") {
+    if (getMissingRequiredFields(fieldsBefore).length > 0) {
+      const reply = ensureSingleIntakeQuestion(
+        buildIntakeReply(acknowledgmentPolicy, fieldsBefore, trimmedSpeech, callerPhone, 0),
+      );
+
+      return finishTurn(input, {
+        replyText: reply,
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: "collecting_intake",
+      });
+    }
+
     let updatedFields = fieldsBefore;
 
     if (!isAnythingElseDeclined(trimmedSpeech)) {

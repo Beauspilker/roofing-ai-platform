@@ -1,60 +1,67 @@
-const ALLOWED_ACKNOWLEDGMENTS = [
-  "Got it.",
+const SPARING_ACKNOWLEDGMENTS = [
   "Okay.",
-  "Understood.",
-  "Thanks for clarifying.",
   "That helps.",
   "All right.",
-  "I've noted that.",
+  "Understood.",
   "Thanks.",
 ] as const;
 
 export const CLOSING_PHRASES = [
   "sounds good",
+  "perfect",
   "perfect, we're all set",
   "perfect we're all set",
+  "you're all set",
+  "you are all set",
   "that should be everything",
+  "that should be it",
+  "we have everything we need",
+  "we've got everything",
   "we'll get that taken care of",
-  "someone will contact you soon",
+  "someone will reach out",
+  "someone will contact you",
+  "someone from the team will reach out",
+  "roofing team will reach out",
+  "team will reach out",
   "thanks for calling",
   "have a great day",
   "we're all set",
   "all set",
+  "follow up with you",
+  "send this information",
 ] as const;
 
 export class AcknowledgmentPolicy {
   private lastAcknowledgment: string | null = null;
   private gotItCount = 0;
   private selectionIndex = 0;
+  private turnsSinceAck = 0;
 
   selectAcknowledgment(options: {
     isEmergency?: boolean;
     emergencyAlreadyAcknowledged?: boolean;
     fieldsFilledCount?: number;
-    nextStage?: string;
+    hasActiveLeak?: boolean;
   }): string | null {
+    this.turnsSinceAck += 1;
+
     if (options.isEmergency && !options.emergencyAlreadyAcknowledged) {
       const ack = "I'll flag this as urgent.";
       this.recordUsed(ack);
       return ack;
     }
 
-    if ((options.fieldsFilledCount ?? 0) >= 2) {
+    if ((options.fieldsFilledCount ?? 0) >= 3) {
       this.recordUsed(null);
       return null;
     }
 
-    const candidates = ALLOWED_ACKNOWLEDGMENTS.filter((ack) => {
-      if (ack === this.lastAcknowledgment) {
-        return false;
-      }
+    if (this.turnsSinceAck < 2) {
+      this.recordUsed(null);
+      return null;
+    }
 
-      if (ack === "Got it." && this.gotItCount >= 2) {
-        return false;
-      }
-
-      return true;
-    });
+    const candidates = SPARING_ACKNOWLEDGMENTS.filter((ack) => ack !== this.lastAcknowledgment);
 
     if (candidates.length === 0) {
       this.recordUsed(null);
@@ -70,6 +77,7 @@ export class AcknowledgmentPolicy {
 
   recordUsed(acknowledgment: string | null): void {
     this.lastAcknowledgment = acknowledgment;
+    this.turnsSinceAck = 0;
 
     if (acknowledgment === "Got it.") {
       this.gotItCount += 1;
@@ -105,4 +113,18 @@ export function sanitizeIntakeReply(text: string): string {
   }
 
   return sanitized.replace(/\s+/g, " ").trim();
+}
+
+export function guardIntakeReply(reply: string, fallbackQuestion: string): string {
+  const sanitized = sanitizeIntakeReply(reply).trim();
+
+  if (!sanitized || sanitized.length < 8) {
+    return fallbackQuestion;
+  }
+
+  if (containsClosingPhrase(sanitized)) {
+    return fallbackQuestion;
+  }
+
+  return sanitized;
 }

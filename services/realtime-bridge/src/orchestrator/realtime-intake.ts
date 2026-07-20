@@ -1,7 +1,7 @@
 import type { CollectedFields } from "../../../../lib/call-intake.js";
 import { detectEmergency } from "../../../../lib/call-intelligence.js";
 import type { AcknowledgmentPolicy } from "./acknowledgment-policy.js";
-import { sanitizeIntakeReply } from "./acknowledgment-policy.js";
+import { guardIntakeReply, sanitizeIntakeReply } from "./acknowledgment-policy.js";
 import {
   buildCallbackReadbackConfirmation,
   extractCallbackPhoneFromSpeech,
@@ -14,101 +14,42 @@ import {
 } from "./multi-field-extraction.js";
 import { REALTIME_ANYTHING_ELSE_QUESTION } from "./realtime-prompts.js";
 import {
+  applyDirectAnswerToMissingField,
+  getMissingRequiredFields,
+  getNaturalTransitionQuestion,
+  getNextRequiredField,
+  getRequiredFieldQuestion,
+  isRequiredIntakeComplete,
+  needsCallbackReadback,
+  type RequiredFieldKey,
+} from "./required-intake.js";
+import {
   isStructuredBooleanUnset,
   normalizeTriStateField,
   shouldCollectAdjuster,
   syncLegacyStringFields,
   toCollectedFields,
-  type StructuredBooleanField,
 } from "./structured-intake.js";
 import type { RealtimeFields } from "./realtime-prompts.js";
 
-export const REALTIME_INTAKE_STAGES = [
-  "problem",
-  "full_name",
-  "callback_phone",
-  "address",
-  "project_type",
-  "active_leak",
-  "storm_damage",
-  "insurance_claim",
-  "adjuster_contacted",
-  "urgency",
-  "appointment",
-  "photos_available",
-] as const;
-
-export type RealtimeIntakeStage = (typeof REALTIME_INTAKE_STAGES)[number];
-
-const STAGE_BOOLEAN_FIELDS: Partial<Record<RealtimeIntakeStage, StructuredBooleanField>> = {
-  active_leak: "emergency_or_active_leak",
-  insurance_claim: "insurance_claim_started",
-  adjuster_contacted: "adjuster_contacted",
-  photos_available: "photos_available",
-};
+export type RealtimeIntakeStage = RequiredFieldKey;
 
 function hasValue(value: string | undefined): boolean {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-function isCallbackStageComplete(fields: RealtimeFields): boolean {
-  return hasValue(fields.callback_phone) && fields.callback_phone_confirmed === true;
-}
-
-function isStageComplete(stage: RealtimeIntakeStage, fields: RealtimeFields): boolean {
-  if (stage === "callback_phone") {
-    return isCallbackStageComplete(fields);
-  }
-
-  const booleanField = STAGE_BOOLEAN_FIELDS[stage];
-
-  if (booleanField) {
-    return !isStructuredBooleanUnset(fields[booleanField]);
-  }
-
-  switch (stage) {
-    case "problem":
-      return hasValue(fields.problem_description);
-    case "full_name":
-      return hasValue(fields.full_name);
-    case "address":
-      return hasValue(fields.address);
-    case "project_type":
-      return hasValue(fields.project_type);
-    case "storm_damage":
-      return hasValue(fields.storm_damage);
-    case "urgency":
-      return hasValue(fields.urgency);
-    case "appointment":
-      return hasValue(fields.appointment_preference);
-    default:
-      return false;
-  }
-}
-
 export function isRealtimeIntakeComplete(fields: RealtimeFields): boolean {
-  return getRealtimeNextMissingStage(fields) === "wrap_up";
+  return isRequiredIntakeComplete(fields);
 }
 
 export function getRealtimeNextMissingStage(
   fields: RealtimeFields,
-): RealtimeIntakeStage | "wrap_up" {
-  for (const stage of REALTIME_INTAKE_STAGES) {
-    if (stage === "adjuster_contacted" && !shouldCollectAdjuster(fields)) {
-      continue;
-    }
-
-    if (!isStageComplete(stage, fields)) {
-      return stage;
-    }
-  }
-
-  return "wrap_up";
+): RequiredFieldKey | "wrap_up" {
+  const next = getNextRequiredField(fields);
+  return next ?? "wrap_up";
 }
 
-export function needsCallbackReadback(fields: RealtimeFields): boolean {
-  return hasValue(fields.callback_phone) && fields.callback_phone_confirmed !== true;
-}
+export { getMissingRequiredFields, isRequiredIntakeComplete, needsCallbackReadback };
 
 export function mergeRealtimeCallerAnswer(
   fields: RealtimeFields,
@@ -116,7 +57,14 @@ export function mergeRealtimeCallerAnswer(
   callerPhone?: string,
 ): RealtimeFields {
   const extracted = extractAllFieldsFromTranscript(answer, callerPhone);
-  return mergeExtractedFields(fields, extracted);
+  let updated = mergeExtractedFields(fields, extracted);
+
+  const missingBeforeDirect = getMissingRequiredFields(updated);
+  if (missingBeforeDirect.length > 0) {
+    updated = applyDirectAnswerToMissingField(updated, answer, callerPhone);
+  }
+
+  return updated;
 }
 
 export function applyCallbackCorrection(
@@ -144,50 +92,16 @@ export function confirmCallbackPhone(fields: RealtimeFields): RealtimeFields {
   });
 }
 
-const STAGE_TRANSITIONS: Partial<Record<RealtimeIntakeStage, string>> = {
-  address: "Next, what's the property address?",
-  project_type: "Is this a repair, replacement, inspection, or storm damage?",
-  active_leak: "Any water getting inside right now?",
-  storm_damage: "Was this from recent storm damage?",
-  insurance_claim: "Have you started an insurance claim?",
-  adjuster_contacted: "One more thing—have you contacted an adjuster?",
-  urgency: "And how urgent is the issue?",
-  appointment: "What day or time works best for a visit?",
-  photos_available: "Do you have photos of the damage?",
-};
-
 export function getRealtimeStageQuestion(
-  stage: RealtimeIntakeStage,
+  stage: RequiredFieldKey | "wrap_up",
   fields: RealtimeFields = {},
   callerPhone?: string,
 ): string {
-  const firstName = fields.full_name?.trim().split(/\s+/)[0];
-
-  switch (stage) {
-    case "problem":
-      return "What's going on with the roof?";
-    case "full_name":
-      return "What's your name?";
-    case "callback_phone":
-      if (firstName && callerPhone) {
-        return `${firstName}, is this the best number to reach you?`;
-      }
-      return callerPhone
-        ? "Is this the best number to reach you?"
-        : "What's the best callback number?";
-    case "address":
-    case "project_type":
-    case "active_leak":
-    case "storm_damage":
-    case "insurance_claim":
-    case "adjuster_contacted":
-    case "urgency":
-    case "appointment":
-    case "photos_available":
-      return STAGE_TRANSITIONS[stage] ?? "What's the next detail?";
-    default:
-      return REALTIME_ANYTHING_ELSE_QUESTION;
+  if (stage === "wrap_up") {
+    return REALTIME_ANYTHING_ELSE_QUESTION;
   }
+
+  return getNaturalTransitionQuestion(stage, fields, callerPhone);
 }
 
 export function buildRealtimeAcknowledgment(
@@ -200,6 +114,7 @@ export function buildRealtimeAcknowledgment(
     isEmergency: detectEmergency(answer),
     emergencyAlreadyAcknowledged: fields.emergency_acknowledged === true,
     fieldsFilledCount: filledCount,
+    hasActiveLeak: fields.emergency_or_active_leak === true,
   });
 }
 
@@ -210,19 +125,21 @@ export function buildIntakeReply(
   callerPhone: string | undefined,
   filledCount: number,
 ): string {
-  const nextStage = getRealtimeNextMissingStage(fields);
-  const ack = buildRealtimeAcknowledgment(policy, answer, fields, filledCount);
-  const question = getRealtimeStageQuestion(
-    nextStage === "wrap_up" ? "photos_available" : nextStage,
-    fields,
-    callerPhone,
-  );
+  const nextField = getNextRequiredField(fields);
 
-  if (!ack) {
-    return sanitizeIntakeReply(question);
+  if (!nextField) {
+    return REALTIME_ANYTHING_ELSE_QUESTION;
   }
 
-  return sanitizeIntakeReply(`${ack} ${question}`.replace(/\s+/g, " ").trim());
+  const question = getNaturalTransitionQuestion(nextField, fields, callerPhone);
+  const ack = buildRealtimeAcknowledgment(policy, answer, fields, filledCount);
+  const fallback = getRequiredFieldQuestion(nextField, fields, callerPhone);
+
+  if (!ack) {
+    return guardIntakeReply(question, fallback);
+  }
+
+  return guardIntakeReply(`${ack} ${question}`.replace(/\s+/g, " ").trim(), fallback);
 }
 
 export function appendAnythingElseNotes(
@@ -258,30 +175,13 @@ export function countNewlyFilledFields(
   before: RealtimeFields,
   after: RealtimeFields,
 ): number {
+  const beforeMissing = new Set(getMissingRequiredFields(before));
+  const afterMissing = new Set(getMissingRequiredFields(after));
+
   let count = 0;
 
-  for (const key of [
-    "problem_description",
-    "full_name",
-    "callback_phone",
-    "address",
-    "project_type",
-    "urgency",
-    "appointment_preference",
-    "storm_damage",
-  ] as const) {
-    if (!hasValue(before[key]) && hasValue(after[key])) {
-      count += 1;
-    }
-  }
-
-  for (const key of [
-    "insurance_claim_started",
-    "adjuster_contacted",
-    "photos_available",
-    "emergency_or_active_leak",
-  ] as const) {
-    if (isStructuredBooleanUnset(before[key]) && !isStructuredBooleanUnset(after[key])) {
+  for (const field of beforeMissing) {
+    if (!afterMissing.has(field)) {
       count += 1;
     }
   }

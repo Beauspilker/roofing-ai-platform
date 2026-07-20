@@ -1,5 +1,3 @@
-import { OPENING_GREETING } from "../../../../lib/call-intake.js";
-import { processCallerTurn } from "../../../../lib/call-turn-processor.js";
 import {
   createTranscriptEntry,
   ensureCallSessionForTwilioCall,
@@ -7,8 +5,13 @@ import {
   type CallSession,
   updateCallSession,
 } from "../../../../lib/call-sessions.js";
-import { OPENING_QUESTION } from "../../../../lib/twilio/voice-phrases.js";
 import { logError, logInfo } from "../logger.js";
+import { processRealtimeCallerTurn } from "./realtime-turn-processor.js";
+import {
+  ensureSingleIntakeQuestion,
+  REALTIME_OPENING_GREETING,
+  REALTIME_OPENING_QUESTION,
+} from "./realtime-prompts.js";
 
 export type OrchestratorContext = {
   callSid: string;
@@ -16,12 +19,18 @@ export type OrchestratorContext = {
   calledPhone: string;
 };
 
+export type OrchestratorReply = {
+  replyText: string;
+  hangup: boolean;
+  hangupAfterMark: boolean;
+};
+
 export class SessionOrchestrator {
   private session: CallSession | null = null;
-  private attempt = 1;
-  private isInitial = true;
   private processingTurn = false;
   private pendingTranscript: string | null = null;
+  private endingPhase: "none" | "anything_else" = "none";
+  private awaitingFirstCallerTurn = false;
 
   constructor(private readonly context: OrchestratorContext) {}
 
@@ -36,8 +45,8 @@ export class SessionOrchestrator {
       if (this.session) {
         await updateCallSession({
           callSid: this.context.callSid,
-          currentQuestion: OPENING_QUESTION,
-          transcriptEntry: createTranscriptEntry("assistant", OPENING_GREETING),
+          currentQuestion: REALTIME_OPENING_QUESTION,
+          transcriptEntry: createTranscriptEntry("assistant", REALTIME_OPENING_GREETING),
         });
       }
     } catch (error) {
@@ -49,13 +58,28 @@ export class SessionOrchestrator {
       hasSession: Boolean(this.session),
     });
 
-    return OPENING_GREETING;
+    return REALTIME_OPENING_GREETING;
   }
 
-  async handleCallerTranscript(transcript: string): Promise<{
-    replyText: string;
-    hangup: boolean;
-  } | null> {
+  getOpeningGreeting(): string {
+    return REALTIME_OPENING_GREETING;
+  }
+
+  hasPendingTranscript(): boolean {
+    return Boolean(this.pendingTranscript);
+  }
+
+  consumePendingTranscript(): string | null {
+    const pending = this.pendingTranscript;
+    this.pendingTranscript = null;
+    return pending;
+  }
+
+  markOpeningDelivered(): void {
+    this.awaitingFirstCallerTurn = true;
+  }
+
+  async handleCallerTranscript(transcript: string): Promise<OrchestratorReply | null> {
     const trimmed = transcript.trim();
 
     if (!trimmed) {
@@ -64,6 +88,10 @@ export class SessionOrchestrator {
 
     if (this.processingTurn) {
       this.pendingTranscript = trimmed;
+      logInfo("caller_transcript_queued", {
+        callSid: this.context.callSid,
+        queueLength: 1,
+      });
       return null;
     }
 
@@ -74,38 +102,33 @@ export class SessionOrchestrator {
         this.session = await getCallSessionBySid(this.context.callSid);
       }
 
-      const outcome = await processCallerTurn({
+      const outcome = await processRealtimeCallerTurn({
         session: this.session,
         callSid: this.context.callSid,
         callerPhone: this.context.callerPhone,
         speechResult: trimmed,
-        attempt: this.attempt,
-        isInitial: this.isInitial,
+        endingPhase: this.endingPhase,
+        isFirstCallerTurn: this.awaitingFirstCallerTurn,
       });
 
       this.session = outcome.session;
-      this.isInitial = false;
-      this.attempt = 1;
+      this.endingPhase = outcome.nextEndingPhase;
+      this.awaitingFirstCallerTurn = false;
 
       return {
-        replyText: outcome.replyText,
-        hangup: outcome.kind === "speak_hangup",
+        replyText: ensureSingleIntakeQuestion(outcome.replyText),
+        hangup: outcome.hangup,
+        hangupAfterMark: outcome.hangupAfterMark,
       };
     } catch (error) {
       logError("turn_processing_failed", { callSid: this.context.callSid }, error);
       return {
-        replyText:
-          "I'm having a little trouble on my end. Could you repeat that for me?",
+        replyText: "Sorry, I missed that — could you say it again?",
         hangup: false,
+        hangupAfterMark: false,
       };
     } finally {
       this.processingTurn = false;
-
-      if (this.pendingTranscript) {
-        const pending = this.pendingTranscript;
-        this.pendingTranscript = null;
-        return this.handleCallerTranscript(pending);
-      }
     }
   }
 

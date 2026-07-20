@@ -4,6 +4,10 @@ import { verifyStreamAuthToken } from "../auth/stream-token.js";
 import { BargeInController } from "../bridge/barge-in.js";
 import { CallTimingTracker } from "../bridge/call-timing.js";
 import { PlaybackTracker } from "../bridge/playback-tracker.js";
+import {
+  ResponseStateGuard,
+  type ResponseTriggerReason,
+} from "../bridge/response-state-guard.js";
 import { logError, logInfo, logWarn } from "../logger.js";
 import { OpenAiRealtimeSession } from "../openai/realtime-session.js";
 import { SessionOrchestrator } from "../orchestrator/session-orchestrator.js";
@@ -31,11 +35,13 @@ export class CallBridge {
   private orchestrator: SessionOrchestrator | null = null;
   private readonly playbackTracker = new PlaybackTracker();
   private readonly callTiming = new CallTimingTracker();
+  private readonly responseGuard = new ResponseStateGuard();
   private openAi: OpenAiRealtimeSession | null = null;
   private bargeIn: BargeInController | null = null;
   private openingGreetingSent = false;
   private awaitingClosingMark = false;
   private activeResponseUsesClosingMark = false;
+  private pendingClientResponse = false;
 
   constructor(private readonly params: CallBridgeParams) {}
 
@@ -119,6 +125,7 @@ export class CallBridge {
     logInfo("twilio_stream_started", {
       callSid: start.callSid,
       streamSid: start.streamSid,
+      voice: this.params.config.openAiRealtimeVoice,
     });
 
     this.orchestrator = new SessionOrchestrator({
@@ -160,15 +167,15 @@ export class CallBridge {
 
       const [openingLine] = await Promise.all([initPromise, sessionReadyPromise]);
 
-      this.maybeSendOpeningGreeting(openingLine);
+      this.sendOpeningGreeting(openingLine);
     } catch (error) {
       logError("stream_start_setup_failed", { callSid: start.callSid }, error);
       this.cleanup("stream_start_setup_failed");
     }
   }
 
-  private maybeSendOpeningGreeting(openingLine: string): void {
-    if (this.openingGreetingSent || !this.openAi) {
+  private sendOpeningGreeting(openingLine: string): void {
+    if (this.openingGreetingSent || !this.openAi || !this.orchestrator) {
       return;
     }
 
@@ -176,7 +183,44 @@ export class CallBridge {
     this.callTiming.record("opening_response_requested", this.callSid ?? undefined);
     this.playbackTracker.reset();
     this.activeResponseUsesClosingMark = false;
-    this.openAi.speakExactText(openingLine);
+
+    const sent = this.requestAssistantSpeech(openingLine, "opening_greeting");
+
+    if (sent) {
+      this.orchestrator.markOpeningDelivered();
+    }
+  }
+
+  private requestAssistantSpeech(
+    text: string,
+    reason: ResponseTriggerReason,
+    options: { hangupAfterMark?: boolean } = {},
+  ): boolean {
+    if (!this.openAi) {
+      return false;
+    }
+
+    const sent = this.openAi.speakScript(
+      text,
+      reason,
+      (triggerReason) => this.responseGuard.canTriggerResponse(triggerReason),
+      (triggerReason) => {
+        this.pendingClientResponse = true;
+        this.responseGuard.recordTrigger(triggerReason);
+      },
+    );
+
+    if (sent === "sent") {
+      this.playbackTracker.reset();
+      this.activeResponseUsesClosingMark = options.hangupAfterMark ?? false;
+      this.awaitingClosingMark = options.hangupAfterMark ?? false;
+
+      if (options.hangupAfterMark) {
+        this.responseGuard.beginClosingMarkWait();
+      }
+    }
+
+    return sent === "sent";
   }
 
   private handleStreamMedia(payload: string): void {
@@ -189,22 +233,30 @@ export class CallBridge {
 
   private handleOpenAiEvent(event: { type: string; [key: string]: unknown }): void {
     switch (event.type) {
-      case "session.created":
-        break;
       case "session.updated":
         this.callTiming.record("openai_session_ready", this.callSid ?? undefined);
         logInfo("openai_session_ready", { type: event.type });
         break;
       case "input_audio_buffer.speech_started":
+        this.responseGuard.onCallerSpeechStarted();
         this.bargeIn?.handleCallerSpeechStarted();
         break;
       case "input_audio_buffer.speech_stopped":
-        this.openAi?.commitCallerAudio();
+        this.responseGuard.onCallerSpeechStopped();
         break;
       case "conversation.item.input_audio_transcription.completed":
         void this.handleTranscriptionCompleted(event);
         break;
       case "response.created": {
+        if (this.pendingClientResponse) {
+          this.pendingClientResponse = false;
+        } else {
+          logWarn("vad_auto_response_cancelled");
+          this.openAi?.cancelActiveResponse();
+          this.responseGuard.onResponseCancelled();
+          break;
+        }
+
         const responseId = (event.response as { id?: string } | undefined)?.id;
         if (responseId) {
           this.bargeIn?.handleResponseStarted(
@@ -216,11 +268,13 @@ export class CallBridge {
       }
       case "response.output_audio.delta": {
         const delta = String(event.delta ?? "");
+        this.responseGuard.onAssistantAudioDelta();
         this.forwardAssistantAudio(delta);
         break;
       }
       case "response.output_audio.done":
         logInfo("response_output_audio_done");
+        this.responseGuard.onAssistantAudioDone();
         if (this.awaitingClosingMark && this.streamSid) {
           this.sendTwilioJson(
             buildTwilioMarkMessage(this.streamSid, CLOSING_MARK_NAME) as unknown as Record<
@@ -233,11 +287,15 @@ export class CallBridge {
         break;
       case "response.done":
         this.bargeIn?.handleResponseCompleted();
+        this.responseGuard.onResponseDone();
+        void this.processQueuedCallerTranscript();
         break;
       case "response.cancelled":
       case "response.canceled":
         this.bargeIn?.handleResponseCancelled();
+        this.responseGuard.onResponseCancelled();
         this.awaitingClosingMark = false;
+        void this.processQueuedCallerTranscript();
         break;
       case "error":
         logError("openai_event_error", {
@@ -262,10 +320,27 @@ export class CallBridge {
       return;
     }
 
+    const itemId = String(
+      (event.item_id as string | undefined) ??
+        ((event.item as { id?: string } | undefined)?.id ?? ""),
+    );
+
+    if (!this.responseGuard.registerCallerTranscript(itemId || null)) {
+      return;
+    }
+
     logInfo("caller_transcription_completed", {
       callSid: this.callSid ?? undefined,
       transcriptLength: transcript.length,
     });
+
+    await this.processCallerTurnReply(transcript);
+  }
+
+  private async processCallerTurnReply(transcript: string): Promise<void> {
+    if (!this.orchestrator || !this.openAi) {
+      return;
+    }
 
     const result = await this.orchestrator.handleCallerTranscript(transcript);
 
@@ -273,14 +348,45 @@ export class CallBridge {
       return;
     }
 
-    this.playbackTracker.reset();
-    this.activeResponseUsesClosingMark = result.hangupAfterMark;
-    this.awaitingClosingMark = result.hangupAfterMark;
-    this.openAi.speakExactText(result.replyText);
+    const reason: ResponseTriggerReason = result.hangupAfterMark
+      ? "closing_message"
+      : "caller_turn_reply";
+
+    const sent = this.requestAssistantSpeech(result.replyText, reason, {
+      hangupAfterMark: result.hangupAfterMark,
+    });
+
+    if (!sent) {
+      logWarn("caller_turn_reply_deferred", { callSid: this.callSid ?? undefined });
+      return;
+    }
 
     if (result.hangup && !result.hangupAfterMark) {
       this.cleanup("call_completed");
     }
+  }
+
+  private async processQueuedCallerTranscript(): Promise<void> {
+    if (!this.orchestrator || !this.orchestrator.hasPendingTranscript()) {
+      return;
+    }
+
+    if (!this.responseGuard.isWaitingForCaller()) {
+      return;
+    }
+
+    const pending = this.orchestrator.consumePendingTranscript();
+
+    if (!pending) {
+      return;
+    }
+
+    if (!this.responseGuard.registerCallerTranscript(`queued-${Date.now()}`)) {
+      return;
+    }
+
+    logInfo("caller_transcript_dequeued", { callSid: this.callSid ?? undefined });
+    await this.processCallerTurnReply(pending);
   }
 
   private forwardAssistantAudio(base64Audio: string): void {
@@ -316,6 +422,7 @@ export class CallBridge {
 
     if (name === CLOSING_MARK_NAME) {
       logInfo("closing_mark_played", { callSid: this.callSid ?? undefined });
+      this.responseGuard.onClosingMarkReceived();
       this.cleanup("call_completed");
     }
   }

@@ -25,6 +25,7 @@ import {
 import {
   buildRealtimeClosingMessage,
   buildRealtimeIntakeReply,
+  ensureSingleIntakeQuestion,
   isAnythingElseDeclined,
   REALTIME_ANYTHING_ELSE_QUESTION,
   type RealtimeFields,
@@ -43,6 +44,7 @@ export type ProcessRealtimeTurnInput = {
   callerPhone: string;
   speechResult: string;
   endingPhase: "none" | "anything_else";
+  isFirstCallerTurn?: boolean;
 };
 
 async function persistTurn(
@@ -102,7 +104,7 @@ export async function processRealtimeCallerTurn(
 
   if (!session || !callSid) {
     return {
-      replyText: "What's going on with the roof?",
+      replyText: ensureSingleIntakeQuestion("What's going on with the roof?"),
       hangup: false,
       hangupAfterMark: false,
       session,
@@ -131,9 +133,61 @@ export async function processRealtimeCallerTurn(
       })) ?? session;
 
     return {
-      replyText: reply,
+      replyText: ensureSingleIntakeQuestion(reply),
       hangup: true,
       hangupAfterMark: true,
+      session,
+      nextEndingPhase: "none",
+    };
+  }
+
+  if (input.isFirstCallerTurn) {
+    let updatedFields = mergeRealtimeCallerAnswer(fieldsBefore, speechResult, callerPhone);
+
+    if (detectEmergency(speechResult) && !updatedFields.emergency_acknowledged) {
+      updatedFields = {
+        ...updatedFields,
+        urgency: updatedFields.urgency ?? "emergency",
+        emergency_acknowledged: true,
+      };
+    }
+
+    if (isRealtimeIntakeComplete(updatedFields)) {
+      session =
+        (await persistTurn(callSid, {
+          collectedFields: updatedFields,
+          currentQuestion: REALTIME_ANYTHING_ELSE_QUESTION,
+          callerSpeech: speechResult,
+          assistantReply: REALTIME_ANYTHING_ELSE_QUESTION,
+        })) ?? session;
+
+      return {
+        replyText: ensureSingleIntakeQuestion(REALTIME_ANYTHING_ELSE_QUESTION),
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextEndingPhase: "anything_else",
+      };
+    }
+
+    const nextStage = getRealtimeNextMissingStage(updatedFields);
+    const reply = buildRealtimeIntakeReply(
+      "Got it.",
+      getRealtimeStageQuestion(nextStage, updatedFields, callerPhone),
+    );
+
+    session =
+      (await persistTurn(callSid, {
+        collectedFields: updatedFields,
+        currentQuestion: getRealtimeStageQuestion(nextStage, updatedFields, callerPhone),
+        callerSpeech: speechResult,
+        assistantReply: reply,
+      })) ?? session;
+
+    return {
+      replyText: reply,
+      hangup: false,
+      hangupAfterMark: false,
       session,
       nextEndingPhase: "none",
     };
@@ -155,7 +209,7 @@ export async function processRealtimeCallerTurn(
         })) ?? session;
 
       return {
-        replyText: nameOutcome.replyText,
+        replyText: ensureSingleIntakeQuestion(nameOutcome.replyText),
         hangup: false,
         hangupAfterMark: false,
         session,
@@ -176,7 +230,7 @@ export async function processRealtimeCallerTurn(
         })) ?? session;
 
       return {
-        replyText: REALTIME_ANYTHING_ELSE_QUESTION,
+        replyText: ensureSingleIntakeQuestion(REALTIME_ANYTHING_ELSE_QUESTION),
         hangup: false,
         hangupAfterMark: false,
         session,
@@ -258,7 +312,7 @@ export async function processRealtimeCallerTurn(
     })) ?? session;
 
   return {
-    replyText: reply,
+    replyText: ensureSingleIntakeQuestion(reply),
     hangup: false,
     hangupAfterMark: false,
     session,

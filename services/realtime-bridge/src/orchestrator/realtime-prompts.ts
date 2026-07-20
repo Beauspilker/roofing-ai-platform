@@ -2,9 +2,9 @@ import type { CollectedFields } from "../../../../lib/call-intake.js";
 import { buildSpokenCallSummary } from "../../../../lib/call-summary.js";
 
 export const REALTIME_OPENING_GREETING =
-  "Hi, thanks for calling Beau's Roofing — what's going on with the roof?";
+  "Thanks for calling Beau's Roofing. How can I help you today?";
 
-export const REALTIME_OPENING_QUESTION = "What's going on with the roof?";
+export const REALTIME_OPENING_QUESTION = "How can I help you today?";
 
 export const REALTIME_ANYTHING_ELSE_QUESTION =
   "Is there anything else you'd like the roofing team to know?";
@@ -14,6 +14,30 @@ export type RealtimeFields = CollectedFields & {
   photos_available?: string;
 };
 
+/** Keep at most one intake question mark in a spoken assistant turn. */
+export function ensureSingleIntakeQuestion(text: string): string {
+  const trimmed = text.trim();
+
+  if (!trimmed) {
+    return trimmed;
+  }
+
+  const questionIndexes: number[] = [];
+
+  for (let index = 0; index < trimmed.length; index += 1) {
+    if (trimmed[index] === "?") {
+      questionIndexes.push(index);
+    }
+  }
+
+  if (questionIndexes.length <= 1) {
+    return trimmed;
+  }
+
+  const firstQuestionEnd = questionIndexes[0] + 1;
+  return trimmed.slice(0, firstQuestionEnd).trim();
+}
+
 export function buildRealtimeIntakeReply(
   prefix: string | null,
   question: string,
@@ -21,10 +45,12 @@ export function buildRealtimeIntakeReply(
   const trimmedQuestion = question.trim();
 
   if (!prefix) {
-    return trimmedQuestion;
+    return ensureSingleIntakeQuestion(trimmedQuestion);
   }
 
-  return `${prefix} ${trimmedQuestion}`.replace(/\s+/g, " ").trim();
+  return ensureSingleIntakeQuestion(
+    `${prefix} ${trimmedQuestion}`.replace(/\s+/g, " ").trim(),
+  );
 }
 
 export function buildRealtimeClosingMessage(fields: RealtimeFields): string {

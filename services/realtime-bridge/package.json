@@ -7,7 +7,8 @@
     "build": "esbuild src/server.ts --bundle --platform=node --target=node20 --format=esm --outfile=dist/server.js --packages=external --alias:@=../..",
     "start": "node dist/server.js",
     "dev": "tsx src/server.ts",
-    "check": "npm run build"
+    "check": "npm run build",
+    "test": "OPENAI_REALTIME_VOICE=marin tsx --test test/**/*.test.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.110.2",

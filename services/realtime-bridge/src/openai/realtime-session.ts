@@ -1,17 +1,20 @@
 import WebSocket from "ws";
 import type { BridgeConfig } from "../config.js";
 import { logError, logInfo, logWarn } from "../logger.js";
+import type { ResponseTriggerReason } from "../bridge/response-state-guard.js";
 
 const REALTIME_INSTRUCTIONS =
   "You are a warm, professional roofing receptionist on a live phone call for Beau's Roofing. " +
   "Speak naturally with contractions, brief pauses, and confident phone energy. " +
-  "Follow each response script faithfully — same facts and questions — in one or two short sentences unless the script is longer. " +
+  "Deliver exactly one short script per turn. Never ask more than one question. " +
   "Never invent intake questions or confirm details that were not provided by the server.";
 
 export type RealtimeServerEvent = {
   type: string;
   [key: string]: unknown;
 };
+
+export type SpeakRequestResult = "sent" | "blocked";
 
 export class OpenAiRealtimeSession {
   private socket: WebSocket | null = null;
@@ -38,6 +41,10 @@ export class OpenAiRealtimeSession {
     return this.sessionReadyPromise ?? Promise.resolve();
   }
 
+  getConfiguredVoice(): string {
+    return this.config.openAiRealtimeVoice;
+  }
+
   async connect(): Promise<void> {
     if (this.connected && this.socket && this.socket.readyState === WebSocket.OPEN) {
       return;
@@ -62,7 +69,7 @@ export class OpenAiRealtimeSession {
 
       socket.on("open", () => {
         this.connected = true;
-        logInfo("openai_connected");
+        logInfo("openai_connected", { voice: this.config.openAiRealtimeVoice });
         this.configureSession();
         resolve();
       });
@@ -106,11 +113,10 @@ export class OpenAiRealtimeSession {
               model: "whisper-1",
             },
             turn_detection: {
-              type: "server_vad",
-              threshold: this.config.turnDetectionThreshold,
-              prefix_padding_ms: this.config.turnDetectionPrefixPaddingMs,
-              silence_duration_ms: this.config.turnDetectionSilenceDurationMs,
-              create_response: false,
+              type: "semantic_vad",
+              eagerness: "low",
+              create_response: true,
+              interrupt_response: true,
             },
           },
           output: {
@@ -186,28 +192,37 @@ export class OpenAiRealtimeSession {
     });
   }
 
-  commitCallerAudio(): void {
-    this.send({ type: "input_audio_buffer.commit" });
-  }
-
-  speakExactText(exactText: string): void {
+  speakScript(
+    exactText: string,
+    reason: ResponseTriggerReason,
+    canSend: (reason: ResponseTriggerReason) => boolean,
+    onSent: (reason: ResponseTriggerReason) => void,
+  ): SpeakRequestResult {
     const trimmed = exactText.trim();
 
     if (!trimmed) {
-      return;
+      return "blocked";
     }
+
+    if (!canSend(reason)) {
+      return "blocked";
+    }
+
+    onSent(reason);
 
     this.send({
       type: "response.create",
       response: {
         output_modalities: ["audio"],
         instructions:
-          "Deliver this as a natural live phone response for Beau's Roofing. " +
-          "Use contractions, warm professional tone, and concise pacing. " +
-          "Keep the same facts and questions as the script below:\n\n" +
+          "Deliver this as one natural live phone response for Beau's Roofing. " +
+          "Use contractions and warm professional tone. Ask at most one question. " +
+          "Keep the same facts as the script below:\n\n" +
           trimmed,
       },
     });
+
+    return "sent";
   }
 
   cancelActiveResponse(): void {

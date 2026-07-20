@@ -281,9 +281,132 @@ var PlaybackTracker = class {
   }
 };
 
+// src/bridge/response-state-guard.ts
+var ResponseStateGuard = class {
+  activeResponse = false;
+  clientInitiatedResponse = false;
+  waitingForCaller = false;
+  callerTurnReady = false;
+  awaitingClosingMark = false;
+  assistantAudioPending = false;
+  lastTranscriptItemId = null;
+  canTriggerResponse(reason) {
+    if (this.activeResponse) {
+      this.logBlocked(reason, "active_response");
+      return false;
+    }
+    if (this.assistantAudioPending) {
+      this.logBlocked(reason, "assistant_audio_pending");
+      return false;
+    }
+    if (this.awaitingClosingMark) {
+      this.logBlocked(reason, "awaiting_closing_mark");
+      return false;
+    }
+    if (reason !== "opening_greeting" && this.waitingForCaller && !this.callerTurnReady) {
+      this.logBlocked(reason, "waiting_for_caller");
+      return false;
+    }
+    if (reason === "caller_turn_reply" && !this.callerTurnReady) {
+      this.logBlocked(reason, "caller_turn_not_ready");
+      return false;
+    }
+    return true;
+  }
+  recordTrigger(reason) {
+    logInfo("response_trigger", { reason });
+    this.activeResponse = true;
+    this.clientInitiatedResponse = true;
+    this.callerTurnReady = false;
+    this.waitingForCaller = false;
+    this.assistantAudioPending = true;
+  }
+  onExternalResponseCreated() {
+    if (this.activeResponse && this.clientInitiatedResponse) {
+      this.logBlocked("caller_turn_reply", "duplicate_trigger");
+      return false;
+    }
+    if (this.activeResponse) {
+      logWarn("response_trigger_blocked", {
+        reason: "vad_auto_response",
+        cause: "active_response"
+      });
+      return true;
+    }
+    logInfo("response_trigger", { reason: "vad_auto_response" });
+    this.activeResponse = true;
+    this.clientInitiatedResponse = false;
+    this.assistantAudioPending = true;
+    return true;
+  }
+  onResponseDone() {
+    this.activeResponse = false;
+    this.clientInitiatedResponse = false;
+    this.waitingForCaller = true;
+    this.callerTurnReady = false;
+    this.assistantAudioPending = false;
+  }
+  onResponseCancelled() {
+    this.activeResponse = false;
+    this.clientInitiatedResponse = false;
+    this.assistantAudioPending = false;
+    this.waitingForCaller = true;
+    this.callerTurnReady = false;
+  }
+  onCallerSpeechStarted() {
+    this.callerTurnReady = false;
+  }
+  onCallerSpeechStopped() {
+    this.callerTurnReady = false;
+  }
+  registerCallerTranscript(itemId) {
+    if (itemId && itemId === this.lastTranscriptItemId) {
+      logWarn("response_trigger_blocked", {
+        reason: "caller_turn_reply",
+        cause: "duplicate_trigger"
+      });
+      return false;
+    }
+    if (itemId) {
+      this.lastTranscriptItemId = itemId;
+    }
+    this.callerTurnReady = true;
+    return true;
+  }
+  onAssistantAudioDelta() {
+    this.assistantAudioPending = true;
+  }
+  onAssistantAudioDone() {
+    this.assistantAudioPending = false;
+  }
+  beginClosingMarkWait() {
+    this.awaitingClosingMark = true;
+    this.waitingForCaller = false;
+    this.callerTurnReady = false;
+  }
+  onClosingMarkReceived() {
+    this.awaitingClosingMark = false;
+    this.assistantAudioPending = false;
+    this.waitingForCaller = false;
+    this.callerTurnReady = false;
+  }
+  isWaitingForCaller() {
+    return this.waitingForCaller;
+  }
+  isActiveResponse() {
+    return this.activeResponse;
+  }
+  isClientInitiatedResponse() {
+    return this.clientInitiatedResponse;
+  }
+  logBlocked(reason, cause) {
+    logWarn("response_trigger_blocked", { reason, cause });
+  }
+};
+
 // src/openai/realtime-session.ts
 import WebSocket from "ws";
-var REALTIME_INSTRUCTIONS = "You are a warm, professional roofing receptionist on a live phone call for Beau's Roofing. Speak naturally with contractions, brief pauses, and confident phone energy. Follow each response script faithfully \u2014 same facts and questions \u2014 in one or two short sentences unless the script is longer. Never invent intake questions or confirm details that were not provided by the server.";
+var REALTIME_INSTRUCTIONS = "You are a warm, professional roofing receptionist on a live phone call for Beau's Roofing. Speak naturally with contractions, brief pauses, and confident phone energy. Deliver exactly one short script per turn. Never ask more than one question. Never invent intake questions or confirm details that were not provided by the server.";
 var OpenAiRealtimeSession = class {
   constructor(config2, onEvent, onDisconnect) {
     this.config = config2;
@@ -305,6 +428,9 @@ var OpenAiRealtimeSession = class {
   waitForSessionReady() {
     return this.sessionReadyPromise ?? Promise.resolve();
   }
+  getConfiguredVoice() {
+    return this.config.openAiRealtimeVoice;
+  }
   async connect() {
     if (this.connected && this.socket && this.socket.readyState === WebSocket.OPEN) {
       return;
@@ -323,7 +449,7 @@ var OpenAiRealtimeSession = class {
       this.socket = socket;
       socket.on("open", () => {
         this.connected = true;
-        logInfo("openai_connected");
+        logInfo("openai_connected", { voice: this.config.openAiRealtimeVoice });
         this.configureSession();
         resolve();
       });
@@ -362,11 +488,10 @@ var OpenAiRealtimeSession = class {
               model: "whisper-1"
             },
             turn_detection: {
-              type: "server_vad",
-              threshold: this.config.turnDetectionThreshold,
-              prefix_padding_ms: this.config.turnDetectionPrefixPaddingMs,
-              silence_duration_ms: this.config.turnDetectionSilenceDurationMs,
-              create_response: false
+              type: "semantic_vad",
+              eagerness: "low",
+              create_response: true,
+              interrupt_response: true
             }
           },
           output: {
@@ -425,21 +550,23 @@ var OpenAiRealtimeSession = class {
       audio: base64Audio
     });
   }
-  commitCallerAudio() {
-    this.send({ type: "input_audio_buffer.commit" });
-  }
-  speakExactText(exactText) {
+  speakScript(exactText, reason, canSend, onSent) {
     const trimmed = exactText.trim();
     if (!trimmed) {
-      return;
+      return "blocked";
     }
+    if (!canSend(reason)) {
+      return "blocked";
+    }
+    onSent(reason);
     this.send({
       type: "response.create",
       response: {
         output_modalities: ["audio"],
-        instructions: "Deliver this as a natural live phone response for Beau's Roofing. Use contractions, warm professional tone, and concise pacing. Keep the same facts and questions as the script below:\n\n" + trimmed
+        instructions: "Deliver this as one natural live phone response for Beau's Roofing. Use contractions and warm professional tone. Ask at most one question. Keep the same facts as the script below:\n\n" + trimmed
       }
     });
+    return "sent";
   }
   cancelActiveResponse() {
     if (this.activeResponseId) {
@@ -3096,15 +3223,34 @@ function processNameCaptureTurn(input) {
 }
 
 // src/orchestrator/realtime-prompts.ts
-var REALTIME_OPENING_GREETING = "Hi, thanks for calling Beau's Roofing \u2014 what's going on with the roof?";
-var REALTIME_OPENING_QUESTION = "What's going on with the roof?";
+var REALTIME_OPENING_GREETING = "Thanks for calling Beau's Roofing. How can I help you today?";
+var REALTIME_OPENING_QUESTION = "How can I help you today?";
 var REALTIME_ANYTHING_ELSE_QUESTION = "Is there anything else you'd like the roofing team to know?";
+function ensureSingleIntakeQuestion(text) {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+  const questionIndexes = [];
+  for (let index = 0; index < trimmed.length; index += 1) {
+    if (trimmed[index] === "?") {
+      questionIndexes.push(index);
+    }
+  }
+  if (questionIndexes.length <= 1) {
+    return trimmed;
+  }
+  const firstQuestionEnd = questionIndexes[0] + 1;
+  return trimmed.slice(0, firstQuestionEnd).trim();
+}
 function buildRealtimeIntakeReply(prefix, question) {
   const trimmedQuestion = question.trim();
   if (!prefix) {
-    return trimmedQuestion;
+    return ensureSingleIntakeQuestion(trimmedQuestion);
   }
-  return `${prefix} ${trimmedQuestion}`.replace(/\s+/g, " ").trim();
+  return ensureSingleIntakeQuestion(
+    `${prefix} ${trimmedQuestion}`.replace(/\s+/g, " ").trim()
+  );
 }
 function buildRealtimeClosingMessage(fields) {
   const summary = buildSpokenCallSummary(fields);
@@ -3347,7 +3493,7 @@ async function processRealtimeCallerTurn(input) {
   }
   if (!session || !callSid) {
     return {
-      replyText: "What's going on with the roof?",
+      replyText: ensureSingleIntakeQuestion("What's going on with the roof?"),
       hangup: false,
       hangupAfterMark: false,
       session,
@@ -3369,9 +3515,52 @@ async function processRealtimeCallerTurn(input) {
       assistantReply: reply2
     }) ?? session;
     return {
-      replyText: reply2,
+      replyText: ensureSingleIntakeQuestion(reply2),
       hangup: true,
       hangupAfterMark: true,
+      session,
+      nextEndingPhase: "none"
+    };
+  }
+  if (input.isFirstCallerTurn) {
+    let updatedFields2 = mergeRealtimeCallerAnswer(fieldsBefore, speechResult, callerPhone);
+    if (detectEmergency(speechResult) && !updatedFields2.emergency_acknowledged) {
+      updatedFields2 = {
+        ...updatedFields2,
+        urgency: updatedFields2.urgency ?? "emergency",
+        emergency_acknowledged: true
+      };
+    }
+    if (isRealtimeIntakeComplete(updatedFields2)) {
+      session = await persistTurn(callSid, {
+        collectedFields: updatedFields2,
+        currentQuestion: REALTIME_ANYTHING_ELSE_QUESTION,
+        callerSpeech: speechResult,
+        assistantReply: REALTIME_ANYTHING_ELSE_QUESTION
+      }) ?? session;
+      return {
+        replyText: ensureSingleIntakeQuestion(REALTIME_ANYTHING_ELSE_QUESTION),
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextEndingPhase: "anything_else"
+      };
+    }
+    const nextStage2 = getRealtimeNextMissingStage(updatedFields2);
+    const reply2 = buildRealtimeIntakeReply(
+      "Got it.",
+      getRealtimeStageQuestion(nextStage2, updatedFields2, callerPhone)
+    );
+    session = await persistTurn(callSid, {
+      collectedFields: updatedFields2,
+      currentQuestion: getRealtimeStageQuestion(nextStage2, updatedFields2, callerPhone),
+      callerSpeech: speechResult,
+      assistantReply: reply2
+    }) ?? session;
+    return {
+      replyText: reply2,
+      hangup: false,
+      hangupAfterMark: false,
       session,
       nextEndingPhase: "none"
     };
@@ -3389,7 +3578,7 @@ async function processRealtimeCallerTurn(input) {
         assistantReply: nameOutcome.replyText
       }) ?? session;
       return {
-        replyText: nameOutcome.replyText,
+        replyText: ensureSingleIntakeQuestion(nameOutcome.replyText),
         hangup: false,
         hangupAfterMark: false,
         session,
@@ -3406,7 +3595,7 @@ async function processRealtimeCallerTurn(input) {
         assistantReply: REALTIME_ANYTHING_ELSE_QUESTION
       }) ?? session;
       return {
-        replyText: REALTIME_ANYTHING_ELSE_QUESTION,
+        replyText: ensureSingleIntakeQuestion(REALTIME_ANYTHING_ELSE_QUESTION),
         hangup: false,
         hangupAfterMark: false,
         session,
@@ -3472,7 +3661,7 @@ async function processRealtimeCallerTurn(input) {
     assistantReply: reply
   }) ?? session;
   return {
-    replyText: reply,
+    replyText: ensureSingleIntakeQuestion(reply),
     hangup: false,
     hangupAfterMark: false,
     session,
@@ -3489,6 +3678,7 @@ var SessionOrchestrator = class {
   processingTurn = false;
   pendingTranscript = null;
   endingPhase = "none";
+  awaitingFirstCallerTurn = false;
   async initialize() {
     try {
       this.session = await ensureCallSessionForTwilioCall({
@@ -3512,6 +3702,20 @@ var SessionOrchestrator = class {
     });
     return REALTIME_OPENING_GREETING;
   }
+  getOpeningGreeting() {
+    return REALTIME_OPENING_GREETING;
+  }
+  hasPendingTranscript() {
+    return Boolean(this.pendingTranscript);
+  }
+  consumePendingTranscript() {
+    const pending = this.pendingTranscript;
+    this.pendingTranscript = null;
+    return pending;
+  }
+  markOpeningDelivered() {
+    this.awaitingFirstCallerTurn = true;
+  }
   async handleCallerTranscript(transcript) {
     const trimmed = transcript.trim();
     if (!trimmed) {
@@ -3519,6 +3723,10 @@ var SessionOrchestrator = class {
     }
     if (this.processingTurn) {
       this.pendingTranscript = trimmed;
+      logInfo("caller_transcript_queued", {
+        callSid: this.context.callSid,
+        queueLength: 1
+      });
       return null;
     }
     this.processingTurn = true;
@@ -3531,12 +3739,14 @@ var SessionOrchestrator = class {
         callSid: this.context.callSid,
         callerPhone: this.context.callerPhone,
         speechResult: trimmed,
-        endingPhase: this.endingPhase
+        endingPhase: this.endingPhase,
+        isFirstCallerTurn: this.awaitingFirstCallerTurn
       });
       this.session = outcome.session;
       this.endingPhase = outcome.nextEndingPhase;
+      this.awaitingFirstCallerTurn = false;
       return {
-        replyText: outcome.replyText,
+        replyText: ensureSingleIntakeQuestion(outcome.replyText),
         hangup: outcome.hangup,
         hangupAfterMark: outcome.hangupAfterMark
       };
@@ -3549,11 +3759,6 @@ var SessionOrchestrator = class {
       };
     } finally {
       this.processingTurn = false;
-      if (this.pendingTranscript) {
-        const pending = this.pendingTranscript;
-        this.pendingTranscript = null;
-        return this.handleCallerTranscript(pending);
-      }
     }
   }
   getSession() {
@@ -3577,11 +3782,13 @@ var CallBridge = class {
   orchestrator = null;
   playbackTracker = new PlaybackTracker();
   callTiming = new CallTimingTracker();
+  responseGuard = new ResponseStateGuard();
   openAi = null;
   bargeIn = null;
   openingGreetingSent = false;
   awaitingClosingMark = false;
   activeResponseUsesClosingMark = false;
+  pendingClientResponse = false;
   start() {
     logInfo("twilio_stream_connected");
     this.params.twilioSocket.on("message", (data) => {
@@ -3644,7 +3851,8 @@ var CallBridge = class {
     this.callTiming.record("twilio_stream_started", start.callSid);
     logInfo("twilio_stream_started", {
       callSid: start.callSid,
-      streamSid: start.streamSid
+      streamSid: start.streamSid,
+      voice: this.params.config.openAiRealtimeVoice
     });
     this.orchestrator = new SessionOrchestrator({
       callSid: start.callSid,
@@ -3680,21 +3888,47 @@ var CallBridge = class {
         () => this.openAi.waitForSessionReady()
       );
       const [openingLine] = await Promise.all([initPromise, sessionReadyPromise]);
-      this.maybeSendOpeningGreeting(openingLine);
+      this.sendOpeningGreeting(openingLine);
     } catch (error) {
       logError("stream_start_setup_failed", { callSid: start.callSid }, error);
       this.cleanup("stream_start_setup_failed");
     }
   }
-  maybeSendOpeningGreeting(openingLine) {
-    if (this.openingGreetingSent || !this.openAi) {
+  sendOpeningGreeting(openingLine) {
+    if (this.openingGreetingSent || !this.openAi || !this.orchestrator) {
       return;
     }
     this.openingGreetingSent = true;
     this.callTiming.record("opening_response_requested", this.callSid ?? void 0);
     this.playbackTracker.reset();
     this.activeResponseUsesClosingMark = false;
-    this.openAi.speakExactText(openingLine);
+    const sent = this.requestAssistantSpeech(openingLine, "opening_greeting");
+    if (sent) {
+      this.orchestrator.markOpeningDelivered();
+    }
+  }
+  requestAssistantSpeech(text, reason, options = {}) {
+    if (!this.openAi) {
+      return false;
+    }
+    const sent = this.openAi.speakScript(
+      text,
+      reason,
+      (triggerReason) => this.responseGuard.canTriggerResponse(triggerReason),
+      (triggerReason) => {
+        this.pendingClientResponse = true;
+        this.responseGuard.recordTrigger(triggerReason);
+      }
+    );
+    if (sent === "sent") {
+      this.playbackTracker.reset();
+      this.activeResponseUsesClosingMark = options.hangupAfterMark ?? false;
+      this.awaitingClosingMark = options.hangupAfterMark ?? false;
+      if (options.hangupAfterMark) {
+        this.responseGuard.beginClosingMarkWait();
+      }
+    }
+    return sent === "sent";
   }
   handleStreamMedia(payload) {
     if (!payload || !this.openAi) {
@@ -3704,22 +3938,29 @@ var CallBridge = class {
   }
   handleOpenAiEvent(event) {
     switch (event.type) {
-      case "session.created":
-        break;
       case "session.updated":
         this.callTiming.record("openai_session_ready", this.callSid ?? void 0);
         logInfo("openai_session_ready", { type: event.type });
         break;
       case "input_audio_buffer.speech_started":
+        this.responseGuard.onCallerSpeechStarted();
         this.bargeIn?.handleCallerSpeechStarted();
         break;
       case "input_audio_buffer.speech_stopped":
-        this.openAi?.commitCallerAudio();
+        this.responseGuard.onCallerSpeechStopped();
         break;
       case "conversation.item.input_audio_transcription.completed":
         void this.handleTranscriptionCompleted(event);
         break;
       case "response.created": {
+        if (this.pendingClientResponse) {
+          this.pendingClientResponse = false;
+        } else {
+          logWarn("vad_auto_response_cancelled");
+          this.openAi?.cancelActiveResponse();
+          this.responseGuard.onResponseCancelled();
+          break;
+        }
         const responseId = event.response?.id;
         if (responseId) {
           this.bargeIn?.handleResponseStarted(
@@ -3731,11 +3972,13 @@ var CallBridge = class {
       }
       case "response.output_audio.delta": {
         const delta = String(event.delta ?? "");
+        this.responseGuard.onAssistantAudioDelta();
         this.forwardAssistantAudio(delta);
         break;
       }
       case "response.output_audio.done":
         logInfo("response_output_audio_done");
+        this.responseGuard.onAssistantAudioDone();
         if (this.awaitingClosingMark && this.streamSid) {
           this.sendTwilioJson(
             buildTwilioMarkMessage(this.streamSid, CLOSING_MARK_NAME)
@@ -3745,11 +3988,15 @@ var CallBridge = class {
         break;
       case "response.done":
         this.bargeIn?.handleResponseCompleted();
+        this.responseGuard.onResponseDone();
+        void this.processQueuedCallerTranscript();
         break;
       case "response.cancelled":
       case "response.canceled":
         this.bargeIn?.handleResponseCancelled();
+        this.responseGuard.onResponseCancelled();
         this.awaitingClosingMark = false;
+        void this.processQueuedCallerTranscript();
         break;
       case "error":
         logError("openai_event_error", {
@@ -3767,21 +4014,54 @@ var CallBridge = class {
     if (!transcript || !this.orchestrator || !this.openAi) {
       return;
     }
+    const itemId = String(
+      event.item_id ?? (event.item?.id ?? "")
+    );
+    if (!this.responseGuard.registerCallerTranscript(itemId || null)) {
+      return;
+    }
     logInfo("caller_transcription_completed", {
       callSid: this.callSid ?? void 0,
       transcriptLength: transcript.length
     });
+    await this.processCallerTurnReply(transcript);
+  }
+  async processCallerTurnReply(transcript) {
+    if (!this.orchestrator || !this.openAi) {
+      return;
+    }
     const result = await this.orchestrator.handleCallerTranscript(transcript);
     if (!result?.replyText) {
       return;
     }
-    this.playbackTracker.reset();
-    this.activeResponseUsesClosingMark = result.hangupAfterMark;
-    this.awaitingClosingMark = result.hangupAfterMark;
-    this.openAi.speakExactText(result.replyText);
+    const reason = result.hangupAfterMark ? "closing_message" : "caller_turn_reply";
+    const sent = this.requestAssistantSpeech(result.replyText, reason, {
+      hangupAfterMark: result.hangupAfterMark
+    });
+    if (!sent) {
+      logWarn("caller_turn_reply_deferred", { callSid: this.callSid ?? void 0 });
+      return;
+    }
     if (result.hangup && !result.hangupAfterMark) {
       this.cleanup("call_completed");
     }
+  }
+  async processQueuedCallerTranscript() {
+    if (!this.orchestrator || !this.orchestrator.hasPendingTranscript()) {
+      return;
+    }
+    if (!this.responseGuard.isWaitingForCaller()) {
+      return;
+    }
+    const pending = this.orchestrator.consumePendingTranscript();
+    if (!pending) {
+      return;
+    }
+    if (!this.responseGuard.registerCallerTranscript(`queued-${Date.now()}`)) {
+      return;
+    }
+    logInfo("caller_transcript_dequeued", { callSid: this.callSid ?? void 0 });
+    await this.processCallerTurnReply(pending);
   }
   forwardAssistantAudio(base64Audio) {
     if (!base64Audio || !this.streamSid) {
@@ -3807,6 +4087,7 @@ var CallBridge = class {
     logInfo("twilio_mark_received", { mark: name });
     if (name === CLOSING_MARK_NAME) {
       logInfo("closing_mark_played", { callSid: this.callSid ?? void 0 });
+      this.responseGuard.onClosingMarkReceived();
       this.cleanup("call_completed");
     }
   }

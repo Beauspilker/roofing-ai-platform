@@ -498,7 +498,7 @@ function buildRealtimeSessionUpdate(voice, config2) {
           turn_detection: {
             type: "semantic_vad",
             eagerness,
-            create_response: true,
+            create_response: false,
             interrupt_response: true
           }
         },
@@ -2298,25 +2298,9 @@ async function createCrmLeadFromCallSession(session) {
 var OPENING_QUESTION = "What's going on with the roof?";
 var OPENING_GREETING = "Hi, thanks for calling Beau's Roofing. I'm the AI assistant here to help. " + OPENING_QUESTION;
 var OPENING_RETRY_PROMPT = `I didn't catch that. ${OPENING_QUESTION}`;
-var GOODBYE_PHRASES = [
-  "goodbye",
-  "good bye",
-  "bye",
-  "that's all",
-  "thats all",
-  "that is all",
-  "no thank you",
-  "no thanks",
-  "nothing else",
-  "i'm good",
-  "im good",
-  "all set"
-];
-function isGoodbyePhrase(speech) {
+function isExplicitCallerHangupDuringIntake(speech) {
   const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
-  return GOODBYE_PHRASES.some(
-    (phrase) => normalized === phrase || normalized.includes(phrase)
-  );
+  return /^(goodbye|good bye|bye|bye bye)\b/.test(normalized);
 }
 function isConfirmationPhrase(speech) {
   const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
@@ -2918,9 +2902,9 @@ var CONTEXT_ACKNOWLEDGMENTS = {
   emergency_or_active_leak: ["I'm glad everyone is safe.", "Understood."],
   insurance_claim_started: ["That helps.", "Okay."],
   adjuster_contacted: ["That helps.", "Thanks for clarifying."],
-  appointment_preference: ["Okay, and", "All right."],
+  appointment_preference: ["All right.", "Okay."],
   photos_available: ["Thanks.", "Understood."],
-  default: ["Okay.", "Thank you.", "All right.", "That helps."]
+  default: ["Thank you.", "All right.", "That helps.", "Okay."]
 };
 var CLOSING_PHRASES = [
   "sounds good",
@@ -2948,37 +2932,39 @@ var CLOSING_PHRASES = [
 ];
 var AcknowledgmentPolicy = class {
   lastAcknowledgment = null;
-  turnCount = 0;
+  turnsSinceAck = 0;
   selectAcknowledgment(options) {
-    this.turnCount += 1;
+    this.turnsSinceAck += 1;
     if (options.isEmergency && !options.emergencyAlreadyAcknowledged) {
       const ack = "I'm glad everyone is safe.";
       this.recordUsed(ack);
       return ack;
     }
-    const shouldAcknowledge = options.forceAck === true || this.turnCount % 5 === 1 || this.turnCount % 5 === 3;
+    const answer = options.answer?.trim() ?? "";
+    const isSubstantiveAnswer = answer.length >= 12 && !/^(yes|no|yeah|nope|yep|yup|correct|right)\b/i.test(answer);
+    const shouldAcknowledge = options.forceAck === true || options.afterConfirmation === true || isSubstantiveAnswer && (options.filledCount ?? 0) > 0 && this.turnsSinceAck >= 2;
     if (!shouldAcknowledge) {
-      this.recordUsed(null);
       return null;
     }
     const pool = CONTEXT_ACKNOWLEDGMENTS[options.nextField ?? "default"] ?? CONTEXT_ACKNOWLEDGMENTS.default;
     const candidates = pool.filter((ack) => ack !== this.lastAcknowledgment);
     if (candidates.length === 0) {
-      this.recordUsed(null);
       return null;
     }
-    const selected = candidates[(this.turnCount + candidates.length) % candidates.length] ?? null;
+    const selected = candidates[(answer.length + (options.nextField?.length ?? 0) + candidates.length) % candidates.length] ?? null;
     this.recordUsed(selected);
     return selected;
   }
   recordUsed(acknowledgment) {
     this.lastAcknowledgment = acknowledgment;
+    this.turnsSinceAck = acknowledgment ? 0 : this.turnsSinceAck;
   }
   getLastAcknowledgment() {
     return this.lastAcknowledgment;
   }
   resetTurnCounter() {
-    this.turnCount = 0;
+    this.turnsSinceAck = 0;
+    this.lastAcknowledgment = null;
   }
 };
 function containsClosingPhrase(text) {
@@ -3011,11 +2997,7 @@ function joinAcknowledgmentAndQuestion(acknowledgment, question) {
   if (!acknowledgment) {
     return question;
   }
-  const trimmedQuestion = question.trim();
-  if (/^(okay, and|all right\.|thank you\.)/i.test(trimmedQuestion)) {
-    return `${acknowledgment} ${trimmedQuestion}`.replace(/\s+/g, " ").trim();
-  }
-  return `${acknowledgment} ${trimmedQuestion}`.replace(/\s+/g, " ").trim();
+  return `${acknowledgment} ${question.trim()}`.replace(/\s+/g, " ").trim();
 }
 
 // ../../lib/call-name-capture.ts
@@ -3467,9 +3449,6 @@ function formatAddressForSpeech(address) {
   if (/\bin\b/i.test(formatted) && !/,/.test(formatted)) {
     formatted = formatted.replace(/\s+in\s+/i, ", ");
   }
-  if (/beatrice/i.test(formatted) && !/nebraska/i.test(formatted)) {
-    formatted = `${formatted.replace(/,?\s*$/i, "")}, Nebraska`;
-  }
   return formatted;
 }
 function buildAddressReadbackConfirmation(address) {
@@ -3694,7 +3673,7 @@ function mergeExtractedFields(fields, extracted) {
 var CLOSING_MESSAGE = "Great. I'll send this information to the roofing team, and someone will follow up with you by call or text. Thanks for calling Beau's Roofing. Have a great day.";
 
 // src/orchestrator/realtime-prompts.ts
-var REALTIME_OPENING_GREETING = "Thanks for calling Beau's Roofing. How can I help you today?";
+var REALTIME_OPENING_GREETING = "Thank you for calling Beau's Roofing. I'm Beau's Roofing's AI assistant. How can I help you today?";
 var REALTIME_OPENING_QUESTION = "How can I help you today?";
 var REALTIME_ANYTHING_ELSE_QUESTION = "Is there anything else you'd like the roofing team to know?";
 function ensureSingleIntakeQuestion(text) {
@@ -4331,16 +4310,17 @@ function confirmCallbackPhone(fields) {
     callback_phone_confirmed: true
   });
 }
-function buildRealtimeAcknowledgment(policy, answer, fields, filledCount, nextField) {
+function buildRealtimeAcknowledgment(policy, answer, fields, filledCount, nextField, afterConfirmation = false) {
   return policy.selectAcknowledgment({
     nextField,
+    answer,
     isEmergency: detectEmergency(answer),
     emergencyAlreadyAcknowledged: fields.emergency_acknowledged === true,
-    fieldsFilledCount: filledCount,
-    hasActiveLeak: fields.emergency_or_active_leak === true
+    filledCount,
+    afterConfirmation
   });
 }
-function buildIntakeReply(policy, fields, answer, callerPhone, filledCount) {
+function buildIntakeReply(policy, fields, answer, callerPhone, filledCount, afterConfirmation = false) {
   const nextField = getNextRequiredField(fields);
   if (!nextField) {
     return REALTIME_ANYTHING_ELSE_QUESTION;
@@ -4351,7 +4331,8 @@ function buildIntakeReply(policy, fields, answer, callerPhone, filledCount) {
     answer,
     fields,
     filledCount,
-    nextField
+    nextField,
+    afterConfirmation
   );
   const fallback = getRequiredFieldQuestion(nextField, fields, callerPhone);
   const combined = joinAcknowledgmentAndQuestion(ack, question);
@@ -4449,7 +4430,7 @@ function buildScheduleConfirmationReply(fields) {
   const label = spoken || fields.appointment_preference_raw?.trim() || "the requested time";
   return ensureSingleIntakeQuestion(buildScheduleConfirmationQuestion(label));
 }
-function buildPostIntakeReply(policy, fieldsBefore, updatedFields, trimmedSpeech, callerPhone, filledCount) {
+function buildPostIntakeReply(policy, fieldsBefore, updatedFields, trimmedSpeech, callerPhone, filledCount, options = {}) {
   if (needsCallbackReadback(updatedFields)) {
     const reply = buildCallbackConfirmationReply(updatedFields);
     return {
@@ -4492,7 +4473,14 @@ function buildPostIntakeReply(policy, fieldsBefore, updatedFields, trimmedSpeech
   }
   return {
     replyText: ensureSingleIntakeQuestion(
-      buildIntakeReply(policy, updatedFields, trimmedSpeech, callerPhone, filledCount)
+      buildIntakeReply(
+        policy,
+        updatedFields,
+        trimmedSpeech,
+        callerPhone,
+        filledCount,
+        options.afterConfirmation === true
+      )
     ),
     fields: updatedFields,
     nextState: "collecting_intake"
@@ -4517,7 +4505,7 @@ async function processRealtimeCallerTurn(input) {
       nextConversationState: conversationState
     };
   }
-  if (isGoodbyePhrase(speechResult) && conversationState === "collecting_intake") {
+  if (isExplicitCallerHangupDuringIntake(trimmedSpeech) && conversationState === "collecting_intake") {
     if (callSid) {
       void completeCallSession(callSid, "completed").catch((error) => {
         logError("complete_call_session_failed", { callSid }, error);
@@ -4562,7 +4550,8 @@ async function processRealtimeCallerTurn(input) {
         confirmedFields,
         trimmedSpeech,
         callerPhone,
-        filledCount2
+        filledCount2,
+        { afterConfirmation: true }
       );
       session = applyLocalSessionUpdate(session, {
         collectedFields: post2.fields,
@@ -4623,7 +4612,8 @@ async function processRealtimeCallerTurn(input) {
         confirmedFields,
         trimmedSpeech,
         callerPhone,
-        filledCount2
+        filledCount2,
+        { afterConfirmation: true }
       );
       session = applyLocalSessionUpdate(session, {
         collectedFields: post2.fields,
@@ -4763,7 +4753,8 @@ async function processRealtimeCallerTurn(input) {
         confirmedFields,
         trimmedSpeech,
         callerPhone,
-        filledCount2
+        filledCount2,
+        { afterConfirmation: true }
       );
       session = applyLocalSessionUpdate(session, {
         collectedFields: post2.fields,
@@ -4882,16 +4873,20 @@ async function processRealtimeCallerTurn(input) {
       };
     }
     if (isSummaryConfirmed(trimmedSpeech)) {
+      const confirmedFields = syncLegacyStringFields({
+        ...fieldsBefore,
+        summary_confirmed: true
+      });
       const reply = buildClosingMessage();
       session = applyLocalSessionUpdate(session, {
-        collectedFields: fieldsBefore,
+        collectedFields: confirmedFields,
         currentQuestion: null
       });
       void completeCallSession(callSid, "completed").catch((error) => {
         logError("complete_call_session_failed", { callSid }, error);
       });
       persistTurnAsync(callSid, {
-        collectedFields: fieldsBefore,
+        collectedFields: confirmedFields,
         currentQuestion: null,
         callerSpeech: trimmedSpeech,
         assistantReply: reply
@@ -5154,6 +5149,8 @@ var SessionOrchestrator = class {
 
 // src/bridge/call-bridge.ts
 var CLOSING_MARK_NAME = "closing-final";
+var OPENING_GREETING_DEADLINE_MS = 4e3;
+var OPENING_FALLBACK_GREETING = "Thank you for calling Beau's Roofing. One moment while I get ready to help you.";
 var CallBridge = class {
   constructor(params) {
     this.params = params;
@@ -5176,6 +5173,8 @@ var CallBridge = class {
   awaitingClosingMark = false;
   activeResponseUsesClosingMark = false;
   pendingClientResponse = false;
+  pendingSpeech = null;
+  openingFallbackTimer = null;
   start() {
     logInfo("twilio_stream_connected");
     this.params.twilioSocket.on("message", (data) => {
@@ -5267,6 +5266,7 @@ var CallBridge = class {
       this.cleanup("max_call_duration");
     }, this.params.config.maxCallDurationSeconds * 1e3);
     try {
+      this.scheduleOpeningFallback();
       const connectPromise = this.openAi.connect().then(() => {
         this.callTiming.record("openai_connected", this.callSid ?? void 0);
       });
@@ -5275,10 +5275,27 @@ var CallBridge = class {
         () => this.openAi.waitForSessionReady()
       );
       const [openingLine] = await Promise.all([initPromise, sessionReadyPromise]);
+      this.clearOpeningFallbackTimer();
       this.sendOpeningGreeting(openingLine);
     } catch (error) {
       logError("stream_start_setup_failed", { callSid: start.callSid }, error);
-      this.cleanup("stream_start_setup_failed");
+      this.clearOpeningFallbackTimer();
+      this.sendOpeningGreeting(OPENING_FALLBACK_GREETING);
+    }
+  }
+  scheduleOpeningFallback() {
+    this.clearOpeningFallbackTimer();
+    this.openingFallbackTimer = setTimeout(() => {
+      if (!this.openingGreetingSent) {
+        logWarn("opening_greeting_fallback", { callSid: this.callSid ?? void 0 });
+        this.sendOpeningGreeting(OPENING_FALLBACK_GREETING);
+      }
+    }, OPENING_GREETING_DEADLINE_MS);
+  }
+  clearOpeningFallbackTimer() {
+    if (this.openingFallbackTimer) {
+      clearTimeout(this.openingFallbackTimer);
+      this.openingFallbackTimer = null;
     }
   }
   sendOpeningGreeting(openingLine) {
@@ -5286,6 +5303,7 @@ var CallBridge = class {
       return;
     }
     this.openingGreetingSent = true;
+    this.clearOpeningFallbackTimer();
     this.callTiming.record("opening_response_requested", this.callSid ?? void 0);
     this.playbackTracker.reset();
     this.activeResponseUsesClosingMark = false;
@@ -5316,6 +5334,34 @@ var CallBridge = class {
       }
     }
     return sent === "sent";
+  }
+  enqueueOrSpeakSpeech(request) {
+    const sent = this.requestAssistantSpeech(request.text, request.reason, {
+      hangupAfterMark: request.hangupAfterMark
+    });
+    if (sent) {
+      if (request.hangup && !request.hangupAfterMark) {
+        this.cleanup("call_completed");
+      }
+      return true;
+    }
+    this.pendingSpeech = request;
+    logWarn("caller_turn_reply_deferred", { callSid: this.callSid ?? void 0 });
+    return false;
+  }
+  flushPendingSpeech() {
+    if (!this.pendingSpeech || !this.openAi) {
+      return;
+    }
+    if (!this.responseGuard.canTriggerResponse(this.pendingSpeech.reason)) {
+      return;
+    }
+    const pending = this.pendingSpeech;
+    this.pendingSpeech = null;
+    const sent = this.enqueueOrSpeakSpeech(pending);
+    if (!sent && pending) {
+      this.pendingSpeech = pending;
+    }
   }
   handleStreamMedia(payload) {
     if (!payload || !this.openAi) {
@@ -5380,6 +5426,7 @@ var CallBridge = class {
         this.bargeIn?.handleResponseCompleted();
         this.responseGuard.onResponseDone();
         this.orchestrator?.onAssistantResponseDone();
+        this.flushPendingSpeech();
         void this.processQueuedCallerTranscript();
         break;
       case "response.cancelled":
@@ -5387,6 +5434,7 @@ var CallBridge = class {
         this.bargeIn?.handleResponseCancelled();
         this.responseGuard.onResponseCancelled();
         this.awaitingClosingMark = false;
+        this.flushPendingSpeech();
         void this.processQueuedCallerTranscript();
         break;
       case "error":
@@ -5431,15 +5479,14 @@ var CallBridge = class {
       }
       this.turnTiming.record("response_requested", this.callSid ?? void 0);
       const reason = result.hangupAfterMark ? "closing_message" : "caller_turn_reply";
-      const sent = this.requestAssistantSpeech(result.replyText, reason, {
-        hangupAfterMark: result.hangupAfterMark
+      const sent = this.enqueueOrSpeakSpeech({
+        text: result.replyText,
+        reason,
+        hangupAfterMark: result.hangupAfterMark,
+        hangup: result.hangup
       });
       if (!sent) {
-        logWarn("caller_turn_reply_deferred", { callSid: this.callSid ?? void 0 });
         return;
-      }
-      if (result.hangup && !result.hangupAfterMark) {
-        this.cleanup("call_completed");
       }
     });
   }
@@ -5515,6 +5562,8 @@ var CallBridge = class {
       clearTimeout(this.callTimeout);
       this.callTimeout = null;
     }
+    this.clearOpeningFallbackTimer();
+    this.pendingSpeech = null;
     this.openAi?.close();
     this.openAi = null;
     if (this.params.twilioSocket.readyState === this.params.twilioSocket.OPEN) {

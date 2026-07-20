@@ -19,6 +19,16 @@ import {
 } from "../twilio/messages.js";
 
 const CLOSING_MARK_NAME = "closing-final";
+const OPENING_GREETING_DEADLINE_MS = 4_000;
+const OPENING_FALLBACK_GREETING =
+  "Thank you for calling Beau's Roofing. One moment while I get ready to help you.";
+
+type PendingSpeechRequest = {
+  text: string;
+  reason: ResponseTriggerReason;
+  hangupAfterMark?: boolean;
+  hangup?: boolean;
+};
 
 type CallBridgeParams = {
   twilioSocket: WebSocket;
@@ -44,6 +54,8 @@ export class CallBridge {
   private awaitingClosingMark = false;
   private activeResponseUsesClosingMark = false;
   private pendingClientResponse = false;
+  private pendingSpeech: PendingSpeechRequest | null = null;
+  private openingFallbackTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly params: CallBridgeParams) {}
 
@@ -159,6 +171,7 @@ export class CallBridge {
     }, this.params.config.maxCallDurationSeconds * 1000);
 
     try {
+      this.scheduleOpeningFallback();
       const connectPromise = this.openAi.connect().then(() => {
         this.callTiming.record("openai_connected", this.callSid ?? undefined);
       });
@@ -169,10 +182,29 @@ export class CallBridge {
 
       const [openingLine] = await Promise.all([initPromise, sessionReadyPromise]);
 
+      this.clearOpeningFallbackTimer();
       this.sendOpeningGreeting(openingLine);
     } catch (error) {
       logError("stream_start_setup_failed", { callSid: start.callSid }, error);
-      this.cleanup("stream_start_setup_failed");
+      this.clearOpeningFallbackTimer();
+      this.sendOpeningGreeting(OPENING_FALLBACK_GREETING);
+    }
+  }
+
+  private scheduleOpeningFallback(): void {
+    this.clearOpeningFallbackTimer();
+    this.openingFallbackTimer = setTimeout(() => {
+      if (!this.openingGreetingSent) {
+        logWarn("opening_greeting_fallback", { callSid: this.callSid ?? undefined });
+        this.sendOpeningGreeting(OPENING_FALLBACK_GREETING);
+      }
+    }, OPENING_GREETING_DEADLINE_MS);
+  }
+
+  private clearOpeningFallbackTimer(): void {
+    if (this.openingFallbackTimer) {
+      clearTimeout(this.openingFallbackTimer);
+      this.openingFallbackTimer = null;
     }
   }
 
@@ -182,6 +214,7 @@ export class CallBridge {
     }
 
     this.openingGreetingSent = true;
+    this.clearOpeningFallbackTimer();
     this.callTiming.record("opening_response_requested", this.callSid ?? undefined);
     this.playbackTracker.reset();
     this.activeResponseUsesClosingMark = false;
@@ -223,6 +256,41 @@ export class CallBridge {
     }
 
     return sent === "sent";
+  }
+
+  private enqueueOrSpeakSpeech(request: PendingSpeechRequest): boolean {
+    const sent = this.requestAssistantSpeech(request.text, request.reason, {
+      hangupAfterMark: request.hangupAfterMark,
+    });
+
+    if (sent) {
+      if (request.hangup && !request.hangupAfterMark) {
+        this.cleanup("call_completed");
+      }
+      return true;
+    }
+
+    this.pendingSpeech = request;
+    logWarn("caller_turn_reply_deferred", { callSid: this.callSid ?? undefined });
+    return false;
+  }
+
+  private flushPendingSpeech(): void {
+    if (!this.pendingSpeech || !this.openAi) {
+      return;
+    }
+
+    if (!this.responseGuard.canTriggerResponse(this.pendingSpeech.reason)) {
+      return;
+    }
+
+    const pending = this.pendingSpeech;
+    this.pendingSpeech = null;
+    const sent = this.enqueueOrSpeakSpeech(pending);
+
+    if (!sent && pending) {
+      this.pendingSpeech = pending;
+    }
   }
 
   private handleStreamMedia(payload: string): void {
@@ -294,6 +362,7 @@ export class CallBridge {
         this.bargeIn?.handleResponseCompleted();
         this.responseGuard.onResponseDone();
         this.orchestrator?.onAssistantResponseDone();
+        this.flushPendingSpeech();
         void this.processQueuedCallerTranscript();
         break;
       case "response.cancelled":
@@ -301,6 +370,7 @@ export class CallBridge {
         this.bargeIn?.handleResponseCancelled();
         this.responseGuard.onResponseCancelled();
         this.awaitingClosingMark = false;
+        this.flushPendingSpeech();
         void this.processQueuedCallerTranscript();
         break;
       case "error":
@@ -365,17 +435,15 @@ export class CallBridge {
         ? "closing_message"
         : "caller_turn_reply";
 
-      const sent = this.requestAssistantSpeech(result.replyText, reason, {
+      const sent = this.enqueueOrSpeakSpeech({
+        text: result.replyText,
+        reason,
         hangupAfterMark: result.hangupAfterMark,
+        hangup: result.hangup,
       });
 
       if (!sent) {
-        logWarn("caller_turn_reply_deferred", { callSid: this.callSid ?? undefined });
         return;
-      }
-
-      if (result.hangup && !result.hangupAfterMark) {
-        this.cleanup("call_completed");
       }
     });
   }
@@ -473,6 +541,9 @@ export class CallBridge {
       clearTimeout(this.callTimeout);
       this.callTimeout = null;
     }
+
+    this.clearOpeningFallbackTimer();
+    this.pendingSpeech = null;
 
     this.openAi?.close();
     this.openAi = null;

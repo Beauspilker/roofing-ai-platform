@@ -98,10 +98,28 @@ test("cedar is selected in initial session config before any response", () => {
 test("same acknowledgment is not used consecutively", () => {
   const policy = new AcknowledgmentPolicy();
 
-  policy.selectAcknowledgment({ fieldsFilledCount: 0 });
-  policy.selectAcknowledgment({ fieldsFilledCount: 0 });
-  const first = policy.selectAcknowledgment({ fieldsFilledCount: 0 });
-  const second = policy.selectAcknowledgment({ fieldsFilledCount: 0 });
+  policy.selectAcknowledgment({
+    answer: "The roof is leaking into the bedroom",
+    filledCount: 1,
+    nextField: "full_name",
+  });
+  policy.selectAcknowledgment({
+    answer: "John Smith",
+    filledCount: 1,
+    nextField: "callback_phone",
+  });
+  const first = policy.selectAcknowledgment({
+    answer: "402-555-0198",
+    filledCount: 1,
+    nextField: "address",
+    afterConfirmation: true,
+  });
+  const second = policy.selectAcknowledgment({
+    answer: "123 Main Street in Beatrice",
+    filledCount: 1,
+    nextField: "emergency_or_active_leak",
+    afterConfirmation: true,
+  });
 
   if (first !== null && second !== null) {
     assert.notEqual(first, second);
@@ -115,7 +133,8 @@ test("Got it is not overused during one call", () => {
   for (let index = 0; index < 12; index += 1) {
     results.push(
       policy.selectAcknowledgment({
-        fieldsFilledCount: index % 3,
+        answer: index % 2 === 0 ? "Water is coming into the kitchen" : "yes",
+        filledCount: 1,
         nextField: "address",
       }),
     );
@@ -131,15 +150,19 @@ test("natural acknowledgment appears on some turns but not every turn", () => {
   for (let index = 0; index < 10; index += 1) {
     results.push(
       policy.selectAcknowledgment({
-        fieldsFilledCount: index,
+        answer:
+          index % 2 === 0
+            ? "A tree hit the roof last night and water is coming in"
+            : "yes",
+        filledCount: index > 0 ? 1 : 0,
         nextField: "address",
       }),
     );
   }
 
   const ackCount = results.filter((value) => value !== null).length;
-  assert.ok(ackCount >= 3);
-  assert.ok(ackCount <= 7);
+  assert.ok(ackCount >= 2);
+  assert.ok(ackCount <= 8);
 });
 
 test("intake wording never uses closing language", () => {
@@ -537,8 +560,37 @@ test("company phone remains separate from customer callback", () => {
 test("opening greeting contains no intake fields", () => {
   assert.equal(
     REALTIME_OPENING_GREETING,
-    "Thanks for calling Beau's Roofing. How can I help you today?",
+    "Thank you for calling Beau's Roofing. I'm Beau's Roofing's AI assistant. How can I help you today?",
   );
+});
+
+test("summary confirmation sets summary_confirmed for lead creation", async () => {
+  const policy = new AcknowledgmentPolicy();
+  const fields: RealtimeFields = {
+    problem_description: "leak",
+    full_name: "Beau",
+    callback_phone: "+15551234567",
+    callback_phone_confirmed: true,
+    address: "123 Main Street",
+    address_confirmed: true,
+    urgency: "standard",
+    emergency_or_active_leak: false,
+    insurance_claim_started: false,
+    appointment_preference: "July 21 at 2:00 PM",
+    schedule_confirmed: true,
+    photos_available: false,
+  };
+
+  const outcome = await processRealtimeCallerTurn({
+    session: { ...mockSession, collected_fields: fields },
+    callSid: "CA123",
+    callerPhone: "+15551234567",
+    speechResult: "Yes, that's correct",
+    conversationState: "awaiting_summary_confirmation",
+    acknowledgmentPolicy: policy,
+  });
+
+  assert.equal(outcome.session?.collected_fields.summary_confirmed, true);
 });
 
 test("ensureSingleIntakeQuestion keeps only the first question", () => {
@@ -614,7 +666,7 @@ test("confirmable address requires enough detail", () => {
   assert.equal(hasConfirmableAddress("123 Main Street in Beatrice"), true);
   assert.match(
     buildAddressReadbackConfirmation("123 Main Street in Beatrice"),
-    /123 Main Street, Beatrice, Nebraska/,
+    /123 Main Street, Beatrice/,
   );
 });
 

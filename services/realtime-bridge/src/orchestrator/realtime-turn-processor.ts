@@ -11,7 +11,7 @@ import {
   type CallSession,
   updateCallSession,
 } from "../../../../lib/call-sessions.js";
-import { isGoodbyePhrase } from "../../../../lib/twilio/voice-phrases.js";
+import { isExplicitCallerHangupDuringIntake } from "../../../../lib/twilio/voice-phrases.js";
 import type { AcknowledgmentPolicy } from "./acknowledgment-policy.js";
 import {
   isCallbackConfirmed,
@@ -60,7 +60,7 @@ import {
   REALTIME_ANYTHING_ELSE_QUESTION,
   type RealtimeFields,
 } from "./realtime-prompts.js";
-import { applyCorrectionToStructuredField } from "./structured-intake.js";
+import { applyCorrectionToStructuredField, syncLegacyStringFields } from "./structured-intake.js";
 import { logError } from "../logger.js";
 
 export type RealtimeTurnOutcome = {
@@ -181,6 +181,7 @@ function buildPostIntakeReply(
   trimmedSpeech: string,
   callerPhone: string,
   filledCount: number,
+  options: { afterConfirmation?: boolean } = {},
 ): { replyText: string; fields: RealtimeFields; nextState: ConversationState } {
   if (needsCallbackReadback(updatedFields)) {
     const reply = buildCallbackConfirmationReply(updatedFields);
@@ -232,7 +233,14 @@ function buildPostIntakeReply(
 
   return {
     replyText: ensureSingleIntakeQuestion(
-      buildIntakeReply(policy, updatedFields, trimmedSpeech, callerPhone, filledCount),
+      buildIntakeReply(
+        policy,
+        updatedFields,
+        trimmedSpeech,
+        callerPhone,
+        filledCount,
+        options.afterConfirmation === true,
+      ),
     ),
     fields: updatedFields,
     nextState: "collecting_intake",
@@ -265,7 +273,10 @@ export async function processRealtimeCallerTurn(
     };
   }
 
-  if (isGoodbyePhrase(speechResult) && conversationState === "collecting_intake") {
+  if (
+    isExplicitCallerHangupDuringIntake(trimmedSpeech) &&
+    conversationState === "collecting_intake"
+  ) {
     if (callSid) {
       void completeCallSession(callSid, "completed").catch((error) => {
         logError("complete_call_session_failed", { callSid }, error);
@@ -316,6 +327,7 @@ export async function processRealtimeCallerTurn(
         trimmedSpeech,
         callerPhone,
         filledCount,
+        { afterConfirmation: true },
       );
 
       session = applyLocalSessionUpdate(session, {
@@ -386,6 +398,7 @@ export async function processRealtimeCallerTurn(
         trimmedSpeech,
         callerPhone,
         filledCount,
+        { afterConfirmation: true },
       );
 
       session = applyLocalSessionUpdate(session, {
@@ -549,6 +562,7 @@ export async function processRealtimeCallerTurn(
         trimmedSpeech,
         callerPhone,
         filledCount,
+        { afterConfirmation: true },
       );
 
       session = applyLocalSessionUpdate(session, {
@@ -695,9 +709,13 @@ export async function processRealtimeCallerTurn(
     }
 
     if (isSummaryConfirmed(trimmedSpeech)) {
+      const confirmedFields = syncLegacyStringFields({
+        ...fieldsBefore,
+        summary_confirmed: true,
+      });
       const reply = buildClosingMessage();
       session = applyLocalSessionUpdate(session, {
-        collectedFields: fieldsBefore,
+        collectedFields: confirmedFields,
         currentQuestion: null,
       });
 
@@ -706,7 +724,7 @@ export async function processRealtimeCallerTurn(
       });
 
       persistTurnAsync(callSid, {
-        collectedFields: fieldsBefore,
+        collectedFields: confirmedFields,
         currentQuestion: null,
         callerSpeech: trimmedSpeech,
         assistantReply: reply,

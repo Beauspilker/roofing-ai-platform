@@ -8,7 +8,7 @@ import {
 import { CLOSING_MESSAGE } from "./conversation-state.js";
 
 export const REALTIME_OPENING_GREETING =
-  "Thanks for calling Beau's Roofing. How can I help you today?";
+  "Thank you for calling Beau's Roofing. I'm Beau's Roofing's AI assistant. How can I help you today?";
 
 export const REALTIME_OPENING_QUESTION = "How can I help you today?";
 

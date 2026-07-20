@@ -134,13 +134,15 @@ export function buildRealtimeAcknowledgment(
   fields: RealtimeFields,
   filledCount: number,
   nextField?: RequiredFieldKey,
+  afterConfirmation = false,
 ): string | null {
   return policy.selectAcknowledgment({
     nextField,
+    answer,
     isEmergency: detectEmergency(answer),
     emergencyAlreadyAcknowledged: fields.emergency_acknowledged === true,
-    fieldsFilledCount: filledCount,
-    hasActiveLeak: fields.emergency_or_active_leak === true,
+    filledCount,
+    afterConfirmation,
   });
 }
 
@@ -150,6 +152,7 @@ export function buildIntakeReply(
   answer: string,
   callerPhone: string | undefined,
   filledCount: number,
+  afterConfirmation = false,
 ): string {
   const nextField = getNextRequiredField(fields);
 
@@ -164,6 +167,7 @@ export function buildIntakeReply(
     fields,
     filledCount,
     nextField,
+    afterConfirmation,
   );
   const fallback = getRequiredFieldQuestion(nextField, fields, callerPhone);
   const combined = joinAcknowledgmentAndQuestion(ack, question);

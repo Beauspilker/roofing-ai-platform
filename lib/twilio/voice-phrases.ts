@@ -46,6 +46,13 @@ export function isGoodbyePhrase(speech: string): boolean {
   );
 }
 
+/** Only explicit hang-up words — not "that's all" / "all set" during intake. */
+export function isExplicitCallerHangupDuringIntake(speech: string): boolean {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+
+  return /^(goodbye|good bye|bye|bye bye)\b/.test(normalized);
+}
+
 export function isConfirmationPhrase(speech: string): boolean {
   const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
 

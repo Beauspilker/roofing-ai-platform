@@ -36,7 +36,7 @@ export function buildRealtimeSessionUpdate(voice: string, config?: BridgeConfig)
           turn_detection: {
             type: "semantic_vad" as const,
             eagerness,
-            create_response: true,
+            create_response: false,
             interrupt_response: true,
           },
         },

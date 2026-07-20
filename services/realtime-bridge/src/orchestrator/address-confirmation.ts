@@ -22,10 +22,6 @@ export function formatAddressForSpeech(address: string): string {
     formatted = formatted.replace(/\s+in\s+/i, ", ");
   }
 
-  if (/beatrice/i.test(formatted) && !/nebraska/i.test(formatted)) {
-    formatted = `${formatted.replace(/,?\s*$/i, "")}, Nebraska`;
-  }
-
   return formatted;
 }
 

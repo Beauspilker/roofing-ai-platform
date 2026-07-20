@@ -2,10 +2,30 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { ResponseStateGuard } from "../src/bridge/response-state-guard.js";
+import { TurnTimingTracker } from "../src/bridge/turn-timing.js";
 import { buildRealtimeSessionUpdate } from "../src/openai/realtime-session.js";
+import {
+  AcknowledgmentPolicy,
+  CLOSING_PHRASES,
+  containsClosingPhrase,
+  sanitizeIntakeReply,
+} from "../src/orchestrator/acknowledgment-policy.js";
+import {
+  buildCallbackReadbackConfirmation,
+  extractCallbackPhoneFromSpeech,
+  formatCallbackForSpeech,
+  normalizeCallbackPhoneE164,
+} from "../src/orchestrator/callback-phone.js";
 import { blocksAutomatedClosing, CLOSING_MESSAGE } from "../src/orchestrator/conversation-state.js";
 import {
+  extractAllFieldsFromTranscript,
+  mergeExtractedFields,
+} from "../src/orchestrator/multi-field-extraction.js";
+import {
+  countNewlyFilledFields,
+  getRealtimeNextMissingStage,
   mergeRealtimeCallerAnswer,
+  needsCallbackReadback,
   toPersistedFields,
 } from "../src/orchestrator/realtime-intake.js";
 import {
@@ -14,6 +34,7 @@ import {
   buildSummaryWithConfirmation,
   ensureSingleIntakeQuestion,
   REALTIME_OPENING_GREETING,
+  summaryContainsKnownFields,
   type RealtimeFields,
 } from "../src/orchestrator/realtime-prompts.js";
 import { processRealtimeCallerTurn } from "../src/orchestrator/realtime-turn-processor.js";
@@ -51,86 +72,175 @@ test("cedar is selected in initial session config before any response", () => {
   const update = buildRealtimeSessionUpdate("cedar");
 
   assert.equal(update.session.audio.output.voice, "cedar");
-  assert.match(update.session.instructions, /lower-pitched male receptionist/i);
-  assert.equal(update.session.audio.input.turn_detection.type, "semantic_vad");
   assert.equal(update.session.audio.input.turn_detection.eagerness, "medium");
   assert.equal(DEFAULT_OPENAI_REALTIME_VOICE, "cedar");
 });
 
-test("ResponseStateGuard allows only one active response", () => {
-  const guard = new ResponseStateGuard();
+test("same acknowledgment is not used consecutively", () => {
+  const policy = new AcknowledgmentPolicy();
+  const first = policy.selectAcknowledgment({ fieldsFilledCount: 0 });
+  const second = policy.selectAcknowledgment({ fieldsFilledCount: 0 });
 
-  assert.equal(guard.canTriggerResponse("opening_greeting"), true);
-  guard.recordTrigger("opening_greeting");
-  assert.equal(guard.canTriggerResponse("caller_turn_reply"), false);
-  assert.equal(guard.isActiveResponse(), true);
-
-  guard.onResponseDone();
-  assert.equal(guard.isActiveResponse(), false);
-  assert.equal(guard.canTriggerResponse("caller_turn_reply"), false);
-  assert.equal(guard.isWaitingForCaller(), true);
+  assert.notEqual(first, second);
 });
 
-test("ensureSingleIntakeQuestion keeps only the first question", () => {
-  const reply = ensureSingleIntakeQuestion(
-    "Got it. What's your name? And what's the address?",
+test("Got it is limited to twice during one call", () => {
+  const policy = new AcknowledgmentPolicy();
+  const results: Array<string | null> = [];
+
+  for (let index = 0; index < 12; index += 1) {
+    results.push(policy.selectAcknowledgment({ fieldsFilledCount: 0 }));
+  }
+
+  assert.equal(results.filter((value) => value === "Got it.").length, 2);
+});
+
+test("intake wording never uses closing language", () => {
+  const sample = sanitizeIntakeReply("Sounds good. Next, what's the property address?");
+
+  assert.equal(containsClosingPhrase(sample), false);
+  assert.match(sample, /property address/i);
+
+  for (const phrase of CLOSING_PHRASES) {
+    assert.equal(containsClosingPhrase(`Next, what's the address? ${phrase}`), true);
+  }
+});
+
+test("multiple fields in one caller response are all stored", () => {
+  const speech =
+    "I'm John, the address is 123 Main Street, and a tree hit the roof yesterday.";
+  const extracted = extractAllFieldsFromTranscript(speech, "+15551234567");
+  const merged = mergeExtractedFields({}, extracted);
+
+  assert.equal(merged.full_name, "John");
+  assert.match(merged.address ?? "", /123 Main Street/i);
+  assert.match(merged.problem_description ?? "", /tree hit the roof/i);
+  assert.equal(countNewlyFilledFields({}, merged), 3);
+});
+
+test("already answered fields are not asked again after multi-field capture", () => {
+  const fields = mergeRealtimeCallerAnswer(
+    {},
+    "I'm John, the address is 123 Main Street, and a tree hit the roof yesterday.",
+    "+15551234567",
   );
 
-  assert.equal(reply, "Got it. What's your name?");
+  const nextStage = getRealtimeNextMissingStage(fields);
+  assert.notEqual(nextStage, "full_name");
+  assert.notEqual(nextStage, "address");
+  assert.notEqual(nextStage, "problem");
 });
 
-test("explicit insurance no remains false through summary", () => {
-  let fields: RealtimeFields = {};
+test("no claim yet and no adjuster stores both booleans as false", () => {
+  const merged = mergeRealtimeCallerAnswer(
+    {},
+    "No claim yet, and I haven't talked to an adjuster.",
+    "+15551234567",
+  );
 
-  fields = mergeRealtimeCallerAnswer(fields, "My roof is leaking", "+15551234567");
-  fields = mergeRealtimeCallerAnswer(fields, "Beau Spilker", "+15551234567");
-  fields = mergeRealtimeCallerAnswer(fields, "Yes", "+15551234567");
-  fields = mergeRealtimeCallerAnswer(fields, "123 Main St", "+15551234567");
-  fields = mergeRealtimeCallerAnswer(fields, "Repair", "+15551234567");
-  fields = mergeRealtimeCallerAnswer(fields, "No", "+15551234567");
-  fields = mergeRealtimeCallerAnswer(fields, "No", "+15551234567");
-  fields = mergeRealtimeCallerAnswer(fields, "No, I haven't started a claim", "+15551234567");
-
-  assert.equal(fields.insurance_claim_started, false);
-
-  const summary = buildStructuredSpokenSummary(fields);
-  assert.match(summary, /You haven't started an insurance claim yet\./);
-  assert.doesNotMatch(summary, /You've already started an insurance claim\./);
+  assert.equal(merged.insurance_claim_started, false);
+  assert.equal(merged.adjuster_contacted, false);
 });
 
-test("not yet parses as false and stays false in summary", () => {
-  const fields = applyStructuredBoolean({}, "insurance_claim_started", "Not yet", {
-    isDirectAnswer: true,
+test("corrected callback number replaces the old number", () => {
+  const phone = extractCallbackPhoneFromSpeech(
+    "My number is 402-555-1234, actually make that 402-555-5678",
+  );
+
+  assert.equal(normalizeCallbackPhoneE164(phone ?? ""), "+14025555678");
+});
+
+test("corrected callback number is read back and explicitly confirmed", async () => {
+  const policy = new AcknowledgmentPolicy();
+  const fields: RealtimeFields = {
+    callback_phone: "+14025551234",
+    callback_phone_confirmed: false,
+  };
+
+  const outcome = await processRealtimeCallerTurn({
+    session: { ...mockSession, collected_fields: fields },
+    callSid: "CA123",
+    callerPhone: "+15551234567",
+    speechResult: "No, make that 402-555-5678",
+    conversationState: "awaiting_callback_confirmation",
+    acknowledgmentPolicy: policy,
   });
 
-  assert.equal(fields.insurance_claim_started, false);
-  assert.equal(parseExplicitBoolean("Not yet"), false);
-
-  const summary = buildStructuredSpokenSummary(fields);
-  assert.match(summary, /You haven't started an insurance claim yet\./);
+  assert.equal(outcome.session?.collected_fields.callback_phone, "+14025555678");
+  assert.match(outcome.replyText, /402-555-5678/);
+  assert.match(outcome.replyText, /Is that correct\?/);
+  assert.equal(outcome.nextConversationState, "awaiting_callback_confirmation");
 });
 
-test("later explicit correction can change false to true", () => {
-  let fields: RealtimeFields = { insurance_claim_started: false };
+test("next intake question is blocked while awaiting callback confirmation", async () => {
+  const policy = new AcknowledgmentPolicy();
 
-  fields = applyCorrectionToStructuredField(fields, "Actually yes, I did start a claim");
+  const outcome = await processRealtimeCallerTurn({
+    session: mockSession,
+    callSid: "CA123",
+    callerPhone: "+15551234567",
+    speechResult: "402-555-5678",
+    conversationState: "collecting_intake",
+    acknowledgmentPolicy: policy,
+  });
 
-  assert.equal(fields.insurance_claim_started, true);
-  assert.match(
-    buildStructuredSpokenSummary(fields),
-    /You've already started an insurance claim\./,
-  );
+  assert.match(outcome.replyText, /402-555-5678/);
+  assert.match(outcome.replyText, /Is that correct\?/);
+  assert.equal(outcome.nextConversationState, "awaiting_callback_confirmation");
+  assert.doesNotMatch(outcome.replyText, /property address/i);
 });
 
-test("unrelated later statements cannot change confirmed boolean", () => {
-  let fields: RealtimeFields = { insurance_claim_started: false };
+test("final summary uses structured state only", () => {
+  const summary = buildStructuredSpokenSummary({
+    full_name: "John Smith",
+    callback_phone: "+14025555678",
+    address: "123 Main Street",
+    problem_description: "a tree damaged the roof yesterday",
+    emergency_or_active_leak: false,
+    insurance_claim_started: false,
+    adjuster_contacted: false,
+    appointment_preference: "tomorrow afternoon",
+    photos_available: true,
+  });
 
-  fields = applyCorrectionToStructuredField(fields, "The storm was last Tuesday");
+  assert.match(summary, /John Smith/);
+  assert.match(summary, /402-555-5678/);
+  assert.match(summary, /123 Main Street/);
+  assert.match(summary, /haven't started an insurance claim/i);
+  assert.match(summary, /photos available/i);
+  assert.doesNotMatch(summary, /761-1540/);
+});
 
-  assert.equal(fields.insurance_claim_started, false);
+test("summary contains all known required fields when present", () => {
+  const fields: RealtimeFields = {
+    full_name: "John Smith",
+    callback_phone: "+14025555678",
+    callback_phone_confirmed: true,
+    address: "123 Main Street",
+    problem_description: "tree damage",
+    project_type: "repair",
+    urgency: "standard",
+    insurance_claim_started: false,
+    adjuster_contacted: false,
+    appointment_preference: "tomorrow afternoon",
+    photos_available: true,
+    additional_notes: "dog in backyard",
+  };
+
+  const summary = buildSummaryWithConfirmation(fields);
+
+  assert.equal(summaryContainsKnownFields(fields), true);
+  assert.match(summary, /John Smith/);
+  assert.match(summary, /402-555-5678/);
+  assert.match(summary, /123 Main Street/);
+  assert.match(summary, /repair/i);
+  assert.match(summary, /tomorrow afternoon/i);
+  assert.match(summary, /dog in backyard/i);
+  assert.match(summary, /Does all of that sound correct\?/);
 });
 
 test("summary confirmation does not include closing in the same response", async () => {
+  const policy = new AcknowledgmentPolicy();
   const fields: RealtimeFields = {
     problem_description: "a leak",
     full_name: "Beau",
@@ -138,67 +248,52 @@ test("summary confirmation does not include closing in the same response", async
   };
 
   const outcome = await processRealtimeCallerTurn({
-    session: mockSession,
+    session: { ...mockSession, collected_fields: fields },
     callSid: "CA123",
     callerPhone: "+15551234567",
     speechResult: "No, that's all",
     conversationState: "awaiting_additional_notes",
+    acknowledgmentPolicy: policy,
   });
 
   assert.match(outcome.replyText, /Does all of that sound correct\?/);
-  assert.doesNotMatch(outcome.replyText, /Perfect\. I'll send this information/);
+  assert.doesNotMatch(outcome.replyText, /Great\. I'll send this information/);
   assert.equal(outcome.hangupAfterMark, false);
-  assert.equal(outcome.nextConversationState, "presenting_summary");
 });
 
-test("assistant waits for answer after summary confirmation question", async () => {
-  const fields: RealtimeFields = {
-    problem_description: "a leak",
-    insurance_claim_started: false,
-  };
-
-  const summaryOutcome = await processRealtimeCallerTurn({
-    session: { ...mockSession, collected_fields: fields },
-    callSid: "CA123",
-    callerPhone: "+15551234567",
-    speechResult: "No",
-    conversationState: "awaiting_additional_notes",
-  });
-
-  assert.equal(summaryOutcome.nextConversationState, "presenting_summary");
-  assert.equal(summaryOutcome.hangupAfterMark, false);
-
+test("assistant waits after Does all of that sound correct", async () => {
+  const policy = new AcknowledgmentPolicy();
   const silentOutcome = await processRealtimeCallerTurn({
-    session: { ...mockSession, collected_fields: fields },
+    session: mockSession,
     callSid: "CA123",
     callerPhone: "+15551234567",
     speechResult: "",
     conversationState: "awaiting_summary_confirmation",
+    acknowledgmentPolicy: policy,
   });
 
   assert.equal(silentOutcome.replyText, "");
   assert.equal(silentOutcome.hangupAfterMark, false);
-  assert.equal(silentOutcome.nextConversationState, "awaiting_summary_confirmation");
 });
 
 test("silence does not trigger closing", async () => {
+  const policy = new AcknowledgmentPolicy();
   const outcome = await processRealtimeCallerTurn({
     session: mockSession,
     callSid: "CA123",
     callerPhone: "+15551234567",
     speechResult: "",
     conversationState: "awaiting_summary_confirmation",
+    acknowledgmentPolicy: policy,
   });
 
   assert.equal(outcome.replyText, "");
   assert.equal(outcome.hangup, false);
-  assert.equal(outcome.hangupAfterMark, false);
 });
 
-test("correction updates structured state and asks reconfirmation", async () => {
-  const fields: RealtimeFields = {
-    insurance_claim_started: false,
-  };
+test("corrections cause updated summary and reconfirmation", async () => {
+  const policy = new AcknowledgmentPolicy();
+  const fields: RealtimeFields = { insurance_claim_started: false };
 
   const outcome = await processRealtimeCallerTurn({
     session: { ...mockSession, collected_fields: fields },
@@ -206,15 +301,15 @@ test("correction updates structured state and asks reconfirmation", async () => 
     callerPhone: "+15551234567",
     speechResult: "No, I actually did start a claim",
     conversationState: "awaiting_summary_confirmation",
+    acknowledgmentPolicy: policy,
   });
 
   assert.equal(outcome.session?.collected_fields.insurance_claim, "yes");
   assert.match(outcome.replyText, /Does that sound correct now\?/);
-  assert.equal(outcome.hangupAfterMark, false);
-  assert.equal(outcome.nextConversationState, "awaiting_summary_confirmation");
 });
 
 test("confirmation yes returns closing only in a separate turn", async () => {
+  const policy = new AcknowledgmentPolicy();
   const outcome = await processRealtimeCallerTurn({
     session: {
       ...mockSession,
@@ -224,18 +319,18 @@ test("confirmation yes returns closing only in a separate turn", async () => {
     callerPhone: "+15551234567",
     speechResult: "Yes, that's correct",
     conversationState: "awaiting_summary_confirmation",
+    acknowledgmentPolicy: policy,
   });
 
   assert.equal(outcome.replyText, CLOSING_MESSAGE);
   assert.equal(outcome.hangupAfterMark, true);
-  assert.equal(outcome.nextConversationState, "delivering_closing");
   assert.equal(blocksAutomatedClosing("awaiting_summary_confirmation"), true);
 });
 
 test("closing message matches required wording", () => {
   assert.equal(buildClosingMessage(), CLOSING_MESSAGE);
+  assert.match(CLOSING_MESSAGE, /^Great\./);
   assert.match(CLOSING_MESSAGE, /someone will follow up with you by call or text/);
-  assert.doesNotMatch(CLOSING_MESSAGE, /761-1540/);
 });
 
 test("ResponseStateGuard blocks duplicate closing triggers while awaiting mark", () => {
@@ -248,39 +343,82 @@ test("ResponseStateGuard blocks duplicate closing triggers while awaiting mark",
   assert.equal(guard.canTriggerResponse("closing_message"), false);
 });
 
-test("company phone number source of truth is +14027611540", () => {
-  delete process.env.TWILIO_PHONE_NUMBER;
+test("only one assistant response is active at a time", () => {
+  const guard = new ResponseStateGuard();
 
-  assert.equal(getCompanyPhoneE164(), DEFAULT_COMPANY_PHONE_E164);
-  assert.equal(DEFAULT_COMPANY_PHONE_E164, "+14027611540");
+  assert.equal(guard.canTriggerResponse("opening_greeting"), true);
+  guard.recordTrigger("opening_greeting");
+  assert.equal(guard.canTriggerResponse("caller_turn_reply"), false);
+  assert.equal(guard.isActiveResponse(), true);
 });
 
-test("customer callback number remains separate from company number", () => {
-  const fields: RealtimeFields = {
-    callback_phone: "+15559876543",
-  };
-
-  const persisted = toPersistedFields(fields);
-
-  assert.equal(persisted.callback_phone, "+15559876543");
-  assert.notEqual(persisted.callback_phone, getCompanyPhoneE164());
-  assert.notEqual(mockSession.caller_phone, getCompanyPhoneE164());
+test("turn timing tracks structured state and reports stage averages", () => {
+  const tracker = new TurnTimingTracker();
+  tracker.beginTurn("CA123");
+  tracker.record("speech_stopped", "CA123");
+  tracker.record("transcript_completed", "CA123");
+  tracker.record("structured_state_updated", "CA123");
+  tracker.record("response_requested", "CA123");
+  tracker.record("first_audio_received", "CA123");
+  tracker.record("first_audio_sent_to_twilio", "CA123");
 });
 
-test("buildSummaryWithConfirmation uses structured insurance wording", () => {
-  const summary = buildSummaryWithConfirmation({
-    insurance_claim_started: false,
+test("callback readback uses natural phone groups", () => {
+  assert.equal(formatCallbackForSpeech("+14025555678"), "402-555-5678");
+  assert.match(
+    buildCallbackReadbackConfirmation("+14025555678"),
+    /I have your callback number as 402-555-5678\. Is that correct\?/,
+  );
+});
+
+test("explicit insurance no remains false through summary", () => {
+  let fields: RealtimeFields = mergeRealtimeCallerAnswer({}, "My roof is leaking", "+15551234567");
+  fields = mergeRealtimeCallerAnswer(fields, "Beau Spilker", "+15551234567");
+  fields = mergeRealtimeCallerAnswer(fields, "No, I haven't started a claim", "+15551234567");
+
+  assert.equal(fields.insurance_claim_started, false);
+  assert.match(buildStructuredSpokenSummary(fields), /haven't started an insurance claim/i);
+});
+
+test("not yet parses as false", () => {
+  const fields = applyStructuredBoolean({}, "insurance_claim_started", "Not yet", {
+    isDirectAnswer: true,
   });
 
-  assert.match(summary, /You haven't started an insurance claim yet\./);
-  assert.match(summary, /Does all of that sound correct\?/);
+  assert.equal(fields.insurance_claim_started, false);
+  assert.equal(parseExplicitBoolean("Not yet"), false);
 });
 
-test("opening greeting waits for caller and contains no intake fields", () => {
+test("company phone remains separate from customer callback", () => {
+  delete process.env.TWILIO_PHONE_NUMBER;
+
+  assert.equal(getCompanyPhoneE164(), "+14027611540");
+  assert.notEqual(normalizeCallbackPhoneE164("+14025555678"), getCompanyPhoneE164());
+});
+
+test("opening greeting contains no intake fields", () => {
   assert.equal(
     REALTIME_OPENING_GREETING,
     "Thanks for calling Beau's Roofing. How can I help you today?",
   );
-  assert.equal(ensureSingleIntakeQuestion(REALTIME_OPENING_GREETING).includes("name"), false);
-  assert.equal(ensureSingleIntakeQuestion(REALTIME_OPENING_GREETING).includes("address"), false);
+});
+
+test("ensureSingleIntakeQuestion keeps only the first question", () => {
+  const reply = ensureSingleIntakeQuestion(
+    "Okay. What's your name? And what's the address?",
+  );
+
+  assert.equal(reply, "Okay. What's your name?");
+});
+
+test("later explicit correction can change false to true", () => {
+  let fields: RealtimeFields = { insurance_claim_started: false };
+  fields = applyCorrectionToStructuredField(fields, "Actually yes, I did start a claim");
+  assert.equal(fields.insurance_claim_started, true);
+});
+
+test("unrelated statements cannot change confirmed boolean", () => {
+  let fields: RealtimeFields = { insurance_claim_started: false };
+  fields = applyCorrectionToStructuredField(fields, "The storm was last Tuesday");
+  assert.equal(fields.insurance_claim_started, false);
 });

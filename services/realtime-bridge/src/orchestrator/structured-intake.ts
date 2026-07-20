@@ -1,3 +1,4 @@
+import type { CollectedFields } from "../../../../lib/call-intake.js";
 import type { RealtimeFields } from "./realtime-prompts.js";
 
 export type TriStateBoolean = boolean | null;
@@ -157,13 +158,39 @@ export function booleanFieldSpokenLine(
 }
 
 export function syncLegacyStringFields(fields: RealtimeFields): RealtimeFields {
+  return { ...fields };
+}
+
+export function toCollectedFields(fields: RealtimeFields): CollectedFields {
   return {
     ...fields,
     insurance_claim: triStateToLegacyString(fields.insurance_claim_started),
-    adjuster_contacted: triStateToLegacyString(fields.adjuster_contacted),
-    photos_available: triStateToLegacyString(fields.photos_available),
+    adjuster_contacted: triStateToLegacyString(normalizeTriState(fields.adjuster_contacted)),
+    photos_available: triStateToLegacyString(normalizeTriState(fields.photos_available)),
     active_leak: triStateToLegacyString(fields.emergency_or_active_leak),
   };
+}
+
+export function normalizeTriStateField(
+  value: TriStateBoolean | string | undefined,
+): TriStateBoolean {
+  return normalizeTriState(value);
+}
+
+function normalizeTriState(value: TriStateBoolean | string | undefined): TriStateBoolean {
+  if (value === true || value === false || value === null) {
+    return value;
+  }
+
+  if (value === "yes") {
+    return true;
+  }
+
+  if (value === "no") {
+    return false;
+  }
+
+  return null;
 }
 
 function triStateToLegacyString(value: TriStateBoolean | undefined): string | undefined {

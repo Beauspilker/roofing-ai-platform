@@ -7,6 +7,7 @@ import {
 } from "../../../../lib/call-sessions.js";
 import { logError, logInfo } from "../logger.js";
 import type { ConversationState } from "./conversation-state.js";
+import { AcknowledgmentPolicy } from "./acknowledgment-policy.js";
 import { processRealtimeCallerTurn } from "./realtime-turn-processor.js";
 import {
   ensureSingleIntakeQuestion,
@@ -24,6 +25,7 @@ export type OrchestratorReply = {
   replyText: string;
   hangup: boolean;
   hangupAfterMark: boolean;
+  structuredStateUpdated?: boolean;
 };
 
 export class SessionOrchestrator {
@@ -32,6 +34,7 @@ export class SessionOrchestrator {
   private pendingTranscript: string | null = null;
   private conversationState: ConversationState = "collecting_intake";
   private awaitingFirstCallerTurn = false;
+  private readonly acknowledgmentPolicy = new AcknowledgmentPolicy();
 
   constructor(private readonly context: OrchestratorContext) {}
 
@@ -139,6 +142,7 @@ export class SessionOrchestrator {
         callerPhone: this.context.callerPhone,
         speechResult: trimmed,
         conversationState: this.conversationState,
+        acknowledgmentPolicy: this.acknowledgmentPolicy,
         isFirstCallerTurn: this.awaitingFirstCallerTurn,
       });
 
@@ -154,6 +158,7 @@ export class SessionOrchestrator {
         replyText: ensureSingleIntakeQuestion(outcome.replyText),
         hangup: outcome.hangup,
         hangupAfterMark: outcome.hangupAfterMark,
+        structuredStateUpdated: outcome.structuredStateUpdated,
       };
     } catch (error) {
       logError("turn_processing_failed", { callSid: this.context.callSid }, error);

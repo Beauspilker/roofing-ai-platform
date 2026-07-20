@@ -1,4 +1,5 @@
 import type { CollectedFields } from "../../../../lib/call-intake.js";
+import { formatCallbackForSpeech } from "./callback-phone.js";
 import {
   booleanFieldSpokenLine,
   type StructuredBooleanField,
@@ -14,11 +15,19 @@ export const REALTIME_OPENING_QUESTION = "How can I help you today?";
 export const REALTIME_ANYTHING_ELSE_QUESTION =
   "Is there anything else you'd like the roofing team to know?";
 
-export type RealtimeFields = CollectedFields & {
+export type RealtimeFields = Omit<
+  CollectedFields,
+  "insurance_claim" | "adjuster_contacted" | "photos_available" | "active_leak"
+> & {
   insurance_claim_started?: TriStateBoolean;
   adjuster_contacted?: TriStateBoolean;
   photos_available?: TriStateBoolean;
   emergency_or_active_leak?: TriStateBoolean;
+  callback_phone_confirmed?: boolean;
+  insurance_claim?: string;
+  adjuster_contacted_legacy?: string;
+  photos_available_legacy?: string;
+  active_leak?: string;
 };
 
 export function ensureSingleIntakeQuestion(text: string): string {
@@ -59,82 +68,141 @@ export function buildRealtimeIntakeReply(
   );
 }
 
-export function buildStructuredSpokenSummary(fields: RealtimeFields): string {
-  const parts: string[] = [];
-
-  if (fields.problem_description?.trim()) {
-    parts.push(`You're calling about ${fields.problem_description.trim()}.`);
+function spokenCallbackNumber(fields: RealtimeFields): string | null {
+  if (!fields.callback_phone?.trim()) {
+    return null;
   }
+
+  return formatCallbackForSpeech(fields.callback_phone);
+}
+
+function spokenInsuranceSummary(fields: RealtimeFields): string {
+  if (fields.insurance_claim_started === true) {
+    const adjuster =
+      fields.adjuster_contacted === true
+        ? "and you've contacted your adjuster"
+        : fields.adjuster_contacted === false
+          ? "but you haven't contacted your adjuster yet"
+          : "";
+    return `you've started an insurance claim${adjuster ? ` ${adjuster}` : ""}`.trim();
+  }
+
+  if (fields.insurance_claim_started === false) {
+    const adjuster =
+      fields.adjuster_contacted === false
+        ? " and you haven't contacted an adjuster yet"
+        : "";
+    return `you haven't started an insurance claim${adjuster}`.trim();
+  }
+
+  return booleanFieldSpokenLine("insurance_claim_started", null).replace(/\.$/, "").toLowerCase();
+}
+
+function spokenLeakSummary(fields: RealtimeFields): string | null {
+  if (fields.emergency_or_active_leak === true) {
+    return "there is active water intrusion";
+  }
+
+  if (fields.emergency_or_active_leak === false) {
+    return "there isn't an active leak";
+  }
+
+  return null;
+}
+
+function spokenPhotosSummary(fields: RealtimeFields): string | null {
+  if (fields.photos_available === true) {
+    return "you have photos available";
+  }
+
+  if (fields.photos_available === false) {
+    return "you don't have photos yet";
+  }
+
+  return null;
+}
+
+export function buildStructuredSpokenSummary(fields: RealtimeFields): string {
+  const sentences: string[] = ["Let me make sure I have everything right."];
+
+  const detailParts: string[] = [];
 
   if (fields.full_name?.trim()) {
-    parts.push(`I have you as ${fields.full_name.trim()}.`);
+    detailParts.push(`Your name is ${fields.full_name.trim()}`);
   }
 
-  if (fields.callback_phone?.trim()) {
-    parts.push(`The best callback number is ${fields.callback_phone.trim()}.`);
+  const callback = spokenCallbackNumber(fields);
+  if (callback) {
+    detailParts.push(`your callback number is ${callback}`);
   }
 
   if (fields.address?.trim()) {
-    parts.push(`The property is at ${fields.address.trim()}.`);
+    detailParts.push(`the property is at ${fields.address.trim()}`);
+  }
+
+  if (detailParts.length > 0) {
+    sentences.push(`${detailParts.join(", ")}.`);
+  }
+
+  const situationParts: string[] = [];
+
+  if (fields.problem_description?.trim()) {
+    situationParts.push(fields.problem_description.trim());
   }
 
   if (fields.project_type?.trim()) {
-    parts.push(`This looks like a ${fields.project_type.trim()} project.`);
+    situationParts.push(`this is a ${fields.project_type.trim()} project`);
   }
 
-  parts.push(
-    booleanFieldSpokenLine(
-      "emergency_or_active_leak",
-      fields.emergency_or_active_leak ?? null,
-    ),
-  );
-  parts.push(
-    booleanFieldSpokenLine(
-      "insurance_claim_started",
-      fields.insurance_claim_started ?? null,
-    ),
-  );
+  const leak = spokenLeakSummary(fields);
+  if (leak) {
+    situationParts.push(leak);
+  }
 
-  if (fields.insurance_claim_started === true) {
-    parts.push(
-      booleanFieldSpokenLine("adjuster_contacted", fields.adjuster_contacted ?? null),
+  if (fields.storm_damage?.trim()) {
+    situationParts.push(
+      fields.storm_damage.toLowerCase() === "yes" ? "storm damage was reported" : "no storm damage noted",
     );
   }
 
-  parts.push(
-    booleanFieldSpokenLine("photos_available", fields.photos_available ?? null),
-  );
+  const insurance = spokenInsuranceSummary(fields);
+  if (insurance) {
+    situationParts.push(insurance);
+  }
 
   if (fields.urgency?.trim()) {
-    parts.push(`Timing is ${fields.urgency.trim()}.`);
+    situationParts.push(`timing is ${fields.urgency.trim()}`);
   }
 
   if (fields.appointment_preference?.trim()) {
-    parts.push(`You'd prefer ${fields.appointment_preference.trim()}.`);
+    situationParts.push(`you'd prefer ${fields.appointment_preference.trim()}`);
+  }
+
+  const photos = spokenPhotosSummary(fields);
+  if (photos) {
+    situationParts.push(photos);
   }
 
   if (fields.additional_notes?.trim()) {
-    parts.push(`I also noted ${fields.additional_notes.trim()}.`);
+    situationParts.push(`I also noted ${fields.additional_notes.trim()}`);
   }
 
-  const filtered = parts.map((part) => part.trim()).filter(Boolean);
-
-  if (filtered.length === 0) {
-    return "Here's what I have so far.";
+  if (situationParts.length > 0) {
+    const joined = situationParts
+      .map((part) => part.replace(/\.$/, ""))
+      .join(", ");
+    sentences.push(`${joined.charAt(0).toUpperCase()}${joined.slice(1)}.`);
   }
 
-  return filtered.join(" ");
+  if (sentences.length === 1) {
+    return "Let me make sure I have everything right.";
+  }
+
+  return sentences.join(" ");
 }
 
 export function buildSummaryWithConfirmation(fields: RealtimeFields): string {
   return `${buildStructuredSpokenSummary(fields)} Does all of that sound correct?`;
-}
-
-export function buildCorrectionAcknowledgement(
-  field: StructuredBooleanField,
-  value: TriStateBoolean,
-): string {
-  return `${booleanFieldSpokenLine(field, value)} Does that sound correct now?`;
 }
 
 export function buildClosingMessage(): string {
@@ -163,4 +231,14 @@ export function isSummaryRejected(speech: string): boolean {
   const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
 
   return /^(no|nope|nah|not quite|incorrect|wrong|change|fix|update)\b/.test(normalized);
+}
+
+export function summaryContainsKnownFields(fields: RealtimeFields): boolean {
+  return Boolean(
+    fields.full_name ||
+      fields.callback_phone ||
+      fields.address ||
+      fields.problem_description ||
+      fields.insurance_claim_started !== undefined,
+  );
 }

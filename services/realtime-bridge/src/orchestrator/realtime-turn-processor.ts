@@ -12,20 +12,28 @@ import {
   updateCallSession,
 } from "../../../../lib/call-sessions.js";
 import { isGoodbyePhrase } from "../../../../lib/twilio/voice-phrases.js";
+import type { AcknowledgmentPolicy } from "./acknowledgment-policy.js";
+import {
+  isCallbackConfirmed,
+  isCallbackRejected,
+} from "./callback-phone.js";
 import type { ConversationState } from "./conversation-state.js";
 import {
   appendAnythingElseNotes,
-  buildRealtimeAcknowledgement,
+  applyCallbackCorrection,
+  buildCallbackReadbackConfirmation,
+  buildIntakeReply,
+  confirmCallbackPhone,
+  countNewlyFilledFields,
   getRealtimeNextMissingStage,
-  getRealtimeStageQuestion,
   isRealtimeIntakeComplete,
   mergeRealtimeCallerAnswer,
-  type RealtimeIntakeStage,
+  needsCallbackReadback,
+  normalizeRealtimeFields,
   toPersistedFields,
 } from "./realtime-intake.js";
 import {
   buildClosingMessage,
-  buildRealtimeIntakeReply,
   buildStructuredSpokenSummary,
   buildSummaryWithConfirmation,
   ensureSingleIntakeQuestion,
@@ -44,6 +52,7 @@ export type RealtimeTurnOutcome = {
   hangupAfterMark: boolean;
   session: CallSession | null;
   nextConversationState: ConversationState;
+  structuredStateUpdated?: boolean;
 };
 
 export type ProcessRealtimeTurnInput = {
@@ -52,6 +61,7 @@ export type ProcessRealtimeTurnInput = {
   callerPhone: string;
   speechResult: string;
   conversationState: ConversationState;
+  acknowledgmentPolicy: AcknowledgmentPolicy;
   isFirstCallerTurn?: boolean;
 };
 
@@ -112,6 +122,56 @@ function persistTurnAsync(
   });
 }
 
+function finishTurn(
+  input: ProcessRealtimeTurnInput,
+  outcome: Omit<RealtimeTurnOutcome, "structuredStateUpdated">,
+): RealtimeTurnOutcome {
+  return {
+    ...outcome,
+    structuredStateUpdated: true,
+  };
+}
+
+function buildCallbackConfirmationReply(fields: RealtimeFields): string {
+  return ensureSingleIntakeQuestion(
+    buildCallbackReadbackConfirmation(fields.callback_phone ?? ""),
+  );
+}
+
+function buildPostIntakeReply(
+  policy: AcknowledgmentPolicy,
+  fieldsBefore: RealtimeFields,
+  updatedFields: RealtimeFields,
+  trimmedSpeech: string,
+  callerPhone: string,
+  filledCount: number,
+): { replyText: string; fields: RealtimeFields; nextState: ConversationState } {
+  if (needsCallbackReadback(updatedFields)) {
+    const reply = buildCallbackConfirmationReply(updatedFields);
+    return {
+      replyText: reply,
+      fields: updatedFields,
+      nextState: "awaiting_callback_confirmation",
+    };
+  }
+
+  if (isRealtimeIntakeComplete(updatedFields)) {
+    return {
+      replyText: ensureSingleIntakeQuestion(REALTIME_ANYTHING_ELSE_QUESTION),
+      fields: updatedFields,
+      nextState: "awaiting_additional_notes",
+    };
+  }
+
+  return {
+    replyText: ensureSingleIntakeQuestion(
+      buildIntakeReply(policy, updatedFields, trimmedSpeech, callerPhone, filledCount),
+    ),
+    fields: updatedFields,
+    nextState: "collecting_intake",
+  };
+}
+
 function isNameCaptureTurn(fields: RealtimeFields): boolean {
   if (isAwaitingNameConfirmation(fields) || fields.name_awaiting_repeat === true) {
     return true;
@@ -120,14 +180,11 @@ function isNameCaptureTurn(fields: RealtimeFields): boolean {
   return getRealtimeNextMissingStage(fields) === "full_name";
 }
 
-function buildSummaryReply(fields: RealtimeFields): string {
-  return ensureSingleIntakeQuestion(buildSummaryWithConfirmation(fields));
-}
-
 export async function processRealtimeCallerTurn(
   input: ProcessRealtimeTurnInput,
 ): Promise<RealtimeTurnOutcome> {
-  const { callSid, callerPhone, speechResult, conversationState } = input;
+  const { callSid, callerPhone, speechResult, conversationState, acknowledgmentPolicy } =
+    input;
   let session = input.session;
   const trimmedSpeech = speechResult.trim();
 
@@ -148,26 +205,98 @@ export async function processRealtimeCallerTurn(
       });
     }
 
-    return {
+    return finishTurn(input, {
       replyText: "Thanks for calling Beau's Roofing — have a great day.",
       hangup: true,
       hangupAfterMark: true,
       session,
       nextConversationState: "completed",
-    };
+    });
   }
 
   if (!session || !callSid) {
-    return {
+    return finishTurn(input, {
       replyText: ensureSingleIntakeQuestion("What's going on with the roof?"),
       hangup: false,
       hangupAfterMark: false,
       session,
       nextConversationState: "collecting_intake",
-    };
+    });
   }
 
-  const fieldsBefore = (session.collected_fields ?? {}) as RealtimeFields;
+  const fieldsBefore = normalizeRealtimeFields(
+    (session.collected_fields ?? {}) as RealtimeFields,
+  );
+
+  if (conversationState === "awaiting_callback_confirmation") {
+    if (!trimmedSpeech) {
+      return {
+        replyText: "",
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: "awaiting_callback_confirmation",
+      };
+    }
+
+    if (isCallbackConfirmed(trimmedSpeech)) {
+      const confirmedFields = confirmCallbackPhone(fieldsBefore);
+      const filledCount = countNewlyFilledFields(fieldsBefore, confirmedFields);
+      const post = buildPostIntakeReply(
+        acknowledgmentPolicy,
+        fieldsBefore,
+        confirmedFields,
+        trimmedSpeech,
+        callerPhone,
+        filledCount,
+      );
+
+      session = applyLocalSessionUpdate(session, {
+        collectedFields: post.fields,
+        currentQuestion: post.replyText,
+      });
+
+      persistTurnAsync(callSid, {
+        collectedFields: post.fields,
+        currentQuestion: post.replyText,
+        callerSpeech: trimmedSpeech,
+        assistantReply: post.replyText,
+      });
+
+      return finishTurn(input, {
+        replyText: post.replyText,
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: post.nextState,
+      });
+    }
+
+    if (isCallbackRejected(trimmedSpeech) || trimmedSpeech.length > 0) {
+      const correctedFields = applyCallbackCorrection(fieldsBefore, trimmedSpeech, callerPhone);
+      const reply = buildCallbackConfirmationReply(correctedFields);
+
+      session = applyLocalSessionUpdate(session, {
+        collectedFields: correctedFields,
+        currentQuestion: reply,
+      });
+
+      persistTurnAsync(callSid, {
+        collectedFields: correctedFields,
+        currentQuestion: reply,
+        callerSpeech: trimmedSpeech,
+        assistantReply: reply,
+      });
+
+      return finishTurn(input, {
+        replyText: reply,
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: "awaiting_callback_confirmation",
+      });
+    }
+  }
 
   if (conversationState === "awaiting_additional_notes") {
     let updatedFields = fieldsBefore;
@@ -176,7 +305,7 @@ export async function processRealtimeCallerTurn(
       updatedFields = appendAnythingElseNotes(fieldsBefore, trimmedSpeech);
     }
 
-    const reply = buildSummaryReply(updatedFields);
+    const reply = ensureSingleIntakeQuestion(buildSummaryWithConfirmation(updatedFields));
     session = applyLocalSessionUpdate(session, {
       collectedFields: updatedFields,
       currentQuestion: reply,
@@ -189,13 +318,13 @@ export async function processRealtimeCallerTurn(
       assistantReply: reply,
     });
 
-    return {
+    return finishTurn(input, {
       replyText: reply,
       hangup: false,
       hangupAfterMark: false,
       session,
       nextConversationState: "presenting_summary",
-    };
+    });
   }
 
   if (
@@ -230,13 +359,13 @@ export async function processRealtimeCallerTurn(
         assistantReply: reply,
       });
 
-      return {
+      return finishTurn(input, {
         replyText: ensureSingleIntakeQuestion(reply),
         hangup: true,
         hangupAfterMark: true,
         session,
         nextConversationState: "delivering_closing",
-      };
+      });
     }
 
     if (isSummaryRejected(trimmedSpeech) || trimmedSpeech.length > 0) {
@@ -257,13 +386,13 @@ export async function processRealtimeCallerTurn(
         assistantReply: reply,
       });
 
-      return {
+      return finishTurn(input, {
         replyText: reply,
         hangup: false,
         hangupAfterMark: false,
         session,
         nextConversationState: "awaiting_summary_confirmation",
-      };
+      });
     }
 
     return {
@@ -272,66 +401,6 @@ export async function processRealtimeCallerTurn(
       hangupAfterMark: false,
       session,
       nextConversationState: "awaiting_summary_confirmation",
-    };
-  }
-
-  if (input.isFirstCallerTurn) {
-    let updatedFields = mergeRealtimeCallerAnswer(fieldsBefore, trimmedSpeech, callerPhone);
-
-    if (detectEmergency(trimmedSpeech) && !updatedFields.emergency_acknowledged) {
-      updatedFields = {
-        ...updatedFields,
-        urgency: updatedFields.urgency ?? "emergency",
-        emergency_acknowledged: true,
-      };
-    }
-
-    if (isRealtimeIntakeComplete(updatedFields)) {
-      session = applyLocalSessionUpdate(session, {
-        collectedFields: updatedFields,
-        currentQuestion: REALTIME_ANYTHING_ELSE_QUESTION,
-      });
-
-      persistTurnAsync(callSid, {
-        collectedFields: updatedFields,
-        currentQuestion: REALTIME_ANYTHING_ELSE_QUESTION,
-        callerSpeech: trimmedSpeech,
-        assistantReply: REALTIME_ANYTHING_ELSE_QUESTION,
-      });
-
-      return {
-        replyText: ensureSingleIntakeQuestion(REALTIME_ANYTHING_ELSE_QUESTION),
-        hangup: false,
-        hangupAfterMark: false,
-        session,
-        nextConversationState: "awaiting_additional_notes",
-      };
-    }
-
-    const nextStage = getRealtimeNextMissingStage(updatedFields);
-    const reply = buildRealtimeIntakeReply(
-      "Got it.",
-      getRealtimeStageQuestion(nextStage, updatedFields, callerPhone),
-    );
-
-    session = applyLocalSessionUpdate(session, {
-      collectedFields: updatedFields,
-      currentQuestion: getRealtimeStageQuestion(nextStage, updatedFields, callerPhone),
-    });
-
-    persistTurnAsync(callSid, {
-      collectedFields: updatedFields,
-      currentQuestion: getRealtimeStageQuestion(nextStage, updatedFields, callerPhone),
-      callerSpeech: trimmedSpeech,
-      assistantReply: reply,
-    });
-
-    return {
-      replyText: reply,
-      hangup: false,
-      hangupAfterMark: false,
-      session,
-      nextConversationState: "collecting_intake",
     };
   }
 
@@ -354,67 +423,47 @@ export async function processRealtimeCallerTurn(
         assistantReply: nameOutcome.replyText,
       });
 
-      return {
+      return finishTurn(input, {
         replyText: ensureSingleIntakeQuestion(nameOutcome.replyText),
         hangup: false,
         hangupAfterMark: false,
         session,
         nextConversationState: "collecting_intake",
-      };
+      });
     }
 
     const confirmedFields = nameOutcome.fields as RealtimeFields;
-    const nextStage = getRealtimeNextMissingStage(confirmedFields);
-
-    if (nextStage === "wrap_up") {
-      session = applyLocalSessionUpdate(session, {
-        collectedFields: confirmedFields,
-        currentQuestion: REALTIME_ANYTHING_ELSE_QUESTION,
-      });
-
-      persistTurnAsync(callSid, {
-        collectedFields: confirmedFields,
-        currentQuestion: REALTIME_ANYTHING_ELSE_QUESTION,
-        callerSpeech: trimmedSpeech,
-        assistantReply: REALTIME_ANYTHING_ELSE_QUESTION,
-      });
-
-      return {
-        replyText: ensureSingleIntakeQuestion(REALTIME_ANYTHING_ELSE_QUESTION),
-        hangup: false,
-        hangupAfterMark: false,
-        session,
-        nextConversationState: "awaiting_additional_notes",
-      };
-    }
-
-    const reply = buildRealtimeIntakeReply(
-      "Thanks.",
-      getRealtimeStageQuestion(nextStage, confirmedFields, callerPhone),
+    const filledCount = countNewlyFilledFields(fieldsBefore, confirmedFields);
+    const post = buildPostIntakeReply(
+      acknowledgmentPolicy,
+      fieldsBefore,
+      confirmedFields,
+      trimmedSpeech,
+      callerPhone,
+      filledCount,
     );
 
     session = applyLocalSessionUpdate(session, {
-      collectedFields: confirmedFields,
-      currentQuestion: getRealtimeStageQuestion(nextStage, confirmedFields, callerPhone),
+      collectedFields: post.fields,
+      currentQuestion: post.replyText,
     });
 
     persistTurnAsync(callSid, {
-      collectedFields: confirmedFields,
-      currentQuestion: getRealtimeStageQuestion(nextStage, confirmedFields, callerPhone),
+      collectedFields: post.fields,
+      currentQuestion: post.replyText,
       callerSpeech: trimmedSpeech,
-      assistantReply: reply,
+      assistantReply: post.replyText,
     });
 
-    return {
-      replyText: reply,
+    return finishTurn(input, {
+      replyText: post.replyText,
       hangup: false,
       hangupAfterMark: false,
       session,
-      nextConversationState: "collecting_intake",
-    };
+      nextConversationState: post.nextState,
+    });
   }
 
-  const answeredStage = getRealtimeNextMissingStage(fieldsBefore);
   let updatedFields = mergeRealtimeCallerAnswer(fieldsBefore, trimmedSpeech, callerPhone);
 
   if (detectEmergency(trimmedSpeech) && !updatedFields.emergency_acknowledged) {
@@ -425,61 +474,35 @@ export async function processRealtimeCallerTurn(
     };
   }
 
-  if (isRealtimeIntakeComplete(updatedFields)) {
-    session = applyLocalSessionUpdate(session, {
-      collectedFields: updatedFields,
-      currentQuestion: REALTIME_ANYTHING_ELSE_QUESTION,
-    });
-
-    persistTurnAsync(callSid, {
-      collectedFields: updatedFields,
-      currentQuestion: REALTIME_ANYTHING_ELSE_QUESTION,
-      callerSpeech: trimmedSpeech,
-      assistantReply: REALTIME_ANYTHING_ELSE_QUESTION,
-    });
-
-    return {
-      replyText: REALTIME_ANYTHING_ELSE_QUESTION,
-      hangup: false,
-      hangupAfterMark: false,
-      session,
-      nextConversationState: "awaiting_additional_notes",
-    };
-  }
-
-  const nextStage = getRealtimeNextMissingStage(updatedFields);
-  const ack =
-    answeredStage !== "wrap_up"
-      ? buildRealtimeAcknowledgement(
-          answeredStage as RealtimeIntakeStage,
-          trimmedSpeech,
-          updatedFields,
-        )
-      : null;
-  const reply = buildRealtimeIntakeReply(
-    ack,
-    getRealtimeStageQuestion(nextStage, updatedFields, callerPhone),
+  const filledCount = countNewlyFilledFields(fieldsBefore, updatedFields);
+  const post = buildPostIntakeReply(
+    acknowledgmentPolicy,
+    fieldsBefore,
+    updatedFields,
+    trimmedSpeech,
+    callerPhone,
+    filledCount,
   );
 
   session = applyLocalSessionUpdate(session, {
-    collectedFields: updatedFields,
-    currentQuestion: getRealtimeStageQuestion(nextStage, updatedFields, callerPhone),
+    collectedFields: post.fields,
+    currentQuestion: post.replyText,
   });
 
   persistTurnAsync(callSid, {
-    collectedFields: updatedFields,
-    currentQuestion: getRealtimeStageQuestion(nextStage, updatedFields, callerPhone),
+    collectedFields: post.fields,
+    currentQuestion: post.replyText,
     callerSpeech: trimmedSpeech,
-    assistantReply: reply,
+    assistantReply: post.replyText,
   });
 
-  return {
-    replyText: ensureSingleIntakeQuestion(reply),
+  return finishTurn(input, {
+    replyText: post.replyText,
     hangup: false,
     hangupAfterMark: false,
     session,
-    nextConversationState: "collecting_intake",
-  };
+    nextConversationState: post.nextState,
+  });
 }
 
 export function buildNameNoInputRetry(fields: RealtimeFields): string {

@@ -246,7 +246,7 @@ export class CallBridge {
       case "input_audio_buffer.speech_stopped":
         this.responseGuard.onCallerSpeechStopped();
         this.turnTiming.beginTurn(this.callSid ?? undefined);
-        this.turnTiming.record("caller_speech_stopped", this.callSid ?? undefined);
+        this.turnTiming.record("speech_stopped", this.callSid ?? undefined);
         break;
       case "conversation.item.input_audio_transcription.completed":
         void this.handleTranscriptionCompleted(event);
@@ -272,7 +272,7 @@ export class CallBridge {
       }
       case "response.output_audio.delta": {
         const delta = String(event.delta ?? "");
-        this.turnTiming.record("first_audio_delta_received", this.callSid ?? undefined);
+        this.turnTiming.record("first_audio_received", this.callSid ?? undefined);
         this.responseGuard.onAssistantAudioDelta();
         this.forwardAssistantAudio(delta);
         break;
@@ -355,7 +355,11 @@ export class CallBridge {
         return;
       }
 
-      this.turnTiming.record("next_response_requested", this.callSid ?? undefined);
+      if (result.structuredStateUpdated) {
+        this.turnTiming.record("structured_state_updated", this.callSid ?? undefined);
+      }
+
+      this.turnTiming.record("response_requested", this.callSid ?? undefined);
 
       const reason: ResponseTriggerReason = result.hangupAfterMark
         ? "closing_message"

@@ -3,11 +3,44 @@ import type { BridgeConfig } from "../config.js";
 import { logError, logInfo, logWarn } from "../logger.js";
 import type { ResponseTriggerReason } from "../bridge/response-state-guard.js";
 
+const REALTIME_DELIVERY_INSTRUCTIONS =
+  "Professional, calm, confident, lower-pitched male receptionist. " +
+  "Natural American conversational delivery. Warm but not overly enthusiastic.";
+
 const REALTIME_INSTRUCTIONS =
-  "You are a warm, professional roofing receptionist on a live phone call for Beau's Roofing. " +
-  "Speak naturally with contractions, brief pauses, and confident phone energy. " +
+  `${REALTIME_DELIVERY_INSTRUCTIONS} ` +
+  "You are the live phone receptionist for Beau's Roofing. " +
   "Deliver exactly one short script per turn. Never ask more than one question. " +
   "Never invent intake questions or confirm details that were not provided by the server.";
+
+export function buildRealtimeSessionUpdate(voice: string) {
+  return {
+    type: "session.update" as const,
+    session: {
+      type: "realtime" as const,
+      instructions: REALTIME_INSTRUCTIONS,
+      output_modalities: ["audio"] as const,
+      audio: {
+        input: {
+          format: { type: "audio/pcmu" as const },
+          transcription: {
+            model: "whisper-1",
+          },
+          turn_detection: {
+            type: "semantic_vad" as const,
+            eagerness: "medium" as const,
+            create_response: true,
+            interrupt_response: true,
+          },
+        },
+        output: {
+          format: { type: "audio/pcmu" as const },
+          voice,
+        },
+      },
+    },
+  };
+}
 
 export type RealtimeServerEvent = {
   type: string;
@@ -100,32 +133,7 @@ export class OpenAiRealtimeSession {
   }
 
   private configureSession(): void {
-    this.send({
-      type: "session.update",
-      session: {
-        type: "realtime",
-        instructions: REALTIME_INSTRUCTIONS,
-        output_modalities: ["audio"],
-        audio: {
-          input: {
-            format: { type: "audio/pcmu" },
-            transcription: {
-              model: "whisper-1",
-            },
-            turn_detection: {
-              type: "semantic_vad",
-              eagerness: "low",
-              create_response: true,
-              interrupt_response: true,
-            },
-          },
-          output: {
-            format: { type: "audio/pcmu" },
-            voice: this.config.openAiRealtimeVoice,
-          },
-        },
-      },
-    });
+    this.send(buildRealtimeSessionUpdate(this.config.openAiRealtimeVoice));
   }
 
   private handleMessage(raw: string): void {
@@ -215,9 +223,8 @@ export class OpenAiRealtimeSession {
       response: {
         output_modalities: ["audio"],
         instructions:
-          "Deliver this as one natural live phone response for Beau's Roofing. " +
-          "Use contractions and warm professional tone. Ask at most one question. " +
-          "Keep the same facts as the script below:\n\n" +
+          `${REALTIME_DELIVERY_INSTRUCTIONS} Deliver this as one natural live phone response for Beau's Roofing. ` +
+          "Ask at most one question. Keep the same facts as the script below:\n\n" +
           trimmed,
       },
     });

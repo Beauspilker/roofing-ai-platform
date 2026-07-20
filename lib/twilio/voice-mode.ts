@@ -5,10 +5,10 @@
 export const DEFAULT_OPENAI_REALTIME_MODEL = "gpt-4o-realtime-preview";
 
 /** Professional male Realtime voice used when OPENAI_REALTIME_VOICE is unset. */
-export const DEFAULT_OPENAI_REALTIME_VOICE = "echo";
+export const DEFAULT_OPENAI_REALTIME_VOICE = "cedar";
 
 /** Male OpenAI Realtime voices accepted by the bridge (pass via OPENAI_REALTIME_VOICE). */
-export const OPENAI_REALTIME_MALE_VOICES = ["echo", "ash", "ballad"] as const;
+export const OPENAI_REALTIME_MALE_VOICES = ["cedar", "echo", "ash", "ballad"] as const;
 
 export function isRealtimeVoiceEnabled(): boolean {
   return process.env.REALTIME_VOICE_ENABLED?.trim().toLowerCase() === "true";

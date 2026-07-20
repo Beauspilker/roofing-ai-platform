@@ -1,12 +1,16 @@
-import {
-  mergeCallerAnswer,
-  type CollectedFields,
-} from "../../../../lib/call-intake.js";
+import { mergeCallerAnswer, type CollectedFields } from "../../../../lib/call-intake.js";
 import { detectEmergency } from "../../../../lib/call-intelligence.js";
+import { REALTIME_ANYTHING_ELSE_QUESTION } from "./realtime-prompts.js";
 import {
-  REALTIME_ANYTHING_ELSE_QUESTION,
-  type RealtimeFields,
-} from "./realtime-prompts.js";
+  applyStructuredBoolean,
+  insuranceClaimIsStarted,
+  isStructuredBooleanUnset,
+  parseExplicitBoolean,
+  shouldCollectAdjuster,
+  syncLegacyStringFields,
+  type StructuredBooleanField,
+} from "./structured-intake.js";
+import type { RealtimeFields } from "./realtime-prompts.js";
 
 export const REALTIME_INTAKE_STAGES = [
   "problem",
@@ -40,18 +44,28 @@ const STAGE_FIELD_KEYS: Record<RealtimeIntakeStage, keyof RealtimeFields> = {
   photos_available: "photos_available",
 };
 
+const STAGE_BOOLEAN_FIELDS: Partial<Record<RealtimeIntakeStage, StructuredBooleanField>> = {
+  active_leak: "emergency_or_active_leak",
+  insurance_claim: "insurance_claim_started",
+  adjuster_contacted: "adjuster_contacted",
+  photos_available: "photos_available",
+};
+
 function hasValue(value: string | undefined): boolean {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-function insuranceClaimStarted(fields: RealtimeFields): boolean {
-  const claim = fields.insurance_claim?.toLowerCase() ?? "";
+function isStageComplete(stage: RealtimeIntakeStage, fields: RealtimeFields): boolean {
+  const booleanField = STAGE_BOOLEAN_FIELDS[stage];
 
-  return /yes|started|filed|claim|insurance|already/i.test(claim);
-}
+  if (booleanField) {
+    return !isStructuredBooleanUnset(fields[booleanField]);
+  }
 
-function shouldCollectAdjuster(fields: RealtimeFields): boolean {
-  return insuranceClaimStarted(fields);
+  const fieldKey = STAGE_FIELD_KEYS[stage];
+  const value = fields[fieldKey];
+
+  return typeof value === "string" && hasValue(value);
 }
 
 export function isRealtimeIntakeComplete(fields: RealtimeFields): boolean {
@@ -66,10 +80,7 @@ export function getRealtimeNextMissingStage(
       continue;
     }
 
-    const fieldKey = STAGE_FIELD_KEYS[stage];
-    const value = fields[fieldKey];
-
-    if (typeof value !== "string" || !hasValue(value)) {
+    if (!isStageComplete(stage, fields)) {
       return stage;
     }
   }
@@ -77,60 +88,20 @@ export function getRealtimeNextMissingStage(
   return "wrap_up";
 }
 
-function extractYesNoUnknown(text: string): string | null {
-  const normalized = text.toLowerCase().trim();
-
-  if (/^(yes|yeah|yep|yup|sure|correct|already|i have|i did)\b/.test(normalized)) {
-    return "yes";
-  }
-
-  if (/^(no|nope|nah|not yet|haven't|havent|none)\b/.test(normalized)) {
-    return "no";
-  }
-
-  if (/don't know|not sure|unknown/i.test(normalized)) {
-    return "unknown";
-  }
-
-  return null;
-}
-
-function extractPhotosAvailability(text: string): string | null {
-  const yesNo = extractYesNoUnknown(text);
-
-  if (yesNo) {
-    return yesNo;
-  }
-
-  if (/photo|picture|image/i.test(text)) {
-    return text.trim();
-  }
-
-  return null;
-}
-
-function mergeRealtimeExtras(
+function applyStageBooleanAnswer(
   fields: RealtimeFields,
+  stage: RealtimeIntakeStage,
   answer: string,
-  stage: RealtimeIntakeStage | "wrap_up",
 ): RealtimeFields {
-  let updated = { ...fields };
+  const booleanField = STAGE_BOOLEAN_FIELDS[stage];
 
-  if (stage === "adjuster_contacted" || !hasValue(updated.adjuster_contacted)) {
-    const adjuster = extractYesNoUnknown(answer);
-    if (adjuster && shouldCollectAdjuster(updated)) {
-      updated.adjuster_contacted = adjuster;
-    }
+  if (!booleanField) {
+    return fields;
   }
 
-  if (stage === "photos_available" || !hasValue(updated.photos_available)) {
-    const photos = extractPhotosAvailability(answer);
-    if (photos) {
-      updated.photos_available = photos;
-    }
-  }
-
-  return updated;
+  return applyStructuredBoolean(fields, booleanField, answer, {
+    isDirectAnswer: true,
+  });
 }
 
 export function mergeRealtimeCallerAnswer(
@@ -144,21 +115,17 @@ export function mergeRealtimeCallerAnswer(
 
   if (stage !== "wrap_up" && processed) {
     const fieldKey = STAGE_FIELD_KEYS[stage];
+    const booleanField = STAGE_BOOLEAN_FIELDS[stage];
 
-    if (!hasValue(updated[fieldKey])) {
-      if (stage === "callback_phone" && callerPhone && /^(yes|yeah|yep|correct|this one|that one)\b/i.test(processed)) {
-        updated[fieldKey] = callerPhone;
-      } else if (
-        stage === "adjuster_contacted" ||
-        stage === "photos_available" ||
-        stage === "active_leak" ||
-        stage === "storm_damage" ||
-        stage === "insurance_claim"
+    if (booleanField) {
+      updated = applyStageBooleanAnswer(updated, stage, processed);
+    } else if (!hasValue(updated[fieldKey] as string | undefined)) {
+      if (
+        stage === "callback_phone" &&
+        callerPhone &&
+        /^(yes|yeah|yep|correct|this one|that one)\b/i.test(processed)
       ) {
-        updated[fieldKey] =
-          (stage === "photos_available"
-            ? extractPhotosAvailability(processed)
-            : extractYesNoUnknown(processed)) ?? processed.slice(0, 120);
+        updated[fieldKey] = callerPhone;
       } else {
         updated[fieldKey] = processed.slice(0, 500);
       }
@@ -171,23 +138,34 @@ export function mergeRealtimeCallerAnswer(
 
     for (let index = 0; index < stageIndex; index += 1) {
       const priorStage = REALTIME_INTAKE_STAGES[index];
+      const priorBoolean = STAGE_BOOLEAN_FIELDS[priorStage];
+
+      if (priorBoolean) {
+        if (isStructuredBooleanUnset(updated[priorBoolean])) {
+          const parsed = parseExplicitBoolean(processed);
+          if (parsed !== null) {
+            updated[priorBoolean] = parsed;
+          }
+        }
+        continue;
+      }
+
       const fieldKey = STAGE_FIELD_KEYS[priorStage];
       const extractedValue = libMerged[fieldKey];
 
-      if (!hasValue(updated[fieldKey]) && hasValue(extractedValue)) {
+      if (!hasValue(updated[fieldKey] as string | undefined) && hasValue(extractedValue)) {
         updated[fieldKey] = extractedValue;
       }
     }
   }
 
-  updated = mergeRealtimeExtras(updated, processed, stage);
-
   if (detectEmergency(processed)) {
+    updated.emergency_or_active_leak = updated.emergency_or_active_leak ?? true;
     updated.urgency = updated.urgency ?? "emergency";
     updated.emergency_acknowledged = true;
   }
 
-  return updated;
+  return syncLegacyStringFields(updated);
 }
 
 export function getRealtimeStageQuestion(
@@ -222,7 +200,7 @@ export function getRealtimeStageQuestion(
     case "adjuster_contacted":
       return "Have you contacted your adjuster yet?";
     case "urgency":
-      return fields.active_leak === "yes"
+      return fields.emergency_or_active_leak === true
         ? "How soon do you need someone out?"
         : "How soon would you like someone to take a look?";
     case "appointment":
@@ -243,10 +221,6 @@ export function buildRealtimeAcknowledgement(
     return "Got it — I'll flag this as urgent.";
   }
 
-  if (answeredStage === "problem" && /urgent|emergency|leak|water|tree|hole/i.test(answer)) {
-    return "Understood.";
-  }
-
   if (answeredStage === "full_name" || answeredStage === "callback_phone") {
     return "Thanks.";
   }
@@ -260,19 +234,31 @@ export function appendAnythingElseNotes(
 ): RealtimeFields {
   const trimmed = speech.trim();
 
-  if (!trimmed) {
+  if (!trimmed || isAnythingElseDeclined(trimmed)) {
     return fields;
   }
 
   const existing = fields.additional_notes?.trim();
   const combined = existing ? `${existing} ${trimmed}` : trimmed;
 
-  return {
+  return syncLegacyStringFields({
     ...fields,
     additional_notes: combined.slice(0, 500),
-  };
+  });
+}
+
+function isAnythingElseDeclined(speech: string): boolean {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+
+  return (
+    /^(no|nope|nah|nothing|none|that's all|thats all|that is all|i'm good|im good|all set|nothing else)\b/.test(
+      normalized,
+    ) || normalized.includes("nothing else")
+  );
 }
 
 export function toPersistedFields(fields: RealtimeFields): CollectedFields {
-  return fields;
+  return syncLegacyStringFields(fields);
 }
+
+export { insuranceClaimIsStarted, shouldCollectAdjuster };

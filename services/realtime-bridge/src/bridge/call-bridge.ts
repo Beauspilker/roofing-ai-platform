@@ -3,6 +3,7 @@ import type { BridgeConfig } from "../config.js";
 import { verifyStreamAuthToken } from "../auth/stream-token.js";
 import { BargeInController } from "../bridge/barge-in.js";
 import { CallTimingTracker } from "../bridge/call-timing.js";
+import { TurnTimingTracker } from "../bridge/turn-timing.js";
 import { PlaybackTracker } from "../bridge/playback-tracker.js";
 import {
   ResponseStateGuard,
@@ -35,6 +36,7 @@ export class CallBridge {
   private orchestrator: SessionOrchestrator | null = null;
   private readonly playbackTracker = new PlaybackTracker();
   private readonly callTiming = new CallTimingTracker();
+  private readonly turnTiming = new TurnTimingTracker();
   private readonly responseGuard = new ResponseStateGuard();
   private openAi: OpenAiRealtimeSession | null = null;
   private bargeIn: BargeInController | null = null;
@@ -243,6 +245,8 @@ export class CallBridge {
         break;
       case "input_audio_buffer.speech_stopped":
         this.responseGuard.onCallerSpeechStopped();
+        this.turnTiming.beginTurn(this.callSid ?? undefined);
+        this.turnTiming.record("caller_speech_stopped", this.callSid ?? undefined);
         break;
       case "conversation.item.input_audio_transcription.completed":
         void this.handleTranscriptionCompleted(event);
@@ -268,6 +272,7 @@ export class CallBridge {
       }
       case "response.output_audio.delta": {
         const delta = String(event.delta ?? "");
+        this.turnTiming.record("first_audio_delta_received", this.callSid ?? undefined);
         this.responseGuard.onAssistantAudioDelta();
         this.forwardAssistantAudio(delta);
         break;
@@ -288,6 +293,7 @@ export class CallBridge {
       case "response.done":
         this.bargeIn?.handleResponseCompleted();
         this.responseGuard.onResponseDone();
+        this.orchestrator?.onAssistantResponseDone();
         void this.processQueuedCallerTranscript();
         break;
       case "response.cancelled":
@@ -307,7 +313,7 @@ export class CallBridge {
     }
   }
 
-  private async handleTranscriptionCompleted(event: {
+  private handleTranscriptionCompleted(event: {
     type: string;
     [key: string]: unknown;
   }): Promise<void> {
@@ -334,36 +340,40 @@ export class CallBridge {
       transcriptLength: transcript.length,
     });
 
-    await this.processCallerTurnReply(transcript);
+    this.turnTiming.record("transcript_completed", this.callSid ?? undefined);
+
+    void this.processCallerTurnReply(transcript);
   }
 
-  private async processCallerTurnReply(transcript: string): Promise<void> {
+  private processCallerTurnReply(transcript: string): void {
     if (!this.orchestrator || !this.openAi) {
       return;
     }
 
-    const result = await this.orchestrator.handleCallerTranscript(transcript);
+    void this.orchestrator.handleCallerTranscript(transcript).then((result) => {
+      if (!result?.replyText) {
+        return;
+      }
 
-    if (!result?.replyText) {
-      return;
-    }
+      this.turnTiming.record("next_response_requested", this.callSid ?? undefined);
 
-    const reason: ResponseTriggerReason = result.hangupAfterMark
-      ? "closing_message"
-      : "caller_turn_reply";
+      const reason: ResponseTriggerReason = result.hangupAfterMark
+        ? "closing_message"
+        : "caller_turn_reply";
 
-    const sent = this.requestAssistantSpeech(result.replyText, reason, {
-      hangupAfterMark: result.hangupAfterMark,
+      const sent = this.requestAssistantSpeech(result.replyText, reason, {
+        hangupAfterMark: result.hangupAfterMark,
+      });
+
+      if (!sent) {
+        logWarn("caller_turn_reply_deferred", { callSid: this.callSid ?? undefined });
+        return;
+      }
+
+      if (result.hangup && !result.hangupAfterMark) {
+        this.cleanup("call_completed");
+      }
     });
-
-    if (!sent) {
-      logWarn("caller_turn_reply_deferred", { callSid: this.callSid ?? undefined });
-      return;
-    }
-
-    if (result.hangup && !result.hangupAfterMark) {
-      this.cleanup("call_completed");
-    }
   }
 
   private async processQueuedCallerTranscript(): Promise<void> {
@@ -386,7 +396,7 @@ export class CallBridge {
     }
 
     logInfo("caller_transcript_dequeued", { callSid: this.callSid ?? undefined });
-    await this.processCallerTurnReply(pending);
+    this.processCallerTurnReply(pending);
   }
 
   private forwardAssistantAudio(base64Audio: string): void {
@@ -404,6 +414,7 @@ export class CallBridge {
       >,
     );
 
+    this.turnTiming.record("first_audio_sent_to_twilio", this.callSid ?? undefined);
     this.callTiming.record("first_audio_sent_to_twilio", this.callSid ?? undefined);
 
     if (!this.activeResponseUsesClosingMark) {
@@ -422,6 +433,7 @@ export class CallBridge {
 
     if (name === CLOSING_MARK_NAME) {
       logInfo("closing_mark_played", { callSid: this.callSid ?? undefined });
+      this.orchestrator?.onClosingMarkPlayed();
       this.responseGuard.onClosingMarkReceived();
       this.cleanup("call_completed");
     }

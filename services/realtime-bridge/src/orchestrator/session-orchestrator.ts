@@ -6,6 +6,7 @@ import {
   updateCallSession,
 } from "../../../../lib/call-sessions.js";
 import { logError, logInfo } from "../logger.js";
+import type { ConversationState } from "./conversation-state.js";
 import { processRealtimeCallerTurn } from "./realtime-turn-processor.js";
 import {
   ensureSingleIntakeQuestion,
@@ -29,7 +30,7 @@ export class SessionOrchestrator {
   private session: CallSession | null = null;
   private processingTurn = false;
   private pendingTranscript: string | null = null;
-  private endingPhase: "none" | "anything_else" = "none";
+  private conversationState: ConversationState = "collecting_intake";
   private awaitingFirstCallerTurn = false;
 
   constructor(private readonly context: OrchestratorContext) {}
@@ -63,6 +64,36 @@ export class SessionOrchestrator {
 
   getOpeningGreeting(): string {
     return REALTIME_OPENING_GREETING;
+  }
+
+  getConversationState(): ConversationState {
+    return this.conversationState;
+  }
+
+  onAssistantResponseDone(): void {
+    if (this.conversationState === "presenting_summary") {
+      this.conversationState = "awaiting_summary_confirmation";
+      logInfo("conversation_state_transition", {
+        callSid: this.context.callSid,
+        state: this.conversationState,
+      });
+    }
+
+    if (this.conversationState === "delivering_closing") {
+      this.conversationState = "closing_audio_playback";
+      logInfo("conversation_state_transition", {
+        callSid: this.context.callSid,
+        state: this.conversationState,
+      });
+    }
+  }
+
+  onClosingMarkPlayed(): void {
+    this.conversationState = "completed";
+    logInfo("conversation_state_transition", {
+      callSid: this.context.callSid,
+      state: this.conversationState,
+    });
   }
 
   hasPendingTranscript(): boolean {
@@ -107,13 +138,17 @@ export class SessionOrchestrator {
         callSid: this.context.callSid,
         callerPhone: this.context.callerPhone,
         speechResult: trimmed,
-        endingPhase: this.endingPhase,
+        conversationState: this.conversationState,
         isFirstCallerTurn: this.awaitingFirstCallerTurn,
       });
 
       this.session = outcome.session;
-      this.endingPhase = outcome.nextEndingPhase;
+      this.conversationState = outcome.nextConversationState;
       this.awaitingFirstCallerTurn = false;
+
+      if (!outcome.replyText) {
+        return null;
+      }
 
       return {
         replyText: ensureSingleIntakeQuestion(outcome.replyText),

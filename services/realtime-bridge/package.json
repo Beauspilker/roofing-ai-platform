@@ -8,7 +8,7 @@
     "start": "node dist/server.js",
     "dev": "tsx src/server.ts",
     "check": "npm run build",
-    "test": "OPENAI_REALTIME_VOICE=marin tsx --test test/**/*.test.ts"
+    "test": "OPENAI_REALTIME_VOICE=cedar tsx --test test/**/*.test.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.110.2",

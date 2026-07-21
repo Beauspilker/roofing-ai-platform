@@ -104,6 +104,11 @@ export function mergeRealtimeCallerAnswer(
   } = {},
 ): RealtimeFields {
   const conversationState = options.conversationState ?? "collecting_intake";
+
+  if (conversationState === "listening_for_reason") {
+    return sanitizeInvalidStoredCallerName(fields);
+  }
+
   const sanitizedFields = sanitizeInvalidStoredCallerName(fields);
   const pendingQuestion = resolveActivePendingQuestion(
     sanitizedFields,

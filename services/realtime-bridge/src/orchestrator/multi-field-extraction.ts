@@ -315,6 +315,7 @@ export function applyAnswerForPendingQuestion(
       }
       break;
     }
+    case "reason_for_call":
     case "call_reason":
       if (!hasValue(updated.problem_description)) {
         if (isShortYesNoReasonAnswer(trimmed)) {

@@ -19,6 +19,7 @@ export type PendingQuestionKey =
   | "callback_confirmation"
   | "service_address"
   | "address_confirmation"
+  | "reason_for_call"
   | "call_reason"
   | "insurance_claim"
   | "adjuster_contacted"
@@ -46,7 +47,7 @@ export function needsAddressConfirmation(fields: RealtimeFields): boolean {
 export function mapRequiredFieldToPending(field: RequiredFieldKey): PendingQuestionKey {
   switch (field) {
     case "problem_description":
-      return "call_reason";
+      return "reason_for_call";
     case "full_name":
       return "caller_name";
     case "callback_phone":
@@ -64,7 +65,7 @@ export function mapRequiredFieldToPending(field: RequiredFieldKey): PendingQuest
     case "appointment_preference":
       return "preferred_callback_time";
     default:
-      return "call_reason";
+      return "reason_for_call";
   }
 }
 
@@ -75,6 +76,7 @@ export function isPendingQuestionKey(value: string): value is PendingQuestionKey
     value === "callback_confirmation" ||
     value === "service_address" ||
     value === "address_confirmation" ||
+    value === "reason_for_call" ||
     value === "call_reason" ||
     value === "insurance_claim" ||
     value === "adjuster_contacted" ||

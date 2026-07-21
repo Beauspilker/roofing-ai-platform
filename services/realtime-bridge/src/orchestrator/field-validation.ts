@@ -39,7 +39,8 @@ export function isOpeningReasonCaptureContext(
     return true;
   }
 
-  return fields.pending_question?.trim() === "call_reason";
+  return fields.pending_question?.trim() === "reason_for_call" ||
+    fields.pending_question?.trim() === "call_reason";
 }
 
 export function isPlausibleCallerName(name: string): boolean {

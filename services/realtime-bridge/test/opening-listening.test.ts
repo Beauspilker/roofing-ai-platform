@@ -160,8 +160,9 @@ test("pendingQuestion remains call_reason until caller responds meaningfully", a
 
   const session = orchestrator.getSession();
   const fields = (session?.collected_fields ?? {}) as RealtimeFields;
-  assert.equal(fields.pending_question, "call_reason");
-  assert.equal(resolvePendingQuestion(fields, "collecting_intake"), "call_reason");
+  assert.equal(orchestrator.getConversationState(), "listening_for_reason");
+  assert.equal(fields.pending_question, "reason_for_call");
+  assert.equal(resolvePendingQuestion(fields, "listening_for_reason"), "reason_for_call");
 
   const ignored = await orchestrator.handleCallerTranscript("hello");
   assert.equal(ignored, null);

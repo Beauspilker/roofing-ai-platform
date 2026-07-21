@@ -76,6 +76,8 @@ export class CallBridge {
   private responseWatchdogRetryUsed = false;
   private responseWatchdogRequest: PendingSpeechRequest | null = null;
   private readonly openingSilence = new OpeningSilenceController();
+  private openingGreetingPlaybackComplete = false;
+  private queuedOpeningTranscript: string | null = null;
   private responseCreateCount = 0;
   private openingResponseCreateCount = 0;
   private postOpeningResponseCreateCount = 0;
@@ -250,9 +252,44 @@ export class CallBridge {
   }
 
   private beginOpeningReasonListen(): void {
+    this.openingGreetingPlaybackComplete = true;
     this.openingSilence.beginListeningForReason();
     this.orchestrator?.onOpeningGreetingComplete();
     this.scheduleOpeningSilenceReprompt();
+
+    const queued = this.queuedOpeningTranscript;
+    this.queuedOpeningTranscript = null;
+
+    if (queued) {
+      void this.processCallerTranscriptAfterOpeningListen(queued);
+    }
+  }
+
+  private async processCallerTranscriptAfterOpeningListen(transcript: string): Promise<void> {
+    if (!this.orchestrator?.isOpeningGreetingPlaybackComplete()) {
+      return;
+    }
+
+    if (
+      this.openingSilence.isListeningForReason() &&
+      !isMeaningfulOpeningCallerTranscript(transcript)
+    ) {
+      this.scheduleOpeningSilenceReprompt();
+      return;
+    }
+
+    const itemId = `queued-opening-${Date.now()}`;
+
+    if (!this.responseGuard.registerCallerTranscript(itemId)) {
+      return;
+    }
+
+    if (isMeaningfulOpeningCallerTranscript(transcript)) {
+      this.openingSilence.onMeaningfulCallerTranscript();
+      this.responseGuard.completeOpeningReasonListen();
+    }
+
+    this.processCallerTurnReply(transcript);
   }
 
   private scheduleOpeningSilenceReprompt(): void {
@@ -455,7 +492,13 @@ export class CallBridge {
 
         if (this.responseGuard.wasLastResponseOpeningGreeting()) {
           this.beginOpeningReasonListen();
-        } else if (
+          this.orchestrator?.onAssistantResponseDone();
+          this.clearResponseWatchdog();
+          this.pendingSpeech = null;
+          break;
+        }
+
+        if (
           this.responseGuard.getLastTriggerReason() === "opening_silence_reprompt"
         ) {
           this.scheduleOpeningSilenceReprompt();
@@ -511,6 +554,15 @@ export class CallBridge {
     ).trim();
 
     if (!transcript || !this.orchestrator || !this.openAi) {
+      return;
+    }
+
+    if (this.openingGreetingSent && !this.openingGreetingPlaybackComplete) {
+      this.queuedOpeningTranscript = transcript;
+      logInfo("opening_transcript_queued_until_greeting_done", {
+        callSid: this.callSid ?? undefined,
+        transcriptLength: transcript.length,
+      });
       return;
     }
 

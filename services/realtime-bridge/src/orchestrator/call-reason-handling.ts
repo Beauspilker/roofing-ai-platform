@@ -1,10 +1,26 @@
 import {
+  EARLY_CALLER_NAME_QUESTION,
   extractDamageOrCallReason,
   extractExplicitCallerName,
   isLikelyCallReasonSpeech,
 } from "./field-validation.js";
-import type { RealtimeFields } from "./realtime-prompts.js";
-import type { PendingQuestionKey } from "./pending-question.js";
+import type { ConversationState } from "./conversation-state.js";
+import {
+  attachPendingQuestion,
+  mapRequiredFieldToPending,
+  type PendingQuestionKey,
+} from "./pending-question.js";
+import {
+  ensureSingleIntakeQuestion,
+  REALTIME_INTRO_TRANSITION,
+  type RealtimeFields,
+} from "./realtime-prompts.js";
+import {
+  getNaturalTransitionQuestion,
+  getNextRequiredField,
+  isCallerNameResolved,
+  needsImmediateSafetyClarification,
+} from "./required-intake.js";
 
 export const CALL_REASON_CLARIFICATION_PROMPT =
   "I'm sorry, I didn't quite catch what you're calling about. Could you tell me again?";
@@ -42,7 +58,30 @@ function hasValue(value: string | undefined): boolean {
 export function isPendingCallReasonQuestion(
   pendingQuestion: PendingQuestionKey | null | undefined,
 ): boolean {
-  return pendingQuestion === "call_reason";
+  return pendingQuestion === "reason_for_call" || pendingQuestion === "call_reason";
+}
+
+export function isListeningForCallReason(
+  conversationState: ConversationState,
+  pendingQuestion: PendingQuestionKey | null | undefined,
+): boolean {
+  return (
+    conversationState === "listening_for_reason" ||
+    isPendingCallReasonQuestion(pendingQuestion)
+  );
+}
+
+export function blocksGenericReadbackConfirmation(
+  fields: RealtimeFields,
+  conversationState: ConversationState,
+): boolean {
+  const pending = fields.pending_question?.trim();
+
+  if (conversationState === "listening_for_reason") {
+    return true;
+  }
+
+  return isPendingCallReasonQuestion(pending as PendingQuestionKey | undefined);
 }
 
 export function isShortYesNoReasonAnswer(speech: string): boolean {
@@ -124,7 +163,7 @@ export function applyCallReasonCapture(
   const trimmed = speech.trim();
   let updated: RealtimeFields = {
     ...fields,
-    pending_question: "call_reason",
+    pending_question: "reason_for_call",
   };
 
   if (!trimmed) {
@@ -167,6 +206,52 @@ export function applyCallReasonCapture(
   }
 
   return { fields: updated, resolved: true, needsClarification: false };
+}
+
+export function buildCallReasonResolvedReply(
+  fields: RealtimeFields,
+  callerPhone?: string,
+): { replyText: string; fields: RealtimeFields; nextState: ConversationState } {
+  const withIntro: RealtimeFields = {
+    ...fields,
+    intake_intro_delivered: true,
+    call_reason_awaiting_clarification: false,
+    pending_question: undefined,
+  };
+
+  const nextRequired = getNextRequiredField(withIntro);
+
+  if (
+    needsImmediateSafetyClarification(withIntro) &&
+    nextRequired === "emergency_or_active_leak"
+  ) {
+    const question = getNaturalTransitionQuestion(
+      "emergency_or_active_leak",
+      withIntro,
+    );
+    return {
+      replyText: ensureSingleIntakeQuestion(
+        `${REALTIME_INTRO_TRANSITION} ${question}`.replace(/\s+/g, " ").trim(),
+      ),
+      fields: attachPendingQuestion(withIntro, "active_leak"),
+      nextState: "collecting_intake",
+    };
+  }
+
+  const targetField = nextRequired ?? "full_name";
+  const pendingQuestion = mapRequiredFieldToPending(targetField) as PendingQuestionKey;
+  const question =
+    targetField === "full_name" && !isCallerNameResolved(withIntro)
+      ? EARLY_CALLER_NAME_QUESTION
+      : getNaturalTransitionQuestion(targetField, withIntro, callerPhone);
+
+  return {
+    replyText: ensureSingleIntakeQuestion(
+      `${REALTIME_INTRO_TRANSITION} ${question}`.replace(/\s+/g, " ").trim(),
+    ),
+    fields: attachPendingQuestion(withIntro, pendingQuestion),
+    nextState: "collecting_intake",
+  };
 }
 
 export function resolveCallReasonClarificationReply(

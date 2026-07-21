@@ -71,6 +71,9 @@ import {
 } from "../bridge/opening-listening.js";
 import {
   applyCallReasonCapture,
+  blocksGenericReadbackConfirmation,
+  buildCallReasonResolvedReply,
+  isListeningForCallReason,
   isPendingCallReasonQuestion,
   resolveCallReasonClarificationReply,
 } from "./call-reason-handling.js";
@@ -225,7 +228,10 @@ function shouldHandlePendingCallReason(
   conversationState: ConversationState,
 ): boolean {
   const pending = resolvePendingQuestion(fields, conversationState);
-  return isPendingCallReasonQuestion(pending) && !fields.problem_description?.trim();
+  return (
+    isListeningForCallReason(conversationState, pending) &&
+    !fields.problem_description?.trim()
+  );
 }
 
 function buildInvalidNameCaptureRepeatOutcome(input: {
@@ -464,6 +470,14 @@ function isNameCaptureTurn(
   speech: string,
   options: { isFirstCallerTurn?: boolean } = {},
 ): boolean {
+  if (conversationState === "listening_for_reason") {
+    return false;
+  }
+
+  if (blocksGenericReadbackConfirmation(fields, conversationState)) {
+    return false;
+  }
+
   const pending = resolvePendingQuestion(fields, conversationState);
 
   if (isPendingCallReasonQuestion(pending) || !fields.problem_description?.trim()) {
@@ -1075,13 +1089,12 @@ export async function processRealtimeCallerTurn(
         hangup: false,
         hangupAfterMark: false,
         session,
-        nextConversationState: "collecting_intake",
+        nextConversationState: "listening_for_reason",
       });
     }
 
     let updatedFields = syncLegacyStringFields({
       ...capture.fields,
-      pending_question: undefined,
       call_reason_awaiting_clarification: false,
     });
 
@@ -1093,19 +1106,7 @@ export async function processRealtimeCallerTurn(
       };
     }
 
-    const filledCount = countNewlyFilledFields(fieldsBefore, updatedFields);
-    const post = buildPostIntakeReply(
-      acknowledgmentPolicy,
-      fieldsBefore,
-      updatedFields,
-      trimmedSpeech,
-      callerPhone,
-      filledCount,
-      {
-        isFirstCallerTurn: input.isFirstCallerTurn,
-        hasReceivedMeaningfulCallerTranscript: input.hasReceivedMeaningfulCallerTranscript,
-      },
-    );
+    const post = buildCallReasonResolvedReply(updatedFields, callerPhone);
 
     session = applyLocalSessionUpdate(session, {
       collectedFields: post.fields,
@@ -1129,6 +1130,19 @@ export async function processRealtimeCallerTurn(
       session,
       nextConversationState: post.nextState,
     });
+  }
+
+  if (
+    conversationState === "listening_for_reason" &&
+    !fieldsBefore.problem_description?.trim()
+  ) {
+    return {
+      replyText: "",
+      hangup: false,
+      hangupAfterMark: false,
+      session,
+      nextConversationState: "listening_for_reason",
+    };
   }
 
   if (isNameCaptureTurn(fieldsBefore, conversationState, trimmedSpeech, {

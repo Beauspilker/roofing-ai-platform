@@ -22,7 +22,7 @@ const mockSession = {
   called_phone: "+14027611540",
   status: "active",
   current_question: null,
-  collected_fields: { pending_question: "call_reason" },
+  collected_fields: { pending_question: "reason_for_call" },
   transcript: [],
   attempt_count: 0,
   started_at: new Date().toISOString(),
@@ -40,7 +40,7 @@ test("pending call_reason accepts I'm calling for roof damage without confirmati
     callSid: "CA123",
     callerPhone: "+15551234567",
     speechResult: "I'm calling for roof damage.",
-    conversationState: "collecting_intake",
+    conversationState: "listening_for_reason",
     acknowledgmentPolicy: policy,
     isFirstCallerTurn: true,
     hasReceivedMeaningfulCallerTranscript: true,
@@ -61,7 +61,7 @@ test("Hail damage resolves call reason and selects caller_name next", async () =
     callSid: "CA123",
     callerPhone: "+15551234567",
     speechResult: "Hail damage.",
-    conversationState: "collecting_intake",
+    conversationState: "listening_for_reason",
     acknowledgmentPolicy: policy,
     isFirstCallerTurn: true,
     hasReceivedMeaningfulCallerTranscript: true,
@@ -80,7 +80,7 @@ test("My roof is leaking resolves without echo confirmation", async () => {
     callSid: "CA123",
     callerPhone: "+15551234567",
     speechResult: "My roof is leaking.",
-    conversationState: "collecting_intake",
+    conversationState: "listening_for_reason",
     acknowledgmentPolicy: policy,
     isFirstCallerTurn: true,
     hasReceivedMeaningfulCallerTranscript: true,
@@ -97,7 +97,7 @@ test("unclear call reason asks focused clarification without echoing transcript"
     callSid: "CA123",
     callerPhone: "+15551234567",
     speechResult: "Uh.",
-    conversationState: "collecting_intake",
+    conversationState: "listening_for_reason",
     acknowledgmentPolicy: policy,
     isFirstCallerTurn: true,
     hasReceivedMeaningfulCallerTranscript: true,
@@ -136,7 +136,7 @@ test("resolved call reason cannot jump to callback phone while callerName is mis
     callSid: "CA123",
     callerPhone: "+15551234567",
     speechResult: "I'm calling for roof damage.",
-    conversationState: "collecting_intake",
+    conversationState: "listening_for_reason",
     acknowledgmentPolicy: policy,
     isFirstCallerTurn: true,
     hasReceivedMeaningfulCallerTranscript: true,
@@ -153,7 +153,7 @@ test("Twilio caller ID availability does not skip callerName", async () => {
     callSid: "CA123",
     callerPhone: "+15551234567",
     speechResult: "We had hail damage.",
-    conversationState: "collecting_intake",
+    conversationState: "listening_for_reason",
     acknowledgmentPolicy: policy,
     isFirstCallerTurn: true,
     hasReceivedMeaningfulCallerTranscript: true,
@@ -166,5 +166,6 @@ test("Twilio caller ID availability does not skip callerName", async () => {
 test("I'm calling for roof damage does not extract calling as caller name", () => {
   assert.equal(extractExplicitCallerName("I'm calling for roof damage."), null);
   assert.equal(normalizeCallReasonFromSpeech("I'm calling for roof damage."), "roof damage");
+  assert.equal(isPendingCallReasonQuestion("reason_for_call"), true);
   assert.equal(isPendingCallReasonQuestion("call_reason"), true);
 });

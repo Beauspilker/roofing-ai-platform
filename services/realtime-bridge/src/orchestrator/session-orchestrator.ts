@@ -38,6 +38,7 @@ export class SessionOrchestrator {
   private awaitingFirstCallerTurn = false;
   private listeningForReason = false;
   private hasReceivedMeaningfulCallerTranscript = false;
+  private openingGreetingPlaybackComplete = false;
   private readonly acknowledgmentPolicy = new AcknowledgmentPolicy();
 
   constructor(private readonly context: OrchestratorContext) {}
@@ -71,6 +72,10 @@ export class SessionOrchestrator {
 
   getOpeningGreeting(): string {
     return REALTIME_OPENING_GREETING;
+  }
+
+  isOpeningGreetingPlaybackComplete(): boolean {
+    return this.openingGreetingPlaybackComplete;
   }
 
   getConversationState(): ConversationState {
@@ -118,8 +123,14 @@ export class SessionOrchestrator {
   }
 
   onOpeningGreetingComplete(): void {
+    this.openingGreetingPlaybackComplete = true;
     this.listeningForReason = true;
+    this.conversationState = "listening_for_reason";
     this.attachPendingCallReason();
+    logInfo("conversation_state_transition", {
+      callSid: this.context.callSid,
+      state: this.conversationState,
+    });
   }
 
   isListeningForReason(): boolean {
@@ -146,7 +157,7 @@ export class SessionOrchestrator {
       ...this.session,
       collected_fields: {
         ...fields,
-        pending_question: "call_reason",
+        pending_question: "reason_for_call",
       },
     };
   }

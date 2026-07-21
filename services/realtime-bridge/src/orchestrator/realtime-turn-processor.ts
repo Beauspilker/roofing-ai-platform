@@ -11,7 +11,7 @@ import {
   type CallSession,
   updateCallSession,
 } from "../../../../lib/call-sessions.js";
-import { isExplicitCallerHangupDuringIntake, isCorrectionPhrase } from "../../../../lib/twilio/voice-phrases.js";
+import { isExplicitCallerHangupDuringIntake } from "../../../../lib/twilio/voice-phrases.js";
 import type { AcknowledgmentPolicy } from "./acknowledgment-policy.js";
 import {
   isCallbackConfirmed,
@@ -30,6 +30,7 @@ import {
   getRealtimeNextMissingStage,
   mergeRealtimeCallerAnswer,
   needsCallbackReadback,
+  needsAddressReadback,
   needsScheduleClarification,
   needsScheduleConfirmation,
   normalizeRealtimeFields,
@@ -79,6 +80,8 @@ import {
 import {
   buildNameClarificationPrompt,
   EARLY_CALLER_NAME_QUESTION,
+  isLikelyCallReasonSpeech,
+  isOpeningReasonCaptureContext,
   isPlausibleCallerName,
   sanitizeInvalidStoredCallerName,
 } from "./field-validation.js";
@@ -99,14 +102,7 @@ import {
   canCloseCall,
   canPresentSummary,
 } from "./required-intake.js";
-import {
-  buildCorrectionFollowUp,
-  isRejectionOnlySpeech,
-  isRejectionPrefixedSpeech,
-  parseCallerNameCorrection,
-  parseScheduleCorrectionSpeech,
-  shouldReadBackAddressImmediately,
-} from "./confirmation-correction.js";
+import { applyCorrectionToStructuredField, syncLegacyStringFields } from "./structured-intake.js";
 import { logError } from "../logger.js";
 import {
   explainPostIntakeBranch,
@@ -115,7 +111,6 @@ import {
   logTurnStart,
   logTurnStateAfterMerge,
 } from "../bridge/turn-diagnostic.js";
-import { applyCorrectionToStructuredField, syncLegacyStringFields } from "./structured-intake.js";
 
 export type RealtimeTurnOutcome = {
   replyText: string;
@@ -273,46 +268,6 @@ function processValidatedNameCaptureTurn(input: {
   fields: RealtimeFields;
   speech: string;
 }): ReturnType<typeof processNameCaptureTurn> {
-  const { fields, speech } = input;
-
-  if (isAwaitingNameConfirmation(fields)) {
-    if (isRejectionOnlySpeech(speech)) {
-      return {
-        status: "repeat",
-        fields: {
-          ...fields,
-          name_pending_confirmation: undefined,
-          name_awaiting_repeat: true,
-          name_needs_clarification: true,
-        },
-        replyText: buildCorrectionFollowUp("caller_name"),
-        nameConfirmationRequested: false,
-        nameCorrected: true,
-      };
-    }
-
-    const correctedName = parseCallerNameCorrection(speech);
-
-    if (
-      correctedName &&
-      (isRejectionPrefixedSpeech(speech) || isCorrectionPhrase(speech))
-    ) {
-      return {
-        status: "accepted",
-        fields: sanitizeInvalidStoredCallerName({
-          ...fields,
-          full_name: correctedName,
-          name_pending_confirmation: undefined,
-          name_awaiting_repeat: false,
-          name_needs_clarification: false,
-        }),
-        replyText: null,
-        nameConfirmationRequested: false,
-        nameCorrected: true,
-      };
-    }
-  }
-
   const outcome = processNameCaptureTurn({
     fields: input.fields,
     speech: input.speech,
@@ -461,7 +416,7 @@ function buildPostIntakeReply(
   if (
     isCallerNameResolved(updatedFields) &&
     isCallbackPhoneResolved(updatedFields) &&
-    shouldReadBackAddressImmediately(updatedFields) &&
+    needsAddressReadback(updatedFields) &&
     nextRequired === "address"
   ) {
     return packagePostIntakeResult(
@@ -538,14 +493,27 @@ function isNameCaptureTurn(
     return false;
   }
 
+  if (isAwaitingNameConfirmation(fields) || fields.name_awaiting_repeat === true) {
+    return true;
+  }
+
   if (conversationState !== "collecting_intake") {
     return false;
   }
 
-  return (
-    isAwaitingNameConfirmation(fields) ||
-    fields.name_awaiting_repeat === true
-  );
+  if (getNextRequiredField(fields) !== "full_name") {
+    return false;
+  }
+
+  if (isOpeningReasonCaptureContext(fields, options)) {
+    return false;
+  }
+
+  if (isLikelyCallReasonSpeech(speech)) {
+    return false;
+  }
+
+  return true;
 }
 
 export async function processRealtimeCallerTurn(
@@ -655,39 +623,7 @@ export async function processRealtimeCallerTurn(
     }
 
     if (isCallbackRejected(trimmedSpeech) || trimmedSpeech.length > 0) {
-      if (isRejectionOnlySpeech(trimmedSpeech)) {
-        const reply = ensureSingleIntakeQuestion(
-          buildCorrectionFollowUp("callback_confirmation"),
-        );
-
-        return finishTurn(input, {
-          replyText: reply,
-          hangup: false,
-          hangupAfterMark: false,
-          session,
-          nextConversationState: "awaiting_callback_confirmation",
-        });
-      }
-
       const correctedFields = applyCallbackCorrection(fieldsBefore, trimmedSpeech, callerPhone);
-
-      if (
-        correctedFields.callback_phone === fieldsBefore.callback_phone &&
-        isCallbackRejected(trimmedSpeech)
-      ) {
-        const reply = ensureSingleIntakeQuestion(
-          buildCorrectionFollowUp("callback_confirmation"),
-        );
-
-        return finishTurn(input, {
-          replyText: reply,
-          hangup: false,
-          hangupAfterMark: false,
-          session,
-          nextConversationState: "awaiting_callback_confirmation",
-        });
-      }
-
       const reply = buildCallbackConfirmationReply(correctedFields);
 
       session = applyLocalSessionUpdate(session, {
@@ -758,39 +694,7 @@ export async function processRealtimeCallerTurn(
     }
 
     if (isAddressRejectedSpeech(trimmedSpeech) || trimmedSpeech.length > 0) {
-      if (isRejectionOnlySpeech(trimmedSpeech)) {
-        const reply = ensureSingleIntakeQuestion(
-          buildCorrectionFollowUp("address_confirmation"),
-        );
-
-        return finishTurn(input, {
-          replyText: reply,
-          hangup: false,
-          hangupAfterMark: false,
-          session,
-          nextConversationState: "awaiting_address_confirmation",
-        });
-      }
-
       const correctedFields = applyAddressCorrection(fieldsBefore, trimmedSpeech);
-
-      if (
-        correctedFields.address === fieldsBefore.address &&
-        isAddressRejectedSpeech(trimmedSpeech)
-      ) {
-        const reply = ensureSingleIntakeQuestion(
-          buildCorrectionFollowUp("address_confirmation"),
-        );
-
-        return finishTurn(input, {
-          replyText: reply,
-          hangup: false,
-          hangupAfterMark: false,
-          session,
-          nextConversationState: "awaiting_address_confirmation",
-        });
-      }
-
       const reply = buildAddressConfirmationReply(correctedFields);
 
       session = applyLocalSessionUpdate(session, {
@@ -957,24 +861,9 @@ export async function processRealtimeCallerTurn(
     }
 
     if (isScheduleRejectedSpeech(trimmedSpeech) || trimmedSpeech.length > 0) {
-      if (isRejectionOnlySpeech(trimmedSpeech)) {
-        const reply = ensureSingleIntakeQuestion(
-          buildCorrectionFollowUp("schedule_confirmation"),
-        );
-
-        return finishTurn(input, {
-          replyText: reply,
-          hangup: false,
-          hangupAfterMark: false,
-          session,
-          nextConversationState: "awaiting_schedule_confirmation",
-        });
-      }
-
-      const correctedSpeech = parseScheduleCorrectionSpeech(trimmedSpeech);
       const resetFields: RealtimeFields = {
         ...fieldsBefore,
-        appointment_preference_raw: correctedSpeech,
+        appointment_preference_raw: trimmedSpeech,
         appointment_preference: undefined,
         appointment_schedule_iso: undefined,
         appointment_schedule_iso_end: undefined,

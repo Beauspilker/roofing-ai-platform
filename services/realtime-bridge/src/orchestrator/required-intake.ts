@@ -15,7 +15,6 @@ import {
   validateCallerNameCandidate,
 } from "./field-validation.js";
 import { normalizeCallReasonFromSpeech } from "./call-reason-handling.js";
-import { markAddressCaptured } from "./confirmation-correction.js";
 import { isScheduleComplete } from "./schedule-normalizer.js";
 import { needsCallbackConfirmation, mapRequiredFieldToPending } from "./pending-question.js";
 import {
@@ -391,7 +390,8 @@ export function applyDirectAnswerToMissingField(
     }
     case "address":
       if (!hasValue(updated.address) && isPlausibleServiceAddress(trimmed)) {
-        updated = markAddressCaptured(updated, trimmed.slice(0, 500));
+        updated.address = trimmed.slice(0, 500);
+        updated.address_confirmed = false;
       }
       break;
     case "problem_description":

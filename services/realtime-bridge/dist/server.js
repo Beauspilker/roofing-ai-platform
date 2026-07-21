@@ -431,25 +431,13 @@ function extractCallbackPhoneFromSpeech(speech, callerPhone, options = {}) {
   const phonePattern = /(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/g;
   const matches = [...speech.matchAll(phonePattern)];
   if (matches.length > 0) {
-    const hasCorrection = /\b(actually|make that|correction|instead|rather|change it to|should be|no[, ]|nope|wrong|incorrect)\b/i.test(
+    const hasCorrection = /\b(actually|make that|correction|instead|rather|change it to|should be)\b/i.test(
       speech
     );
     const chosen = hasCorrection ? matches[matches.length - 1] : matches[0];
     const digits = chosen[0].replace(/\D/g, "");
     if (digits.length >= 10) {
       const e164 = normalizeCallbackPhoneE164(digits.slice(-10));
-      if (!isCompanyPhoneNumber(e164)) {
-        return e164;
-      }
-    }
-  }
-  const endsInMatch = speech.match(
-    /\b(?:ends in|ending in|last four(?: digits)?(?: are| is)?)\s*(\d{4})\b/i
-  );
-  if (endsInMatch?.[1]) {
-    const baseDigits = (options.currentPhone ?? callerPhone ?? "").replace(/\D/g, "").slice(-10);
-    if (baseDigits.length === 10) {
-      const e164 = normalizeCallbackPhoneE164(`${baseDigits.slice(0, 6)}${endsInMatch[1]}`);
       if (!isCompanyPhoneNumber(e164)) {
         return e164;
       }
@@ -1011,123 +999,6 @@ function isSummaryRejected(speech) {
   return /^(no|nope|nah|not quite|incorrect|wrong|change|fix|update)\b/.test(normalized);
 }
 
-// src/orchestrator/confirmation-correction.ts
-var REJECTION_ONLY_PATTERN = /^(no|nope|nah|not quite|incorrect|wrong|that's wrong|thats wrong|that is wrong|not right)\.?$/i;
-var REJECTION_PREFIX_PATTERN = /^(?:no|nope|nah|not quite|incorrect|wrong|that's wrong|thats wrong|that is wrong|not right|no[, ]+actually|actually|i meant|not[, ]+it'?s|not[, ]+it is)(?:[, ]|$)/i;
-var REJECTION_INLINE_PATTERN = /^(?:no|nope|nah|not quite|incorrect|wrong|that's wrong|thats wrong|that is wrong|not right|no[, ]+actually|actually|i meant|not[, ]+it'?s|not[, ]+it is)\b[, ]*/i;
-function isRejectionOnlySpeech(speech) {
-  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").replace(/\s+/g, " ").trim();
-  return REJECTION_ONLY_PATTERN.test(normalized);
-}
-function isRejectionPrefixedSpeech(speech) {
-  const normalized = speech.trim();
-  if (!normalized) {
-    return false;
-  }
-  return REJECTION_PREFIX_PATTERN.test(normalized.toLowerCase()) || isRejectionOnlySpeech(normalized);
-}
-function stripRejectionPrefix(speech) {
-  let remaining = speech.trim();
-  while (remaining) {
-    const next = remaining.replace(REJECTION_INLINE_PATTERN, "").trim();
-    if (next === remaining) {
-      break;
-    }
-    remaining = next;
-  }
-  return remaining.replace(/^[, ]+/, "").trim();
-}
-function buildCorrectionFollowUp(pendingQuestion) {
-  switch (pendingQuestion) {
-    case "caller_name":
-      return "Thanks for correcting me. What's the correct name?";
-    case "callback_phone":
-    case "callback_confirmation":
-      return "Thanks for correcting me. What's the correct callback number?";
-    case "service_address":
-    case "address_confirmation":
-      return "Thanks for correcting me. What's the correct address?";
-    case "preferred_callback_time":
-    case "schedule_confirmation":
-      return "Thanks for correcting me. What day and time should I put down?";
-    default:
-      return "Thanks for correcting me. Could you repeat that?";
-  }
-}
-function parseCallerNameCorrection(speech) {
-  const stripped = stripRejectionPrefix(speech);
-  if (!stripped || isRejectionOnlySpeech(stripped)) {
-    return null;
-  }
-  const explicit = extractExplicitCallerName(stripped);
-  if (explicit) {
-    return explicit;
-  }
-  const validated = validateCallerNameCandidate(stripped, {
-    isDirectNameAnswer: true,
-    allowDirectNameWithoutIntro: true
-  });
-  return validated.value;
-}
-function parseAddressCorrection(speech) {
-  const stripped = stripRejectionPrefix(speech);
-  if (!stripped || isRejectionOnlySpeech(stripped)) {
-    return null;
-  }
-  const labeledMatch = stripped.match(
-    /\b(?:address is|the address is|it'?s|it is|at|to)\s+(.+)/i
-  );
-  const candidate = (labeledMatch?.[1] ?? stripped).trim();
-  if (!candidate || !/\d/.test(candidate) || candidate.length < 8) {
-    return null;
-  }
-  return formatAddressForSpeech(candidate.slice(0, 500));
-}
-function parseCallbackPhoneCorrection(speech, callerPhone, currentPhone) {
-  const stripped = stripRejectionPrefix(speech);
-  if (!stripped || isRejectionOnlySpeech(stripped)) {
-    return null;
-  }
-  const explicit = extractCallbackPhoneFromSpeech(stripped, callerPhone, {
-    allowAffirmativeReuse: false
-  });
-  if (explicit) {
-    return normalizeCallbackPhoneE164(explicit);
-  }
-  const endsInMatch = stripped.match(
-    /\b(?:ends in|ending in|last four(?: digits)?(?: are| is)?)\s*(\d{4})\b/i
-  );
-  if (endsInMatch?.[1]) {
-    const baseDigits = (currentPhone ?? callerPhone ?? "").replace(/\D/g, "").slice(-10);
-    if (baseDigits.length === 10) {
-      return normalizeCallbackPhoneE164(`${baseDigits.slice(0, 6)}${endsInMatch[1]}`);
-    }
-  }
-  return null;
-}
-function parseScheduleCorrectionSpeech(speech) {
-  return stripRejectionPrefix(speech);
-}
-function shouldReadBackAddressImmediately(fields) {
-  if (!hasConfirmableAddress(fields.address)) {
-    return false;
-  }
-  if (fields.address_confirmed === true) {
-    return false;
-  }
-  return fields.address_needs_confirmation === true;
-}
-function markAddressCaptured(fields, address) {
-  const formatted = formatAddressForSpeech(address);
-  const ambiguous = !/\d/.test(formatted) || formatted.split(/\s+/).length < 3 || /\b(main street|main st|somewhere|around here|over there)\b/i.test(formatted);
-  return {
-    ...fields,
-    address: formatted,
-    address_confirmed: ambiguous ? false : true,
-    address_needs_confirmation: ambiguous
-  };
-}
-
 // src/orchestrator/address-confirmation.ts
 function hasValue(value) {
   return typeof value === "string" && value.trim().length > 0;
@@ -1166,26 +1037,14 @@ function isAddressRejectedSpeech(speech) {
   return /^(no|nope|nah|not quite|incorrect|wrong|change|fix|update)\b/.test(normalized);
 }
 function applyAddressCorrection(fields, speech) {
-  if (isRejectionOnlySpeech(speech)) {
-    return syncLegacyStringFields({
-      ...fields,
-      address_confirmed: false,
-      address_needs_confirmation: true
-    });
-  }
-  const corrected = parseAddressCorrection(speech);
-  if (!corrected) {
-    return syncLegacyStringFields({
-      ...fields,
-      address_confirmed: false,
-      address_needs_confirmation: true
-    });
+  const trimmed = speech.trim();
+  if (!trimmed) {
+    return fields;
   }
   return syncLegacyStringFields({
     ...fields,
-    address: corrected,
-    address_confirmed: false,
-    address_needs_confirmation: true
+    address: trimmed.slice(0, 500),
+    address_confirmed: false
   });
 }
 function confirmAddress(fields) {
@@ -2212,7 +2071,8 @@ function applyDirectAnswerToMissingField(fields, answer, callerPhone, pendingQue
     }
     case "address":
       if (!hasValue4(updated.address) && isPlausibleServiceAddress(trimmed)) {
-        updated = markAddressCaptured(updated, trimmed.slice(0, 500));
+        updated.address = trimmed.slice(0, 500);
+        updated.address_confirmed = false;
       }
       break;
     case "problem_description":
@@ -5548,7 +5408,8 @@ function mergeExtractedFields(fields, extracted) {
     updated.problem_description = extracted.problem_description.trim().slice(0, 500);
   }
   if (hasValue6(extracted.address) && isPlausibleServiceAddress(extracted.address) && !hasValue6(updated.address)) {
-    updated = markAddressCaptured(updated, extracted.address);
+    updated.address = extracted.address.trim().slice(0, 500);
+    updated.address_confirmed = false;
   }
   if (hasValue6(extracted.callback_phone)) {
     const normalized = normalizeCallbackPhoneE164(extracted.callback_phone);
@@ -5673,7 +5534,8 @@ function applyAnswerForPendingQuestion(fields, answer, callerPhone, pendingQuest
     case "service_address":
       if (!hasValue6(updated.address)) {
         if (isPlausibleServiceAddress(trimmed)) {
-          updated = markAddressCaptured(updated, trimmed.slice(0, 500));
+          updated.address = trimmed.slice(0, 500);
+          updated.address_confirmed = false;
         }
       }
       break;
@@ -5760,13 +5622,7 @@ function mergeRealtimeCallerAnswer(fields, answer, callerPhone, options = {}) {
   return merged;
 }
 function applyCallbackCorrection(fields, speech, callerPhone) {
-  if (isRejectionOnlySpeech(speech)) {
-    return syncLegacyStringFields({
-      ...fields,
-      callback_phone_confirmed: false
-    });
-  }
-  const phone = parseCallbackPhoneCorrection(speech, callerPhone, fields.callback_phone);
+  const phone = extractCallbackPhoneFromSpeech(speech, callerPhone);
   if (!phone || isCompanyPhoneNumber(phone)) {
     return fields;
   }
@@ -5927,39 +5783,6 @@ function buildInvalidNameCaptureRepeatOutcome(input) {
   };
 }
 function processValidatedNameCaptureTurn(input) {
-  const { fields, speech } = input;
-  if (isAwaitingNameConfirmation(fields)) {
-    if (isRejectionOnlySpeech(speech)) {
-      return {
-        status: "repeat",
-        fields: {
-          ...fields,
-          name_pending_confirmation: void 0,
-          name_awaiting_repeat: true,
-          name_needs_clarification: true
-        },
-        replyText: buildCorrectionFollowUp("caller_name"),
-        nameConfirmationRequested: false,
-        nameCorrected: true
-      };
-    }
-    const correctedName = parseCallerNameCorrection(speech);
-    if (correctedName && (isRejectionPrefixedSpeech(speech) || isCorrectionPhrase(speech))) {
-      return {
-        status: "accepted",
-        fields: sanitizeInvalidStoredCallerName({
-          ...fields,
-          full_name: correctedName,
-          name_pending_confirmation: void 0,
-          name_awaiting_repeat: false,
-          name_needs_clarification: false
-        }),
-        replyText: null,
-        nameConfirmationRequested: false,
-        nameCorrected: true
-      };
-    }
-  }
   const outcome = processNameCaptureTurn({
     fields: input.fields,
     speech: input.speech,
@@ -6050,7 +5873,7 @@ function buildPostIntakeReply(policy, fieldsBefore, updatedFields, trimmedSpeech
       options
     );
   }
-  if (isCallerNameResolved(updatedFields) && isCallbackPhoneResolved(updatedFields) && shouldReadBackAddressImmediately(updatedFields) && nextRequired === "address") {
+  if (isCallerNameResolved(updatedFields) && isCallbackPhoneResolved(updatedFields) && needsAddressReadback(updatedFields) && nextRequired === "address") {
     return packagePostIntakeResult(
       updatedFields,
       buildAddressConfirmationReply(updatedFields),
@@ -6106,10 +5929,22 @@ function isNameCaptureTurn(fields, conversationState, speech, options = {}) {
   if (isPendingCallReasonQuestion(pending) || !fields.problem_description?.trim()) {
     return false;
   }
+  if (isAwaitingNameConfirmation(fields) || fields.name_awaiting_repeat === true) {
+    return true;
+  }
   if (conversationState !== "collecting_intake") {
     return false;
   }
-  return isAwaitingNameConfirmation(fields) || fields.name_awaiting_repeat === true;
+  if (getNextRequiredField(fields) !== "full_name") {
+    return false;
+  }
+  if (isOpeningReasonCaptureContext(fields, options)) {
+    return false;
+  }
+  if (isLikelyCallReasonSpeech(speech)) {
+    return false;
+  }
+  return true;
 }
 async function processRealtimeCallerTurn(input) {
   const { callSid, callerPhone, speechResult, conversationState, acknowledgmentPolicy } = input;
@@ -6200,31 +6035,7 @@ async function processRealtimeCallerTurn(input) {
       });
     }
     if (isCallbackRejected(trimmedSpeech) || trimmedSpeech.length > 0) {
-      if (isRejectionOnlySpeech(trimmedSpeech)) {
-        const reply2 = ensureSingleIntakeQuestion(
-          buildCorrectionFollowUp("callback_confirmation")
-        );
-        return finishTurn(input, {
-          replyText: reply2,
-          hangup: false,
-          hangupAfterMark: false,
-          session,
-          nextConversationState: "awaiting_callback_confirmation"
-        });
-      }
       const correctedFields = applyCallbackCorrection(fieldsBefore, trimmedSpeech, callerPhone);
-      if (correctedFields.callback_phone === fieldsBefore.callback_phone && isCallbackRejected(trimmedSpeech)) {
-        const reply2 = ensureSingleIntakeQuestion(
-          buildCorrectionFollowUp("callback_confirmation")
-        );
-        return finishTurn(input, {
-          replyText: reply2,
-          hangup: false,
-          hangupAfterMark: false,
-          session,
-          nextConversationState: "awaiting_callback_confirmation"
-        });
-      }
       const reply = buildCallbackConfirmationReply(correctedFields);
       session = applyLocalSessionUpdate(session, {
         collectedFields: correctedFields,
@@ -6286,31 +6097,7 @@ async function processRealtimeCallerTurn(input) {
       });
     }
     if (isAddressRejectedSpeech(trimmedSpeech) || trimmedSpeech.length > 0) {
-      if (isRejectionOnlySpeech(trimmedSpeech)) {
-        const reply2 = ensureSingleIntakeQuestion(
-          buildCorrectionFollowUp("address_confirmation")
-        );
-        return finishTurn(input, {
-          replyText: reply2,
-          hangup: false,
-          hangupAfterMark: false,
-          session,
-          nextConversationState: "awaiting_address_confirmation"
-        });
-      }
       const correctedFields = applyAddressCorrection(fieldsBefore, trimmedSpeech);
-      if (correctedFields.address === fieldsBefore.address && isAddressRejectedSpeech(trimmedSpeech)) {
-        const reply2 = ensureSingleIntakeQuestion(
-          buildCorrectionFollowUp("address_confirmation")
-        );
-        return finishTurn(input, {
-          replyText: reply2,
-          hangup: false,
-          hangupAfterMark: false,
-          session,
-          nextConversationState: "awaiting_address_confirmation"
-        });
-      }
       const reply = buildAddressConfirmationReply(correctedFields);
       session = applyLocalSessionUpdate(session, {
         collectedFields: correctedFields,
@@ -6454,22 +6241,9 @@ async function processRealtimeCallerTurn(input) {
       });
     }
     if (isScheduleRejectedSpeech(trimmedSpeech) || trimmedSpeech.length > 0) {
-      if (isRejectionOnlySpeech(trimmedSpeech)) {
-        const reply2 = ensureSingleIntakeQuestion(
-          buildCorrectionFollowUp("schedule_confirmation")
-        );
-        return finishTurn(input, {
-          replyText: reply2,
-          hangup: false,
-          hangupAfterMark: false,
-          session,
-          nextConversationState: "awaiting_schedule_confirmation"
-        });
-      }
-      const correctedSpeech = parseScheduleCorrectionSpeech(trimmedSpeech);
       const resetFields = {
         ...fieldsBefore,
-        appointment_preference_raw: correctedSpeech,
+        appointment_preference_raw: trimmedSpeech,
         appointment_preference: void 0,
         appointment_schedule_iso: void 0,
         appointment_schedule_iso_end: void 0,

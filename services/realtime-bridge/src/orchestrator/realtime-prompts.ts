@@ -30,7 +30,6 @@ export type RealtimeFields = Omit<
   emergency_or_active_leak?: TriStateBoolean;
   callback_phone_confirmed?: boolean;
   address_confirmed?: boolean;
-  address_needs_confirmation?: boolean;
   appointment_preference_raw?: string;
   appointment_schedule_iso?: string;
   appointment_schedule_iso_end?: string;

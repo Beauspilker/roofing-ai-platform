@@ -52,10 +52,6 @@ import { resolveActivePendingQuestion, resolvePendingQuestion } from "./pending-
 import {
   normalizePhotosValue,
 } from "./photos-field.js";
-import {
-  isRejectionOnlySpeech,
-  parseCallbackPhoneCorrection,
-} from "./confirmation-correction.js";
 import { preserveConfirmedFieldState } from "./safe-field-merge.js";
 import type { ConversationState } from "./conversation-state.js";
 import {
@@ -188,14 +184,7 @@ export function applyCallbackCorrection(
   speech: string,
   callerPhone?: string,
 ): RealtimeFields {
-  if (isRejectionOnlySpeech(speech)) {
-    return syncLegacyStringFields({
-      ...fields,
-      callback_phone_confirmed: false,
-    });
-  }
-
-  const phone = parseCallbackPhoneCorrection(speech, callerPhone, fields.callback_phone);
+  const phone = extractCallbackPhoneFromSpeech(speech, callerPhone);
 
   if (!phone || isCompanyPhoneNumber(phone)) {
     return fields;

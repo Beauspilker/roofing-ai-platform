@@ -1,9 +1,5 @@
 import type { RealtimeFields } from "./realtime-prompts.js";
 import { syncLegacyStringFields } from "./structured-intake.js";
-import {
-  isRejectionOnlySpeech,
-  parseAddressCorrection,
-} from "./confirmation-correction.js";
 
 function hasValue(value: string | undefined): boolean {
   return typeof value === "string" && value.trim().length > 0;
@@ -56,29 +52,16 @@ export function isAddressRejectedSpeech(speech: string): boolean {
 }
 
 export function applyAddressCorrection(fields: RealtimeFields, speech: string): RealtimeFields {
-  if (isRejectionOnlySpeech(speech)) {
-    return syncLegacyStringFields({
-      ...fields,
-      address_confirmed: false,
-      address_needs_confirmation: true,
-    });
-  }
+  const trimmed = speech.trim();
 
-  const corrected = parseAddressCorrection(speech);
-
-  if (!corrected) {
-    return syncLegacyStringFields({
-      ...fields,
-      address_confirmed: false,
-      address_needs_confirmation: true,
-    });
+  if (!trimmed) {
+    return fields;
   }
 
   return syncLegacyStringFields({
     ...fields,
-    address: corrected,
+    address: trimmed.slice(0, 500),
     address_confirmed: false,
-    address_needs_confirmation: true,
   });
 }
 

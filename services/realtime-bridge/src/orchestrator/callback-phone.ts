@@ -59,7 +59,7 @@ export function isCallbackRejected(speech: string): boolean {
 export function extractCallbackPhoneFromSpeech(
   speech: string,
   callerPhone?: string,
-  options: { allowAffirmativeReuse?: boolean; currentPhone?: string } = {},
+  options: { allowAffirmativeReuse?: boolean } = {},
 ): string | null {
   const normalized = speech.toLowerCase();
   const phonePattern =
@@ -68,7 +68,7 @@ export function extractCallbackPhoneFromSpeech(
 
   if (matches.length > 0) {
     const hasCorrection =
-      /\b(actually|make that|correction|instead|rather|change it to|should be|no[, ]|nope|wrong|incorrect)\b/i.test(
+      /\b(actually|make that|correction|instead|rather|change it to|should be)\b/i.test(
         speech,
       );
     const chosen = hasCorrection ? matches[matches.length - 1] : matches[0];
@@ -76,24 +76,6 @@ export function extractCallbackPhoneFromSpeech(
 
     if (digits.length >= 10) {
       const e164 = normalizeCallbackPhoneE164(digits.slice(-10));
-
-      if (!isCompanyPhoneNumber(e164)) {
-        return e164;
-      }
-    }
-  }
-
-  const endsInMatch = speech.match(
-    /\b(?:ends in|ending in|last four(?: digits)?(?: are| is)?)\s*(\d{4})\b/i,
-  );
-
-  if (endsInMatch?.[1]) {
-    const baseDigits = (options.currentPhone ?? callerPhone ?? "")
-      .replace(/\D/g, "")
-      .slice(-10);
-
-    if (baseDigits.length === 10) {
-      const e164 = normalizeCallbackPhoneE164(`${baseDigits.slice(0, 6)}${endsInMatch[1]}`);
 
       if (!isCompanyPhoneNumber(e164)) {
         return e164;

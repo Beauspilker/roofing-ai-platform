@@ -52,38 +52,99 @@ export function normalizePersonName(name: string): string {
 export function parseNameFromSpeech(text: string): string | null {
   const cleaned = stripInterruptionPrefix(text.trim())
     .replace(CORRECTION_PREFIX_PATTERN, "")
-    .replace(NAME_PREFIX_PATTERN, "")
     .trim();
 
   if (!cleaned) {
     return null;
   }
 
-  const explicitMatch = cleaned.match(
-    /(?:^|\b)(?:my name is|name is|this is|i am|i'm|it's|it is|call me)\s+([A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,3})/i,
-  );
+  const nonNameLeadIn =
+    /^(?:i'?m|i am)\s+(?:calling(?:\s+(?:about|for|regarding))?|call(?:ing)?\s+(?:about|for|regarding)|having|needing|looking(?:\s+for)?|wondering(?:\s+(?:about|if))?|trying(?:\s+to)?|reporting|asking(?:\s+about)?)\b/i;
 
-  if (explicitMatch?.[1]) {
-    return normalizePersonName(explicitMatch[1]);
+  if (nonNameLeadIn.test(cleaned)) {
+    return null;
   }
 
-  const directMatch = cleaned.match(
+  const positivePatterns = [
+    /\b(?:my name is|name is)\s+([A-Za-z][A-Za-z'-]+(?:\s+[A-Za-z][A-Za-z'-]+){0,3})(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i,
+    /\bthis is\s+([A-Za-z][A-Za-z'-]+(?:\s+[A-Za-z][A-Za-z'-]+){0,2})(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i,
+    /\b(?:it'?s|it is)\s+([A-Za-z][A-Za-z'-]+(?:\s+[A-Za-z][A-Za-z'-]+){0,2})(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i,
+    /\b(?:i am|i'm)\s+([A-Za-z][A-Za-z'-]+(?:\s+[A-Za-z][A-Za-z'-]+){0,2})(?=\s*,\s*and\b)/i,
+    /\b(?:i am|i'm)\s+([A-Za-z][A-Za-z'-]+(?:\s+[A-Za-z][A-Za-z'-]+)?)(?=\s*,)/i,
+    /\b(?:i am|i'm)\s+([A-Za-z][A-Za-z'-]+)\s+and\b/i,
+    /\b(?:call me)\s+([A-Za-z][A-Za-z'-]+(?:\s+[A-Za-z][A-Za-z'-]+){0,2})(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i,
+  ];
+
+  for (const pattern of positivePatterns) {
+    const match = cleaned.match(pattern);
+    const candidate = match?.[1]?.trim();
+
+    if (!candidate) {
+      continue;
+    }
+
+    const refined = refineParsedNameCandidate(candidate);
+
+    if (refined) {
+      return normalizePersonName(refined);
+    }
+  }
+
+  const withoutIntro = cleaned.replace(NAME_PREFIX_PATTERN, "").replace(/[.!?]+$/g, "").trim();
+  const directMatch = withoutIntro.match(
     /^([A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,3})$/,
   );
 
-  if (directMatch?.[1]) {
+  if (directMatch?.[1] && isPlausibleParsedName(directMatch[1])) {
     return normalizePersonName(directMatch[1]);
   }
 
-  const looseMatch = cleaned.match(
-    /([A-Za-z]{2,}(?:['-][A-Za-z]{2,})?(?:\s+[A-Za-z]{2,}(?:['-][A-Za-z]{2,})?){0,3})/,
-  );
+  return null;
+}
 
-  if (looseMatch?.[1]) {
-    return normalizePersonName(looseMatch[1]);
+function refineParsedNameCandidate(candidate: string): string | null {
+  const words = candidate.trim().split(/\s+/).filter(Boolean);
+
+  for (let length = words.length; length >= 1; length -= 1) {
+    const prefix = words.slice(0, length).join(" ");
+
+    if (isPlausibleParsedName(prefix)) {
+      return prefix;
+    }
   }
 
   return null;
+}
+
+function isPlausibleParsedName(name: string): boolean {
+  const trimmed = name.trim();
+
+  if (trimmed.length < 2 || trimmed.length > 60 || /\d/.test(trimmed)) {
+    return false;
+  }
+
+  const invalidExact =
+    /^(calling|call|calling about|calling for|having|needing|looking|wondering|trying|reporting|asking|roof|roofing|damage|hail|storm|leak|shingles|insurance|claim|pictures|photos|appointment|today|tomorrow|yes|no|yeah|nope|yep|nah|correct|right)$/i;
+
+  const words = trimmed.split(/\s+/);
+
+  if (words.length === 0 || words.length > 4) {
+    return false;
+  }
+
+  if (words.some((word) => invalidExact.test(word.toLowerCase()))) {
+    return false;
+  }
+
+  if (
+    /\b(hail|storm|roof|damage|leak|insurance|claim|appointment|pictures?|photos?)\b/i.test(
+      trimmed,
+    )
+  ) {
+    return false;
+  }
+
+  return /^[A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,3}$/.test(trimmed);
 }
 
 export function parseSpeechConfidence(

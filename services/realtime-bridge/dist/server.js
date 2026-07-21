@@ -607,19 +607,50 @@ var CLOSING_MESSAGE = "Great. I'll send this information to the roofing team, an
 var DAMAGE_AND_INTAKE_TERMS = /\b(hail(?:\s+damage)?|storm(?:\s+damage)?|roof(?:ing)?(?:\s+leak)?|roof\s+leak|leak(?:ing)?|missing\s+shingles?|shingles?|damage|damaged|insurance|claim|adjuster|estimate|inspection|replacement|pictures?|photos?|appointment|today|tomorrow|morning|afternoon|evening|urgent|emergency|water|tree(?:\s+damage)?|wind|gutter|repair|replace|callback|address|property|number|yes|no|yeah|nope|yep|nah|correct|right)\b/i;
 var PHONE_PATTERN = /(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/;
 var DATE_OR_TIME_PATTERN = /\b(today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{1,2}(:\d{2})?\s*(am|pm)|\d{1,2}\/\d{1,2})\b/i;
-var EXPLICIT_NAME_INTRO_PATTERN = /\b(?:my name is|name is|this is|i am|i'm|i am|call me)\s+[A-Za-z]/i;
+var NON_NAME_I_AM_LEAD_INS = /^(?:i'?m|i am)\s+(?:calling(?:\s+(?:about|for|regarding))?|call(?:ing)?\s+(?:about|for|regarding)|having|needing|looking(?:\s+for)?|wondering(?:\s+(?:about|if))?|trying(?:\s+to)?|reporting|asking(?:\s+about)?)\b/i;
+var CALL_REASON_LEAD_IN_PATTERN = /\b(?:i'?m|i am|we'?re|we are)\s+(?:calling(?:\s+(?:about|for|regarding))?|call(?:ing)?\s+(?:about|for|regarding)|having|needing|looking(?:\s+for)?|wondering(?:\s+(?:about|if))?|trying(?:\s+to)?|reporting|asking(?:\s+about)?)\b/i;
+var POSITIVE_NAME_INTRO_PATTERNS = [
+  /\b(?:my name is|name is)\s+([A-Za-z][A-Za-z'\-]+(?:\s+[A-Za-z][A-Za-z'\-]+){0,3})(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i,
+  /\bthis is\s+([A-Za-z][A-Za-z'\-]+(?:\s+[A-Za-z][A-Za-z'\-]+){0,2})(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i,
+  /\b(?:it'?s|it is)\s+([A-Za-z][A-Za-z'\-]+(?:\s+[A-Za-z][A-Za-z'\-]+){0,2})(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i,
+  /\b(?:i am|i'm)\s+([A-Za-z][A-Za-z'\-]+(?:\s+[A-Za-z][A-Za-z'\-]+){0,2})(?=\s*,\s*and\b)/i,
+  /\b(?:i am|i'm)\s+([A-Za-z][A-Za-z'\-]+(?:\s+[A-Za-z][A-Za-z'\-]+)?)(?=\s*,)/i,
+  /\b(?:i am|i'm)\s+([A-Za-z][A-Za-z'\-]+)\s+and\b/i,
+  /\b(?:call me)\s+([A-Za-z][A-Za-z'\-]+(?:\s+[A-Za-z][A-Za-z'\-]+){0,2})(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i
+];
+var INVALID_CALLER_NAME_EXACT = /^(?:calling|call|calling about|calling for|having|needing|looking|wondering|trying|reporting|asking|roof|roofing|damage|hail|storm|leak|shingles|insurance|claim|pictures|photos|appointment|today|tomorrow|yes|no|yeah|nope|yep|nah|correct|right|and|with|from|who|about|for|the|this|that|it|its|i|i'm|im|am|are|we|our|my|your|have|has|had)$/i;
+var INVALID_CALLER_NAME_VERB = /^(?:am|is|are|was|were|be|been|being|have|has|had|do|does|did|will|would|can|could|should|may|might|must|need|want|got|get|getting|going|looking|wondering|trying|reporting|asking|calling|having|needing)$/i;
 function containsRoofingDamageLanguage(text) {
   return DAMAGE_AND_INTAKE_TERMS.test(text.trim());
+}
+function isNonNameIamLeadIn(speech) {
+  return NON_NAME_I_AM_LEAD_INS.test(speech.trim());
+}
+function isCallReasonLeadInSpeech(speech) {
+  return CALL_REASON_LEAD_IN_PATTERN.test(speech.trim());
+}
+function hasPositiveNameEvidence(speech) {
+  const trimmed = speech.trim();
+  if (!trimmed || isNonNameIamLeadIn(trimmed) || isCallReasonLeadInSpeech(trimmed)) {
+    return false;
+  }
+  return POSITIVE_NAME_INTRO_PATTERNS.some((pattern) => pattern.test(trimmed));
 }
 function isLikelyCallReasonSpeech(speech) {
   const trimmed = speech.trim();
   if (!trimmed) {
     return false;
   }
+  if (isCallReasonLeadInSpeech(trimmed)) {
+    return true;
+  }
   if (isPlausibleDamageDescription(trimmed)) {
     return true;
   }
-  return containsRoofingDamageLanguage(trimmed) && !EXPLICIT_NAME_INTRO_PATTERN.test(trimmed);
+  if (containsRoofingDamageLanguage(trimmed) && !hasPositiveNameEvidence(trimmed)) {
+    return true;
+  }
+  return false;
 }
 function isOpeningReasonCaptureContext(fields, options = {}) {
   if (options.isFirstCallerTurn === true) {
@@ -629,6 +660,28 @@ function isOpeningReasonCaptureContext(fields, options = {}) {
     return true;
   }
   return fields.pending_question?.trim() === "reason_for_call" || fields.pending_question?.trim() === "call_reason";
+}
+function tokenizeNameWords(name) {
+  return name.trim().split(/\s+/).filter(Boolean);
+}
+function isInvalidCallerNameWord(word) {
+  const normalized = word.trim().toLowerCase();
+  if (!normalized) {
+    return true;
+  }
+  if (INVALID_CALLER_NAME_EXACT.test(normalized)) {
+    return true;
+  }
+  if (INVALID_CALLER_NAME_VERB.test(normalized)) {
+    return true;
+  }
+  if (containsRoofingDamageLanguage(normalized)) {
+    return true;
+  }
+  if (DATE_OR_TIME_PATTERN.test(normalized)) {
+    return true;
+  }
+  return false;
 }
 function isPlausibleCallerName(name) {
   const trimmed = name.trim();
@@ -641,10 +694,14 @@ function isPlausibleCallerName(name) {
   if (/[.!?]/.test(trimmed)) {
     return false;
   }
-  if (trimmed.split(/\s+/).length > 4) {
+  const words = tokenizeNameWords(trimmed);
+  if (words.length === 0 || words.length > 4) {
     return false;
   }
-  if (/^(calling|call|yes|no|yeah|nope|nah|correct|right)$/i.test(trimmed)) {
+  if (words.some((word) => isInvalidCallerNameWord(word))) {
+    return false;
+  }
+  if (INVALID_CALLER_NAME_EXACT.test(trimmed.replace(/\s+/g, " "))) {
     return false;
   }
   if (containsRoofingDamageLanguage(trimmed)) {
@@ -653,62 +710,90 @@ function isPlausibleCallerName(name) {
   if (DATE_OR_TIME_PATTERN.test(trimmed)) {
     return false;
   }
-  if (/\b(street|st|avenue|ave|road|rd|drive|dr|lane|ln|boulevard|blvd|way|court|ct)\b/i.test(trimmed)) {
+  if (isCallReasonLeadInSpeech(trimmed) || isNonNameIamLeadIn(trimmed)) {
+    return false;
+  }
+  if (/\b(street|st|avenue|ave|road|rd|drive|dr|lane|ln|boulevard|blvd|way|court|ct)\b/i.test(
+    trimmed
+  )) {
     return false;
   }
   return /^[A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){0,3}$/.test(trimmed);
 }
+function refineNameCandidate(candidate) {
+  const words = candidate.trim().split(/\s+/).filter(Boolean);
+  for (let length = words.length; length >= 1; length -= 1) {
+    const prefix = words.slice(0, length).join(" ");
+    if (isPlausibleCallerName(prefix)) {
+      return prefix;
+    }
+  }
+  return null;
+}
 function extractExplicitCallerName(speech) {
-  const patterns = [
-    /\b(?:my name is|name is)\s+([A-Za-z][A-Za-z'\-]+(?:\s+[A-Za-z][A-Za-z'\-]+)?)(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i,
-    /\b(?:this is|i am|i'm|name's)\s+(?!calling\b|call(?:ing)?\s+(?:for|about|regarding)\b)([A-Za-z][A-Za-z'\-]+(?:\s+[A-Za-z][A-Za-z'\-]+)?)(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i
-  ];
-  for (const pattern of patterns) {
-    const match = speech.match(pattern);
+  const trimmed = speech.trim();
+  if (!trimmed || isNonNameIamLeadIn(trimmed)) {
+    return null;
+  }
+  for (const pattern of POSITIVE_NAME_INTRO_PATTERNS) {
+    const match = trimmed.match(pattern);
     const candidate = match?.[1]?.trim();
-    if (candidate && isPlausibleCallerName(candidate)) {
-      return candidate;
+    if (!candidate) {
+      continue;
+    }
+    const refined = refineNameCandidate(candidate);
+    if (refined) {
+      return refined;
     }
   }
   return null;
 }
 function validateCallerNameCandidate(speech, options = {}) {
-  const explicit = extractExplicitCallerName(speech);
-  if (explicit) {
-    return { value: explicit, needsClarification: false };
-  }
   const trimmed = speech.trim();
   if (!trimmed) {
     return { value: null, needsClarification: false };
   }
-  if (!options.isDirectNameAnswer && !options.allowDirectNameWithoutIntro && !EXPLICIT_NAME_INTRO_PATTERN.test(trimmed)) {
+  const explicit = extractExplicitCallerName(trimmed);
+  if (explicit) {
+    return { value: explicit, needsClarification: false };
+  }
+  if (options.isDirectNameAnswer || options.allowDirectNameWithoutIntro) {
+    const directCandidate = trimmed.replace(/^(?:it'?s|it is)\s+/i, "").replace(/[.!?]+$/g, "").trim();
+    if (isLikelyCallReasonSpeech(directCandidate) || isCallReasonLeadInSpeech(directCandidate) || !isPlausibleCallerName(directCandidate)) {
+      return {
+        value: null,
+        needsClarification: options.isDirectNameAnswer && directCandidate.length > 0
+      };
+    }
+    return { value: directCandidate, needsClarification: false };
+  }
+  if (!hasPositiveNameEvidence(trimmed)) {
     return { value: null, needsClarification: false };
   }
   if (isLikelyCallReasonSpeech(trimmed) || !isPlausibleCallerName(trimmed)) {
-    if (options.isDirectNameAnswer && trimmed.length > 0) {
-      return { value: null, needsClarification: true };
-    }
     return { value: null, needsClarification: false };
-  }
-  if (options.isDirectNameAnswer || options.allowDirectNameWithoutIntro) {
-    return { value: trimmed, needsClarification: false };
   }
   return { value: null, needsClarification: false };
 }
 function sanitizeInvalidStoredCallerName(fields) {
-  const storedName = fields.full_name?.trim();
-  if (!storedName || isPlausibleCallerName(storedName)) {
-    return fields;
+  let updated = { ...fields };
+  const storedName = updated.full_name?.trim();
+  const pendingName = updated.name_pending_confirmation?.trim();
+  if (storedName && !isPlausibleCallerName(storedName)) {
+    updated = {
+      ...updated,
+      full_name: void 0,
+      name_needs_clarification: false
+    };
   }
-  const existingReason = fields.problem_description?.trim();
-  const restoredReason = existingReason || extractDamageOrCallReason(storedName) || storedName;
-  return {
-    ...fields,
-    full_name: void 0,
-    name_pending_confirmation: void 0,
-    name_needs_clarification: false,
-    problem_description: restoredReason
-  };
+  if (pendingName && !isPlausibleCallerName(pendingName)) {
+    updated = {
+      ...updated,
+      name_pending_confirmation: void 0,
+      name_needs_clarification: false
+    };
+  }
+  return updated;
 }
 function isPlausibleServiceAddress(address) {
   const trimmed = address.trim();
@@ -718,7 +803,9 @@ function isPlausibleServiceAddress(address) {
   if (!/\d/.test(trimmed)) {
     return false;
   }
-  if (containsRoofingDamageLanguage(trimmed) && !/\b(street|st|avenue|ave|road|rd|drive|dr|lane|ln|way|court|ct|place|pl)\b/i.test(trimmed)) {
+  if (containsRoofingDamageLanguage(trimmed) && !/\b(street|st|avenue|ave|road|rd|drive|dr|lane|ln|way|court|ct|place|pl)\b/i.test(
+    trimmed
+  )) {
     return false;
   }
   return true;
@@ -744,7 +831,7 @@ function buildNameClarificationPrompt(currentGuess, options = {}) {
   if (options.askToSpell) {
     return "Could you spell your name for me?";
   }
-  if (currentGuess && currentGuess.length <= 12) {
+  if (currentGuess && currentGuess.length <= 12 && isPlausibleCallerName(currentGuess)) {
     return `I'm sorry, I heard "${currentGuess}," but I want to make sure I have your name right. Could you say or spell it one more time?`;
   }
   return "I'm sorry, I didn't catch your name. Could you say it one more time?";
@@ -4940,29 +5027,72 @@ function normalizePersonName(name) {
   ).join(" ");
 }
 function parseNameFromSpeech(text) {
-  const cleaned = stripInterruptionPrefix(text.trim()).replace(CORRECTION_PREFIX_PATTERN2, "").replace(NAME_PREFIX_PATTERN, "").trim();
+  const cleaned = stripInterruptionPrefix(text.trim()).replace(CORRECTION_PREFIX_PATTERN2, "").trim();
   if (!cleaned) {
     return null;
   }
-  const explicitMatch = cleaned.match(
-    /(?:^|\b)(?:my name is|name is|this is|i am|i'm|it's|it is|call me)\s+([A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,3})/i
-  );
-  if (explicitMatch?.[1]) {
-    return normalizePersonName(explicitMatch[1]);
+  const nonNameLeadIn = /^(?:i'?m|i am)\s+(?:calling(?:\s+(?:about|for|regarding))?|call(?:ing)?\s+(?:about|for|regarding)|having|needing|looking(?:\s+for)?|wondering(?:\s+(?:about|if))?|trying(?:\s+to)?|reporting|asking(?:\s+about)?)\b/i;
+  if (nonNameLeadIn.test(cleaned)) {
+    return null;
   }
-  const directMatch = cleaned.match(
+  const positivePatterns = [
+    /\b(?:my name is|name is)\s+([A-Za-z][A-Za-z'-]+(?:\s+[A-Za-z][A-Za-z'-]+){0,3})(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i,
+    /\bthis is\s+([A-Za-z][A-Za-z'-]+(?:\s+[A-Za-z][A-Za-z'-]+){0,2})(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i,
+    /\b(?:it'?s|it is)\s+([A-Za-z][A-Za-z'-]+(?:\s+[A-Za-z][A-Za-z'-]+){0,2})(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i,
+    /\b(?:i am|i'm)\s+([A-Za-z][A-Za-z'-]+(?:\s+[A-Za-z][A-Za-z'-]+){0,2})(?=\s*,\s*and\b)/i,
+    /\b(?:i am|i'm)\s+([A-Za-z][A-Za-z'-]+(?:\s+[A-Za-z][A-Za-z'-]+)?)(?=\s*,)/i,
+    /\b(?:i am|i'm)\s+([A-Za-z][A-Za-z'-]+)\s+and\b/i,
+    /\b(?:call me)\s+([A-Za-z][A-Za-z'-]+(?:\s+[A-Za-z][A-Za-z'-]+){0,2})(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i
+  ];
+  for (const pattern of positivePatterns) {
+    const match = cleaned.match(pattern);
+    const candidate = match?.[1]?.trim();
+    if (!candidate) {
+      continue;
+    }
+    const refined = refineParsedNameCandidate(candidate);
+    if (refined) {
+      return normalizePersonName(refined);
+    }
+  }
+  const withoutIntro = cleaned.replace(NAME_PREFIX_PATTERN, "").replace(/[.!?]+$/g, "").trim();
+  const directMatch = withoutIntro.match(
     /^([A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,3})$/
   );
-  if (directMatch?.[1]) {
+  if (directMatch?.[1] && isPlausibleParsedName(directMatch[1])) {
     return normalizePersonName(directMatch[1]);
   }
-  const looseMatch = cleaned.match(
-    /([A-Za-z]{2,}(?:['-][A-Za-z]{2,})?(?:\s+[A-Za-z]{2,}(?:['-][A-Za-z]{2,})?){0,3})/
-  );
-  if (looseMatch?.[1]) {
-    return normalizePersonName(looseMatch[1]);
+  return null;
+}
+function refineParsedNameCandidate(candidate) {
+  const words = candidate.trim().split(/\s+/).filter(Boolean);
+  for (let length = words.length; length >= 1; length -= 1) {
+    const prefix = words.slice(0, length).join(" ");
+    if (isPlausibleParsedName(prefix)) {
+      return prefix;
+    }
   }
   return null;
+}
+function isPlausibleParsedName(name) {
+  const trimmed = name.trim();
+  if (trimmed.length < 2 || trimmed.length > 60 || /\d/.test(trimmed)) {
+    return false;
+  }
+  const invalidExact = /^(calling|call|calling about|calling for|having|needing|looking|wondering|trying|reporting|asking|roof|roofing|damage|hail|storm|leak|shingles|insurance|claim|pictures|photos|appointment|today|tomorrow|yes|no|yeah|nope|yep|nah|correct|right)$/i;
+  const words = trimmed.split(/\s+/);
+  if (words.length === 0 || words.length > 4) {
+    return false;
+  }
+  if (words.some((word) => invalidExact.test(word.toLowerCase()))) {
+    return false;
+  }
+  if (/\b(hail|storm|roof|damage|leak|insurance|claim|appointment|pictures?|photos?)\b/i.test(
+    trimmed
+  )) {
+    return false;
+  }
+  return /^[A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,3}$/.test(trimmed);
 }
 function buildNameConfirmationPrompt(name) {
   return `I heard ${name}. Is that correct?`;
@@ -5618,10 +5748,10 @@ function ensureNonEmptyReply(replyText, fallback) {
   return trimmed || fallback;
 }
 function clearErroneousNameCaptureForReason(fields) {
-  if (fields.problem_description?.trim()) {
-    return fields;
+  const cleaned = sanitizeInvalidStoredCallerName({ ...fields });
+  if (cleaned.problem_description?.trim()) {
+    return cleaned;
   }
-  const cleaned = { ...fields };
   if (cleaned.full_name && !isPlausibleCallerName(cleaned.full_name)) {
     cleaned.full_name = void 0;
   }

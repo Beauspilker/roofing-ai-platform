@@ -83,6 +83,7 @@ import {
   isLikelyCallReasonSpeech,
   isOpeningReasonCaptureContext,
   isPlausibleCallerName,
+  sanitizeInvalidStoredCallerName,
 } from "./field-validation.js";
 import {
   attachPendingQuestion,
@@ -212,11 +213,11 @@ function ensureNonEmptyReply(replyText: string, fallback: string): string {
 }
 
 function clearErroneousNameCaptureForReason(fields: RealtimeFields): RealtimeFields {
-  if (fields.problem_description?.trim()) {
-    return fields;
-  }
+  const cleaned = sanitizeInvalidStoredCallerName({ ...fields });
 
-  const cleaned: RealtimeFields = { ...fields };
+  if (cleaned.problem_description?.trim()) {
+    return cleaned;
+  }
 
   if (cleaned.full_name && !isPlausibleCallerName(cleaned.full_name)) {
     cleaned.full_name = undefined;

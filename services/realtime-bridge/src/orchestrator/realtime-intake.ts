@@ -16,8 +16,9 @@ import {
   normalizeCallbackPhoneE164,
 } from "./callback-phone.js";
 import {
-  applyPendingQuestionAnswer,
+  applyAnswerForPendingQuestion,
   extractAllFieldsFromTranscript,
+  isShortPendingStyleAnswer,
   mergeExtractedFields,
 } from "./multi-field-extraction.js";
 import { REALTIME_ANYTHING_ELSE_QUESTION, type RealtimeFields } from "./realtime-prompts.js";
@@ -47,7 +48,7 @@ import {
   toCollectedFields,
 } from "./structured-intake.js";
 import type { PendingQuestionKey } from "./pending-question.js";
-import { resolvePendingQuestion } from "./pending-question.js";
+import { resolveActivePendingQuestion, resolvePendingQuestion } from "./pending-question.js";
 import {
   normalizePhotosValue,
 } from "./photos-field.js";
@@ -90,26 +91,29 @@ export function mergeRealtimeCallerAnswer(
     conversationState?: ConversationState;
   } = {},
 ): RealtimeFields {
-  const pendingQuestion =
-    options.pendingQuestion ??
-    resolvePendingQuestion(
-      fields,
-      options.conversationState ?? "collecting_intake",
-    );
+  const conversationState = options.conversationState ?? "collecting_intake";
+  const pendingQuestion = resolveActivePendingQuestion(
+    fields,
+    conversationState,
+    options.pendingQuestion,
+  );
 
-  let updated = applyPendingQuestionAnswer(fields, answer, callerPhone, pendingQuestion);
+  let updated = applyAnswerForPendingQuestion(fields, answer, callerPhone, pendingQuestion);
+  updated = {
+    ...updated,
+    pending_question: undefined,
+  };
 
-  const extracted = extractAllFieldsFromTranscript(answer, callerPhone, pendingQuestion);
-  updated = mergeExtractedFields(updated, extracted);
+  const shortAnswer = isShortPendingStyleAnswer(answer);
 
-  const missingBeforeDirect = getMissingRequiredFields(updated);
-  if (missingBeforeDirect.length > 0) {
-    updated = applyDirectAnswerToMissingField(
-      updated,
-      answer,
-      callerPhone,
-      pendingQuestion,
-    );
+  if (!shortAnswer) {
+    const extracted = extractAllFieldsFromTranscript(answer, callerPhone, pendingQuestion);
+    updated = mergeExtractedFields(updated, extracted);
+
+    const missingBeforeDirect = getMissingRequiredFields(updated);
+    if (missingBeforeDirect.length > 0 && pendingQuestion === null) {
+      updated = applyDirectAnswerToMissingField(updated, answer, callerPhone, null);
+    }
   }
 
   if (

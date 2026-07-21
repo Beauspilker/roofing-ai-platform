@@ -6,6 +6,9 @@ import {
 } from "./schedule-normalizer.js";
 import {
   getNextRequiredField,
+  isCallerNameResolved,
+  isCallbackPhoneResolved,
+  needsImmediateSafetyClarification,
   type RequiredFieldKey,
 } from "./required-intake.js";
 import type { ConversationState } from "./conversation-state.js";
@@ -111,6 +114,7 @@ export function resolvePendingQuestion(
   if (stored && isPendingQuestionKey(stored) && isStoredPendingQuestionStillValid(fields, stored)) {
     return stored;
   }
+
   if (conversationState === "awaiting_callback_confirmation") {
     return "callback_confirmation";
   }
@@ -139,11 +143,23 @@ export function resolvePendingQuestion(
     return "summary_confirmation";
   }
 
-  if (needsCallbackConfirmation(fields)) {
+  const nextRequired = getNextRequiredField(fields);
+
+  if (
+    needsCallbackConfirmation(fields) &&
+    nextRequired === "callback_phone" &&
+    isCallerNameResolved(fields) &&
+    !needsImmediateSafetyClarification(fields)
+  ) {
     return "callback_confirmation";
   }
 
-  if (needsAddressConfirmation(fields)) {
+  if (
+    needsAddressConfirmation(fields) &&
+    nextRequired === "address" &&
+    isCallbackPhoneResolved(fields) &&
+    isCallerNameResolved(fields)
+  ) {
     return "address_confirmation";
   }
 
@@ -153,8 +169,7 @@ export function resolvePendingQuestion(
       : "preferred_callback_time";
   }
 
-  const next = getNextRequiredField(fields);
-  return next ? mapRequiredFieldToPending(next) : null;
+  return nextRequired ? mapRequiredFieldToPending(nextRequired) : null;
 }
 
 export function pendingQuestionForConversationState(
@@ -214,4 +229,22 @@ export function allowsBooleanDirectAnswer(
   field: PendingQuestionKey,
 ): boolean {
   return pendingQuestion === field;
+}
+
+export function resolveActivePendingQuestion(
+  fields: RealtimeFields,
+  conversationState: ConversationState,
+  override?: PendingQuestionKey | null,
+): PendingQuestionKey | null {
+  if (override !== undefined) {
+    return override;
+  }
+
+  const stored = fields.pending_question?.trim();
+
+  if (stored && isPendingQuestionKey(stored) && isStoredPendingQuestionStillValid(fields, stored)) {
+    return stored;
+  }
+
+  return resolvePendingQuestion(fields, conversationState);
 }

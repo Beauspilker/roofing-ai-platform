@@ -326,9 +326,13 @@ test("corrected callback number is read back and explicitly confirmed", async ()
 
 test("next intake question is blocked while awaiting callback confirmation", async () => {
   const policy = new AcknowledgmentPolicy();
+  const fields: RealtimeFields = {
+    problem_description: "hail damage",
+    full_name: "Beau Spilker",
+  };
 
   const outcome = await processRealtimeCallerTurn({
-    session: mockSession,
+    session: { ...mockSession, collected_fields: fields },
     callSid: "CA123",
     callerPhone: "+15551234567",
     speechResult: "402-555-5678",

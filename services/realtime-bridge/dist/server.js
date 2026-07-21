@@ -4011,17 +4011,17 @@ function resolvePendingQuestion(fields, conversationState) {
   if (conversationState === "awaiting_summary_confirmation" || conversationState === "handling_correction" || conversationState === "presenting_summary") {
     return "summary_confirmation";
   }
-  if (needsCallbackConfirmation(fields)) {
+  const nextRequired = getNextRequiredField(fields);
+  if (needsCallbackConfirmation(fields) && nextRequired === "callback_phone" && isCallerNameResolved(fields) && !needsImmediateSafetyClarification(fields)) {
     return "callback_confirmation";
   }
-  if (needsAddressConfirmation(fields)) {
+  if (needsAddressConfirmation(fields) && nextRequired === "address" && isCallbackPhoneResolved(fields) && isCallerNameResolved(fields)) {
     return "address_confirmation";
   }
   if (needsScheduleClarification(fields) || needsScheduleConfirmation(fields)) {
     return needsScheduleConfirmation(fields) ? "schedule_confirmation" : "preferred_callback_time";
   }
-  const next = getNextRequiredField(fields);
-  return next ? mapRequiredFieldToPending(next) : null;
+  return nextRequired ? mapRequiredFieldToPending(nextRequired) : null;
 }
 function pendingQuestionForConversationState(conversationState) {
   switch (conversationState) {
@@ -4063,6 +4063,16 @@ function allowsCallbackAffirmativeReuse(pendingQuestion) {
 }
 function allowsBooleanDirectAnswer(pendingQuestion, field) {
   return pendingQuestion === field;
+}
+function resolveActivePendingQuestion(fields, conversationState, override) {
+  if (override !== void 0) {
+    return override;
+  }
+  const stored = fields.pending_question?.trim();
+  if (stored && isPendingQuestionKey(stored) && isStoredPendingQuestionStillValid(fields, stored)) {
+    return stored;
+  }
+  return resolvePendingQuestion(fields, conversationState);
 }
 
 // src/orchestrator/required-intake.ts
@@ -4114,6 +4124,9 @@ function mapRequiredFieldToShared(field) {
 }
 function isCallbackComplete(fields) {
   return hasValue3(fields.callback_phone) && fields.callback_phone_confirmed === true;
+}
+function isCallbackPhoneResolved(fields) {
+  return isCallbackComplete(fields);
 }
 function isFieldComplete(field, fields) {
   switch (field) {
@@ -4345,6 +4358,18 @@ function preserveConfirmedFieldState(before, after) {
 function hasValue4(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
+function isShortPendingStyleAnswer(speech) {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  return /^(yes|yeah|yep|yup|correct|right|no|nope|nah|not yet|i did|i have|i haven't|i havent|haven't|havent)\b/.test(
+    normalized
+  );
+}
+function shouldExtractCallbackPhone(pendingQuestion, speech) {
+  if (pendingQuestion === "callback_phone" || pendingQuestion === "callback_confirmation") {
+    return true;
+  }
+  return !isShortPendingStyleAnswer(speech);
+}
 function extractInsuranceClaim(speech, pending) {
   if (allowsBooleanDirectAnswer(pending, "insurance_claim")) {
     return parseExplicitBoolean(speech);
@@ -4413,9 +4438,9 @@ function extractAllFieldsFromTranscript(speech, callerPhone, pendingQuestion = n
   if (address) {
     extracted.address = address;
   }
-  const callbackPhone = extractCallbackPhoneFromSpeech(trimmed, callerPhone, {
+  const callbackPhone = shouldExtractCallbackPhone(pendingQuestion, trimmed) ? extractCallbackPhoneFromSpeech(trimmed, callerPhone, {
     allowAffirmativeReuse: allowsCallbackAffirmativeReuse(pendingQuestion)
-  });
+  }) : null;
   if (callbackPhone) {
     extracted.callback_phone = callbackPhone;
   }
@@ -4476,7 +4501,7 @@ function mergeExtractedFields(fields, extracted) {
   }
   return preserveConfirmedFieldState(fields, syncLegacyStringFields(updated));
 }
-function applyPendingQuestionAnswer(fields, answer, callerPhone, pendingQuestion) {
+function applyAnswerForPendingQuestion(fields, answer, callerPhone, pendingQuestion) {
   const trimmed = answer.trim();
   if (!trimmed || !pendingQuestion) {
     return fields;
@@ -4518,6 +4543,30 @@ function applyPendingQuestionAnswer(fields, answer, callerPhone, pendingQuestion
         }
       }
       break;
+    case "callback_confirmation": {
+      if (isCallbackConfirmed(trimmed)) {
+        updated.callback_phone_confirmed = true;
+      } else if (isCallbackRejected(trimmed)) {
+        break;
+      } else {
+        const phone = extractCallbackPhoneFromSpeech(trimmed, callerPhone, {
+          allowAffirmativeReuse: true
+        });
+        if (phone && !isCompanyPhoneNumber(phone)) {
+          updated.callback_phone = phone;
+          updated.callback_phone_confirmed = false;
+        }
+      }
+      break;
+    }
+    case "address_confirmation": {
+      if (isAddressConfirmedSpeech(trimmed)) {
+        updated = confirmAddress(updated);
+      } else if (isAddressRejectedSpeech(trimmed)) {
+        break;
+      }
+      break;
+    }
     case "callback_phone":
       if (/^(yes|yeah|yep|correct|this one|that one|same number)\b/i.test(trimmed) && callerPhone) {
         updated.callback_phone = normalizeCallbackPhoneE164(callerPhone);
@@ -4718,21 +4767,25 @@ function hasValue5(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 function mergeRealtimeCallerAnswer(fields, answer, callerPhone, options = {}) {
-  const pendingQuestion = options.pendingQuestion ?? resolvePendingQuestion(
+  const conversationState = options.conversationState ?? "collecting_intake";
+  const pendingQuestion = resolveActivePendingQuestion(
     fields,
-    options.conversationState ?? "collecting_intake"
+    conversationState,
+    options.pendingQuestion
   );
-  let updated = applyPendingQuestionAnswer(fields, answer, callerPhone, pendingQuestion);
-  const extracted = extractAllFieldsFromTranscript(answer, callerPhone, pendingQuestion);
-  updated = mergeExtractedFields(updated, extracted);
-  const missingBeforeDirect = getMissingRequiredFields(updated);
-  if (missingBeforeDirect.length > 0) {
-    updated = applyDirectAnswerToMissingField(
-      updated,
-      answer,
-      callerPhone,
-      pendingQuestion
-    );
+  let updated = applyAnswerForPendingQuestion(fields, answer, callerPhone, pendingQuestion);
+  updated = {
+    ...updated,
+    pending_question: void 0
+  };
+  const shortAnswer = isShortPendingStyleAnswer(answer);
+  if (!shortAnswer) {
+    const extracted = extractAllFieldsFromTranscript(answer, callerPhone, pendingQuestion);
+    updated = mergeExtractedFields(updated, extracted);
+    const missingBeforeDirect = getMissingRequiredFields(updated);
+    if (missingBeforeDirect.length > 0 && pendingQuestion === null) {
+      updated = applyDirectAnswerToMissingField(updated, answer, callerPhone, null);
+    }
   }
   if (hasValue5(updated.appointment_preference_raw) && updated.schedule_confirmed !== true) {
     updated = processScheduleCapture(updated, answer).fields;
@@ -4921,14 +4974,28 @@ function packagePostIntakeResult(fields, replyText, nextState) {
   };
 }
 function buildPostIntakeReply(policy, fieldsBefore, updatedFields, trimmedSpeech, callerPhone, filledCount, options = {}) {
-  if (needsCallbackReadback(updatedFields)) {
+  const nextRequired = getNextRequiredField(updatedFields);
+  if (options.isFirstCallerTurn === true && updatedFields.intake_intro_delivered !== true && updatedFields.problem_description?.trim() && (nextRequired === "full_name" || nextRequired === "emergency_or_active_leak")) {
+    const question = nextRequired === "full_name" ? EARLY_CALLER_NAME_QUESTION : getNaturalTransitionQuestion(nextRequired, updatedFields, callerPhone);
+    return packagePostIntakeResult(
+      {
+        ...updatedFields,
+        intake_intro_delivered: true
+      },
+      ensureSingleIntakeQuestion(
+        `${REALTIME_INTRO_TRANSITION} ${question}`.replace(/\s+/g, " ").trim()
+      ),
+      "collecting_intake"
+    );
+  }
+  if (isCallerNameResolved(updatedFields) && !needsImmediateSafetyClarification(updatedFields) && needsCallbackReadback(updatedFields) && nextRequired === "callback_phone") {
     return packagePostIntakeResult(
       updatedFields,
       buildCallbackConfirmationReply(updatedFields),
       "awaiting_callback_confirmation"
     );
   }
-  if (needsAddressReadback(updatedFields)) {
+  if (isCallerNameResolved(updatedFields) && isCallbackPhoneResolved(updatedFields) && needsAddressReadback(updatedFields) && nextRequired === "address") {
     return packagePostIntakeResult(
       updatedFields,
       buildAddressConfirmationReply(updatedFields),
@@ -4958,20 +5025,6 @@ function buildPostIntakeReply(policy, fieldsBefore, updatedFields, trimmedSpeech
     const anythingElseQuestion = REALTIME_ANYTHING_ELSE_QUESTION;
     const reply = ensureSingleIntakeQuestion(anythingElseQuestion);
     return packagePostIntakeResult(updatedFields, reply, "awaiting_additional_notes");
-  }
-  if (options.isFirstCallerTurn === true && updatedFields.intake_intro_delivered !== true && updatedFields.problem_description?.trim()) {
-    const nextField = getNextRequiredField(updatedFields);
-    const question = nextField === "full_name" ? EARLY_CALLER_NAME_QUESTION : nextField ? getNaturalTransitionQuestion(nextField, updatedFields, callerPhone) : EARLY_CALLER_NAME_QUESTION;
-    return packagePostIntakeResult(
-      {
-        ...updatedFields,
-        intake_intro_delivered: true
-      },
-      ensureSingleIntakeQuestion(
-        `${REALTIME_INTRO_TRANSITION} ${question}`.replace(/\s+/g, " ").trim()
-      ),
-      "collecting_intake"
-    );
   }
   const intakeReply = buildIntakeReply(
     policy,

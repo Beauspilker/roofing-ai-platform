@@ -99,6 +99,10 @@ function isCallbackComplete(fields: RealtimeFields): boolean {
   return hasValue(fields.callback_phone) && fields.callback_phone_confirmed === true;
 }
 
+export function isCallbackPhoneResolved(fields: RealtimeFields): boolean {
+  return isCallbackComplete(fields);
+}
+
 function isFieldComplete(field: RequiredFieldKey, fields: RealtimeFields): boolean {
   switch (field) {
     case "full_name":

@@ -2,9 +2,16 @@ import { detectEmergency } from "../../../../lib/call-intelligence.js";
 import type { RealtimeFields } from "./realtime-prompts.js";
 import {
   extractCallbackPhoneFromSpeech,
+  isCallbackConfirmed,
+  isCallbackRejected,
   isCompanyPhoneNumber,
   normalizeCallbackPhoneE164,
 } from "./callback-phone.js";
+import {
+  confirmAddress,
+  isAddressConfirmedSpeech,
+  isAddressRejectedSpeech,
+} from "./address-confirmation.js";
 import {
   extractDamageOrCallReason,
   extractExplicitCallerName,
@@ -28,6 +35,30 @@ import {
 
 function hasValue(value: string | undefined): boolean {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+/** Short answers that must route only through pendingQuestion. */
+export function isShortPendingStyleAnswer(speech: string): boolean {
+  const normalized = speech
+    .toLowerCase()
+    .replace(/[^\w\s']/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return /^(yes|yeah|yep|yup|correct|right|no|nope|nah|not yet|i did|i have|i haven't|i havent|haven't|havent)$/i.test(
+    normalized,
+  );
+}
+
+function shouldExtractCallbackPhone(
+  pendingQuestion: PendingQuestionKey | null,
+  speech: string,
+): boolean {
+  if (pendingQuestion === "callback_phone" || pendingQuestion === "callback_confirmation") {
+    return true;
+  }
+
+  return !isShortPendingStyleAnswer(speech);
 }
 
 function extractInsuranceClaim(speech: string, pending: PendingQuestionKey | null): boolean | null {
@@ -124,9 +155,11 @@ export function extractAllFieldsFromTranscript(
     extracted.address = address;
   }
 
-  const callbackPhone = extractCallbackPhoneFromSpeech(trimmed, callerPhone, {
-    allowAffirmativeReuse: allowsCallbackAffirmativeReuse(pendingQuestion),
-  });
+  const callbackPhone = shouldExtractCallbackPhone(pendingQuestion, trimmed)
+    ? extractCallbackPhoneFromSpeech(trimmed, callerPhone, {
+        allowAffirmativeReuse: allowsCallbackAffirmativeReuse(pendingQuestion),
+      })
+    : null;
 
   if (callbackPhone) {
     extracted.callback_phone = callbackPhone;
@@ -220,7 +253,7 @@ export function mergeExtractedFields(
   return preserveConfirmedFieldState(fields, syncLegacyStringFields(updated));
 }
 
-export function applyPendingQuestionAnswer(
+export function applyAnswerForPendingQuestion(
   fields: RealtimeFields,
   answer: string,
   callerPhone: string | undefined,
@@ -273,6 +306,30 @@ export function applyPendingQuestionAnswer(
         }
       }
       break;
+    case "callback_confirmation": {
+      if (isCallbackConfirmed(trimmed)) {
+        updated.callback_phone_confirmed = true;
+      } else if (isCallbackRejected(trimmed)) {
+        break;
+      } else {
+        const phone = extractCallbackPhoneFromSpeech(trimmed, callerPhone, {
+          allowAffirmativeReuse: true,
+        });
+        if (phone && !isCompanyPhoneNumber(phone)) {
+          updated.callback_phone = phone;
+          updated.callback_phone_confirmed = false;
+        }
+      }
+      break;
+    }
+    case "address_confirmation": {
+      if (isAddressConfirmedSpeech(trimmed)) {
+        updated = confirmAddress(updated);
+      } else if (isAddressRejectedSpeech(trimmed)) {
+        break;
+      }
+      break;
+    }
     case "callback_phone":
       if (/^(yes|yeah|yep|correct|this one|that one|same number)\b/i.test(trimmed) && callerPhone) {
         updated.callback_phone = normalizeCallbackPhoneE164(callerPhone);
@@ -325,3 +382,6 @@ export function applyPendingQuestionAnswer(
 
   return preserveConfirmedFieldState(fields, syncLegacyStringFields(updated));
 }
+
+/** @deprecated Use applyAnswerForPendingQuestion */
+export const applyPendingQuestionAnswer = applyAnswerForPendingQuestion;

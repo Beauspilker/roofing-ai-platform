@@ -78,7 +78,10 @@ import {
   getNaturalTransitionQuestion,
   getNextRequiredField,
   getSharedMissingFields,
+  isCallerNameResolved,
+  isCallbackPhoneResolved,
   isSharedIntakeComplete,
+  needsImmediateSafetyClarification,
 } from "./required-intake.js";
 import { applyCorrectionToStructuredField, syncLegacyStringFields } from "./structured-intake.js";
 import { logError } from "../logger.js";
@@ -267,7 +270,37 @@ function buildPostIntakeReply(
   filledCount: number,
   options: { afterConfirmation?: boolean; isFirstCallerTurn?: boolean } = {},
 ): { replyText: string; fields: RealtimeFields; nextState: ConversationState } {
-  if (needsCallbackReadback(updatedFields)) {
+  const nextRequired = getNextRequiredField(updatedFields);
+
+  if (
+    options.isFirstCallerTurn === true &&
+    updatedFields.intake_intro_delivered !== true &&
+    updatedFields.problem_description?.trim() &&
+    (nextRequired === "full_name" || nextRequired === "emergency_or_active_leak")
+  ) {
+    const question =
+      nextRequired === "full_name"
+        ? EARLY_CALLER_NAME_QUESTION
+        : getNaturalTransitionQuestion(nextRequired, updatedFields, callerPhone);
+
+    return packagePostIntakeResult(
+      {
+        ...updatedFields,
+        intake_intro_delivered: true,
+      },
+      ensureSingleIntakeQuestion(
+        `${REALTIME_INTRO_TRANSITION} ${question}`.replace(/\s+/g, " ").trim(),
+      ),
+      "collecting_intake",
+    );
+  }
+
+  if (
+    isCallerNameResolved(updatedFields) &&
+    !needsImmediateSafetyClarification(updatedFields) &&
+    needsCallbackReadback(updatedFields) &&
+    nextRequired === "callback_phone"
+  ) {
     return packagePostIntakeResult(
       updatedFields,
       buildCallbackConfirmationReply(updatedFields),
@@ -275,7 +308,12 @@ function buildPostIntakeReply(
     );
   }
 
-  if (needsAddressReadback(updatedFields)) {
+  if (
+    isCallerNameResolved(updatedFields) &&
+    isCallbackPhoneResolved(updatedFields) &&
+    needsAddressReadback(updatedFields) &&
+    nextRequired === "address"
+  ) {
     return packagePostIntakeResult(
       updatedFields,
       buildAddressConfirmationReply(updatedFields),
@@ -312,31 +350,6 @@ function buildPostIntakeReply(
     const reply = ensureSingleIntakeQuestion(anythingElseQuestion);
 
     return packagePostIntakeResult(updatedFields, reply, "awaiting_additional_notes");
-  }
-
-  if (
-    options.isFirstCallerTurn === true &&
-    updatedFields.intake_intro_delivered !== true &&
-    updatedFields.problem_description?.trim()
-  ) {
-    const nextField = getNextRequiredField(updatedFields);
-    const question =
-      nextField === "full_name"
-        ? EARLY_CALLER_NAME_QUESTION
-        : nextField
-          ? getNaturalTransitionQuestion(nextField, updatedFields, callerPhone)
-          : EARLY_CALLER_NAME_QUESTION;
-
-    return packagePostIntakeResult(
-      {
-        ...updatedFields,
-        intake_intro_delivered: true,
-      },
-      ensureSingleIntakeQuestion(
-        `${REALTIME_INTRO_TRANSITION} ${question}`.replace(/\s+/g, " ").trim(),
-      ),
-      "collecting_intake",
-    );
   }
 
   const intakeReply = buildIntakeReply(

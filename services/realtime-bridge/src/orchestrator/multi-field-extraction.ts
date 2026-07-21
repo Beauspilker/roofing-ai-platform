@@ -27,6 +27,9 @@ import {
   normalizeCallReasonFromSpeech,
 } from "./call-reason-handling.js";
 import { isCallerNameResolved } from "./required-intake.js";
+import {
+  markAddressCaptured,
+} from "./confirmation-correction.js";
 import { preserveConfirmedFieldState } from "./safe-field-merge.js";
 import type { PendingQuestionKey } from "./pending-question.js";
 import {
@@ -231,8 +234,7 @@ export function mergeExtractedFields(
     isPlausibleServiceAddress(extracted.address!) &&
     !hasValue(updated.address)
   ) {
-    updated.address = extracted.address!.trim().slice(0, 500);
-    updated.address_confirmed = false;
+    updated = markAddressCaptured(updated, extracted.address!);
   }
 
   if (hasValue(extracted.callback_phone)) {
@@ -384,8 +386,7 @@ export function applyAnswerForPendingQuestion(
     case "service_address":
       if (!hasValue(updated.address)) {
         if (isPlausibleServiceAddress(trimmed)) {
-          updated.address = trimmed.slice(0, 500);
-          updated.address_confirmed = false;
+          updated = markAddressCaptured(updated, trimmed.slice(0, 500));
         }
       }
       break;

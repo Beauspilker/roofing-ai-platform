@@ -380,6 +380,1492 @@ var TurnTimingTracker = class {
   }
 };
 
+// ../../lib/twilio/company-phone.ts
+var DEFAULT_COMPANY_PHONE_E164 = "+14027611540";
+function getCompanyPhoneE164() {
+  return process.env.TWILIO_PHONE_NUMBER?.trim() || DEFAULT_COMPANY_PHONE_E164;
+}
+
+// src/orchestrator/callback-phone.ts
+function normalizeCallbackPhoneE164(phone) {
+  const digits = phone.replace(/\D/g, "");
+  if (digits.length === 10) {
+    return `+1${digits}`;
+  }
+  if (digits.length === 11 && digits.startsWith("1")) {
+    return `+${digits}`;
+  }
+  if (phone.trim().startsWith("+") && digits.length >= 10) {
+    return `+${digits}`;
+  }
+  return phone.trim();
+}
+function formatCallbackForSpeech(phone) {
+  const digits = phone.replace(/\D/g, "").slice(-10);
+  if (digits.length !== 10) {
+    return phone.trim();
+  }
+  return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
+}
+function isCompanyPhoneNumber(phone) {
+  const normalized = normalizeCallbackPhoneE164(phone);
+  const company = normalizeCallbackPhoneE164(getCompanyPhoneE164());
+  return normalized === company;
+}
+function buildCallbackReadbackConfirmation(phone) {
+  const spoken = formatCallbackForSpeech(phone);
+  return `I have your callback number as ${spoken}. Is that correct?`;
+}
+function isCallbackConfirmed(speech) {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  return /^(yes|yeah|yep|yup|correct|right|that's right|thats right|that's correct|thats correct|affirmative)\b/.test(
+    normalized
+  );
+}
+function isCallbackRejected(speech) {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  return /^(no|nope|nah|not quite|incorrect|wrong|change|fix|update)\b/.test(normalized);
+}
+function extractCallbackPhoneFromSpeech(speech, callerPhone, options = {}) {
+  const normalized = speech.toLowerCase();
+  const phonePattern = /(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/g;
+  const matches = [...speech.matchAll(phonePattern)];
+  if (matches.length > 0) {
+    const hasCorrection = /\b(actually|make that|correction|instead|rather|change it to|should be)\b/i.test(
+      speech
+    );
+    const chosen = hasCorrection ? matches[matches.length - 1] : matches[0];
+    const digits = chosen[0].replace(/\D/g, "");
+    if (digits.length >= 10) {
+      const e164 = normalizeCallbackPhoneE164(digits.slice(-10));
+      if (!isCompanyPhoneNumber(e164)) {
+        return e164;
+      }
+    }
+  }
+  if (options.allowAffirmativeReuse === true && callerPhone && /^(yes|yeah|yep|correct|this one|that one|same number|this number|calling from)\b/i.test(
+    normalized.trim()
+  )) {
+    const e164 = normalizeCallbackPhoneE164(callerPhone);
+    if (!isCompanyPhoneNumber(e164)) {
+      return e164;
+    }
+  }
+  return null;
+}
+
+// src/orchestrator/photos-field.ts
+function normalizePhotosValue(value) {
+  if (value === true || value === false || value === "unknown" || value === "declined") {
+    return value;
+  }
+  if (value === "yes") {
+    return true;
+  }
+  if (value === "no") {
+    return false;
+  }
+  if (value === "unknown") {
+    return "unknown";
+  }
+  if (value === "declined") {
+    return "declined";
+  }
+  if (value === null || value === void 0) {
+    return null;
+  }
+  return null;
+}
+
+// src/orchestrator/structured-intake.ts
+var EXPLICIT_YES = /^(yes|yeah|yep|yup|sure|correct|right|already|i have|i did|i've|we have|we've)\b/i;
+var EXPLICIT_NO = /^(no|nope|nah|not yet|haven't|havent|have not|none|negative|i haven't|i have not|we haven't|we have not)\b/i;
+var NOT_YET = /\bnot yet\b/i;
+function parseCorrectionBoolean(speech) {
+  const normalized = speech.trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+  if (/\b(not yet|haven't started|have not started|haven't|have not|no claim)\b/.test(
+    normalized
+  ) && !/\b(actually|wrong|incorrect|correction|did start|started a claim|have started)\b/.test(
+    normalized
+  )) {
+    return false;
+  }
+  if (/\b(yes|yeah|yep|i did start|i have started|we started|already started|did start a claim|started a claim|started the claim)\b/.test(
+    normalized
+  )) {
+    return true;
+  }
+  if (/^(no|nope|nah)\b/.test(normalized) && !/\b(wrong|incorrect|actually|correction)\b/.test(normalized)) {
+    return false;
+  }
+  return parseExplicitBoolean(speech);
+}
+function parseExplicitBoolean(speech) {
+  const normalized = speech.trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+  if (NOT_YET.test(normalized) || EXPLICIT_NO.test(normalized)) {
+    return false;
+  }
+  if (EXPLICIT_YES.test(normalized)) {
+    return true;
+  }
+  return null;
+}
+function isStructuredBooleanUnset(value) {
+  return value === void 0 || value === null;
+}
+function syncLegacyStringFields(fields) {
+  return { ...fields };
+}
+function toCollectedFields(fields) {
+  return {
+    ...fields,
+    insurance_claim: triStateToLegacyString(fields.insurance_claim_started),
+    adjuster_contacted: triStateToLegacyString(normalizeTriState(fields.adjuster_contacted)),
+    photos_available: photosValueToLegacyString(normalizePhotosValue(fields.photos_available)),
+    active_leak: triStateToLegacyString(fields.emergency_or_active_leak)
+  };
+}
+function normalizeTriStateField(value) {
+  return normalizeTriState(value);
+}
+function normalizeTriState(value) {
+  if (value === true || value === false || value === null) {
+    return value;
+  }
+  if (value === "yes") {
+    return true;
+  }
+  if (value === "no") {
+    return false;
+  }
+  return null;
+}
+function triStateToLegacyString(value) {
+  if (value === true) {
+    return "yes";
+  }
+  if (value === false) {
+    return "no";
+  }
+  return void 0;
+}
+function photosValueToLegacyString(value) {
+  if (value === true) {
+    return "yes";
+  }
+  if (value === false) {
+    return "no";
+  }
+  if (value === "unknown") {
+    return "unknown";
+  }
+  if (value === "declined") {
+    return "declined";
+  }
+  return void 0;
+}
+function applyCorrectionToStructuredField(fields, speech) {
+  let updated = { ...fields };
+  const normalized = speech.toLowerCase();
+  if (/insurance|claim/.test(normalized)) {
+    const parsed = parseCorrectionBoolean(speech);
+    if (parsed !== null) {
+      updated.insurance_claim_started = parsed;
+    }
+  }
+  if (/adjuster/.test(normalized)) {
+    const parsed = parseCorrectionBoolean(speech);
+    if (parsed !== null) {
+      updated.adjuster_contacted = parsed;
+    }
+  }
+  if (/photo|picture|image/.test(normalized)) {
+    const parsed = parseCorrectionBoolean(speech);
+    if (parsed !== null) {
+      updated.photos_available = parsed;
+    }
+  }
+  if (/leak|water|emergency|urgent/.test(normalized)) {
+    const parsed = parseCorrectionBoolean(speech);
+    if (parsed !== null) {
+      updated.emergency_or_active_leak = parsed;
+    }
+  }
+  return syncLegacyStringFields(updated);
+}
+
+// src/orchestrator/address-confirmation.ts
+function hasValue(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+function hasConfirmableAddress(address) {
+  if (!hasValue(address)) {
+    return false;
+  }
+  const trimmed = address.trim();
+  return /\d/.test(trimmed) && trimmed.length >= 8;
+}
+function formatAddressForSpeech(address) {
+  let formatted = address.trim().replace(/\s+/g, " ");
+  if (/\bin\b/i.test(formatted) && !/,/.test(formatted)) {
+    formatted = formatted.replace(/\s+in\s+/i, ", ");
+  }
+  return formatted;
+}
+function buildAddressReadbackConfirmation(address) {
+  return `I have ${formatAddressForSpeech(address)}. Is that right?`;
+}
+function needsAddressReadback(fields) {
+  return hasConfirmableAddress(fields.address) && fields.address_confirmed !== true;
+}
+function isAddressConfirmed(fields) {
+  return hasConfirmableAddress(fields.address) && fields.address_confirmed === true;
+}
+function isAddressConfirmedSpeech(speech) {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  return /^(yes|yeah|yep|yup|correct|right|that's right|thats right|that's correct|thats correct)\b/.test(
+    normalized
+  );
+}
+function isAddressRejectedSpeech(speech) {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  return /^(no|nope|nah|not quite|incorrect|wrong|change|fix|update)\b/.test(normalized);
+}
+function applyAddressCorrection(fields, speech) {
+  const trimmed = speech.trim();
+  if (!trimmed) {
+    return fields;
+  }
+  return syncLegacyStringFields({
+    ...fields,
+    address: trimmed.slice(0, 500),
+    address_confirmed: false
+  });
+}
+function confirmAddress(fields) {
+  return syncLegacyStringFields({
+    ...fields,
+    address: fields.address ? formatAddressForSpeech(fields.address) : fields.address,
+    address_confirmed: true
+  });
+}
+
+// src/orchestrator/field-validation.ts
+var DAMAGE_AND_INTAKE_TERMS = /\b(hail|storm|roof|roofing|leak|leaking|shingles?|damage|damaged|insurance|claim|adjuster|pictures?|photos?|tomorrow|morning|afternoon|evening|urgent|emergency|water|tree|wind|repair|replace|inspection|callback|address|property|number|yes|no|yeah|nope)\b/i;
+var PHONE_PATTERN = /(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/;
+function containsRoofingDamageLanguage(text) {
+  return DAMAGE_AND_INTAKE_TERMS.test(text.trim());
+}
+function isPlausibleCallerName(name) {
+  const trimmed = name.trim();
+  if (trimmed.length < 2 || trimmed.length > 60) {
+    return false;
+  }
+  if (/\d/.test(trimmed) || PHONE_PATTERN.test(trimmed)) {
+    return false;
+  }
+  if (/[.!?]/.test(trimmed)) {
+    return false;
+  }
+  if (trimmed.split(/\s+/).length > 4) {
+    return false;
+  }
+  if (containsRoofingDamageLanguage(trimmed)) {
+    return false;
+  }
+  if (/\b(street|st|avenue|ave|road|rd|drive|dr|lane|ln|boulevard|blvd|way|court|ct)\b/i.test(trimmed)) {
+    return false;
+  }
+  return /^[A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){0,3}$/.test(trimmed);
+}
+function extractExplicitCallerName(speech) {
+  const patterns = [
+    /\b(?:my name is|name is)\s+([A-Za-z][A-Za-z'\-]+(?:\s+[A-Za-z][A-Za-z'\-]+)?)(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i,
+    /\b(?:this is|i am|i'm|name's)\s+([A-Za-z][A-Za-z'\-]+(?:\s+[A-Za-z][A-Za-z'\-]+)?)(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i
+  ];
+  for (const pattern of patterns) {
+    const match = speech.match(pattern);
+    const candidate = match?.[1]?.trim();
+    if (candidate && isPlausibleCallerName(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+function validateCallerNameCandidate(speech, options = {}) {
+  const explicit = extractExplicitCallerName(speech);
+  if (explicit) {
+    return { value: explicit, needsClarification: false };
+  }
+  const trimmed = speech.trim();
+  if (options.isDirectNameAnswer && isPlausibleCallerName(trimmed)) {
+    return { value: trimmed, needsClarification: false };
+  }
+  if (options.isDirectNameAnswer && trimmed.length > 0) {
+    return { value: null, needsClarification: true };
+  }
+  return { value: null, needsClarification: false };
+}
+function isPlausibleServiceAddress(address) {
+  const trimmed = address.trim();
+  if (trimmed.length < 8 || trimmed.length > 200) {
+    return false;
+  }
+  if (!/\d/.test(trimmed)) {
+    return false;
+  }
+  if (containsRoofingDamageLanguage(trimmed) && !/\b(street|st|avenue|ave|road|rd|drive|dr|lane|ln|way|court|ct|place|pl)\b/i.test(trimmed)) {
+    return false;
+  }
+  return true;
+}
+function isPlausibleDamageDescription(text) {
+  const trimmed = text.trim();
+  if (trimmed.length < 4) {
+    return false;
+  }
+  if (isPlausibleCallerName(trimmed)) {
+    return false;
+  }
+  return containsRoofingDamageLanguage(trimmed) || /tree|water|hole|missing|broken|hit|fell|last night|yesterday/i.test(trimmed);
+}
+function extractDamageOrCallReason(speech) {
+  const trimmed = speech.trim();
+  if (!isPlausibleDamageDescription(trimmed)) {
+    return null;
+  }
+  return trimmed.slice(0, 500);
+}
+function buildNameClarificationPrompt(currentGuess, options = {}) {
+  if (options.askToSpell) {
+    return "Could you spell your name for me?";
+  }
+  if (currentGuess && currentGuess.length <= 12) {
+    return `I'm sorry, I heard "${currentGuess}," but I want to make sure I have your name right. Could you say or spell it one more time?`;
+  }
+  return "I'm sorry, I didn't catch your name clearly. Could you say it one more time?";
+}
+function isCallerNameDeclinedSpeech(speech) {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  return /\b(prefer not to|rather not|don't want to|do not want to|won't give|will not give|no name|not giving my name)\b/.test(
+    normalized
+  ) || /\b(i'd rather not say|id rather not say)\b/.test(normalized);
+}
+function isCallerNameUnavailableSpeech(speech) {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  return /\b(don't know|do not know|not sure|can't remember|cant remember|unavailable)\b/.test(
+    normalized
+  );
+}
+var EARLY_CALLER_NAME_QUESTION = "Could I start with your name?";
+
+// src/orchestrator/schedule-normalizer.ts
+var COMPANY_TIMEZONE = process.env.COMPANY_TIMEZONE?.trim() || "America/Chicago";
+var SCHEDULE_PARSE_FALLBACK_PROMPT = "I'm sorry, I had trouble understanding the timing. What specific day and time would work best for you?";
+function getLocalParts(date, timeZone) {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    weekday: "short"
+  });
+  const parts = formatter.formatToParts(date);
+  const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const weekdayMap = {
+    Sun: 0,
+    Mon: 1,
+    Tue: 2,
+    Wed: 3,
+    Thu: 4,
+    Fri: 5,
+    Sat: 6
+  };
+  return {
+    year: Number.parseInt(lookup.year ?? "1970", 10),
+    month: Number.parseInt(lookup.month ?? "1", 10),
+    day: Number.parseInt(lookup.day ?? "1", 10),
+    weekday: weekdayMap[lookup.weekday ?? "Sun"] ?? 0
+  };
+}
+function makeUtcDate(year, month, day, hour, minute, timeZone) {
+  let guess = Date.UTC(year, month - 1, day, hour, minute);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const parts = getLocalParts(new Date(guess), timeZone);
+    const deltaHours = hour - deriveHour(new Date(guess), timeZone);
+    const deltaDays = day - parts.day;
+    guess += deltaDays * 864e5 + deltaHours * 36e5;
+  }
+  return new Date(guess);
+}
+function deriveHour(date, timeZone) {
+  const hour = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour: "numeric",
+    minute: "numeric",
+    hour12: false
+  }).formatToParts(date);
+  const lookup = Object.fromEntries(hour.map((part) => [part.type, part.value]));
+  return Number.parseInt(lookup.hour ?? "0", 10);
+}
+function addDays(parts, days) {
+  const date = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + days));
+  return {
+    year: date.getUTCFullYear(),
+    month: date.getUTCMonth() + 1,
+    day: date.getUTCDate(),
+    weekday: date.getUTCDay()
+  };
+}
+function resolveWeekday(parts, targetWeekday, useNextWeek) {
+  let delta = (targetWeekday - parts.weekday + 7) % 7;
+  if (delta === 0 && useNextWeek) {
+    delta = 7;
+  }
+  if (delta === 0 && !useNextWeek) {
+    return parts;
+  }
+  return addDays(parts, delta);
+}
+function formatSpokenDate(parts) {
+  const monthNames = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December"
+  ];
+  return `${monthNames[parts.month - 1] ?? "January"} ${parts.day}`;
+}
+function formatSpokenTime(hour, minute) {
+  const suffix = hour >= 12 ? "PM" : "AM";
+  const hour12 = hour % 12 === 0 ? 12 : hour % 12;
+  const minutePart = `:${String(minute).padStart(2, "0")}`;
+  return `${hour12}${minutePart} ${suffix}`.replace("  ", " ");
+}
+var SPOKEN_HOUR_WORDS = {
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  eleven: 11,
+  twelve: 12
+};
+function parseHourToken(token) {
+  const numeric = Number.parseInt(token, 10);
+  if (Number.isFinite(numeric) && numeric >= 1 && numeric <= 12) {
+    return numeric;
+  }
+  return SPOKEN_HOUR_WORDS[token.toLowerCase()] ?? null;
+}
+function parseTimeFromSpeech(normalized) {
+  const atTime = normalized.match(/\bat\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(am|pm)?/i);
+  if (atTime) {
+    const parsedHour = parseHourToken(atTime[1] ?? "");
+    if (parsedHour === null) {
+      return null;
+    }
+    let hour = parsedHour;
+    const minute = Number.parseInt(atTime[2] ?? "0", 10);
+    const meridiem = atTime[3]?.toLowerCase();
+    if (meridiem === "pm" && hour < 12) {
+      hour += 12;
+    }
+    if (meridiem === "am" && hour === 12) {
+      hour = 0;
+    }
+    if (!meridiem && hour <= 7) {
+      hour += 12;
+    }
+    return { hour, minute };
+  }
+  const aboutTime = normalized.match(
+    /\babout\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\b/i
+  );
+  if (aboutTime) {
+    const parsedHour = parseHourToken(aboutTime[1] ?? "");
+    if (parsedHour === null) {
+      return null;
+    }
+    let hour = parsedHour;
+    const minute = Number.parseInt(aboutTime[2] ?? "0", 10);
+    if (hour <= 7) {
+      hour += 12;
+    }
+    return { hour, minute };
+  }
+  const aroundTime = normalized.match(
+    /\baround\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\b/i
+  );
+  if (aroundTime) {
+    const parsedHour = parseHourToken(aroundTime[1] ?? "");
+    if (parsedHour === null) {
+      return null;
+    }
+    let hour = parsedHour;
+    const minute = Number.parseInt(aroundTime[2] ?? "0", 10);
+    if (hour <= 7) {
+      hour += 12;
+    }
+    return { hour, minute };
+  }
+  const betweenTimes = normalized.match(
+    /\bbetween\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(?:am|pm)?\s+and\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(am|pm)?/i
+  );
+  if (betweenTimes) {
+    const startHour = parseHourToken(betweenTimes[1] ?? "");
+    const endHour = parseHourToken(betweenTimes[3] ?? "");
+    if (startHour === null || endHour === null) {
+      return null;
+    }
+    let hour = startHour;
+    const minute = Number.parseInt(betweenTimes[2] ?? "0", 10);
+    const meridiem = betweenTimes[5]?.toLowerCase();
+    if (meridiem === "pm" && hour < 12) {
+      hour += 12;
+    }
+    if (meridiem === "am" && hour === 12) {
+      hour = 0;
+    }
+    if (!meridiem && hour <= 7) {
+      hour += 12;
+    }
+    return { hour, minute };
+  }
+  return null;
+}
+function weekdayIndex(name) {
+  const map = {
+    sunday: 0,
+    monday: 1,
+    tuesday: 2,
+    wednesday: 3,
+    thursday: 4,
+    friday: 5,
+    saturday: 6
+  };
+  return map[name.toLowerCase()] ?? null;
+}
+function parseScheduleSpeech(speech, now = /* @__PURE__ */ new Date(), timeZone = COMPANY_TIMEZONE) {
+  try {
+    return parseScheduleSpeechInternal(speech, now, timeZone);
+  } catch (error) {
+    logScheduleParseError(error, speech);
+    return {
+      status: "needs_date_clarification",
+      prompt: SCHEDULE_PARSE_FALLBACK_PROMPT,
+      raw: speech.trim()
+    };
+  }
+}
+function logScheduleParseError(error, speech) {
+  logError("schedule_parse_failed", { speechLength: speech.trim().length }, error);
+}
+function parseScheduleSpeechInternal(speech, now = /* @__PURE__ */ new Date(), timeZone = COMPANY_TIMEZONE) {
+  const raw = speech.trim();
+  const normalized = raw.toLowerCase().replace(/[^\w\s:]/g, " ").replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return { status: "nothing_schedulable", raw };
+  }
+  if (/\bafter work\b|\bafter i get off\b|\bwhen i get off\b/.test(normalized)) {
+    return {
+      status: "needs_time_clarification",
+      prompt: "What time should I put down?",
+      raw
+    };
+  }
+  const today = getLocalParts(now, timeZone);
+  let targetDate = { ...today };
+  let useNextWeek = false;
+  if (/\btomorrow\b/.test(normalized)) {
+    targetDate = addDays(today, 1);
+  } else if (/\bnext week\b/.test(normalized)) {
+    targetDate = addDays(today, 7);
+  } else {
+    const weekdayMatch = normalized.match(/\b(next\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i);
+    if (weekdayMatch) {
+      useNextWeek = Boolean(weekdayMatch[1]);
+      const weekday = weekdayIndex(weekdayMatch[2] ?? "");
+      if (weekday !== null) {
+        targetDate = resolveWeekday(today, weekday, useNextWeek);
+      }
+    }
+  }
+  const time = parseTimeFromSpeech(normalized);
+  const hasMorning = /\bmorning\b/.test(normalized);
+  const hasAfternoon = /\bafternoon\b/.test(normalized);
+  const hasEvening = /\bevening\b/.test(normalized);
+  if ((hasMorning || hasAfternoon || hasEvening) && !time) {
+    const dateLabel = formatSpokenDate(targetDate);
+    if (hasMorning) {
+      return {
+        status: "needs_confirmation",
+        spoken: `Would ${dateLabel} between 8:00 and 11:00 AM work?`,
+        isoStart: makeUtcDate(targetDate.year, targetDate.month, targetDate.day, 8, 0, timeZone).toISOString(),
+        isoEnd: makeUtcDate(targetDate.year, targetDate.month, targetDate.day, 11, 0, timeZone).toISOString(),
+        raw
+      };
+    }
+    if (hasAfternoon) {
+      const afternoonLabel = /\btomorrow\b/.test(normalized) ? "tomorrow afternoon" : `${formatSpokenDate(targetDate)} afternoon`;
+      return {
+        status: "needs_time_clarification",
+        prompt: `What time ${afternoonLabel} works best?`,
+        raw
+      };
+    }
+    if (hasEvening) {
+      return {
+        status: "needs_time_clarification",
+        prompt: "What time in the evening works best?",
+        raw
+      };
+    }
+  }
+  if (!time && /\btomorrow\b|\bnext\b|\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/.test(normalized)) {
+    return {
+      status: "needs_time_clarification",
+      prompt: "What time works best?",
+      raw
+    };
+  }
+  if (time) {
+    const betweenTimes = normalized.match(
+      /\bbetween\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(?:am|pm)?\s+and\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(am|pm)?/i
+    );
+    if (betweenTimes) {
+      const startHour = parseHourToken(betweenTimes[1] ?? "");
+      const endHour = parseHourToken(betweenTimes[3] ?? "");
+      if (startHour !== null && endHour !== null) {
+        let endHour24 = endHour;
+        const meridiem = betweenTimes[5]?.toLowerCase();
+        if (meridiem === "pm" && endHour24 < 12) {
+          endHour24 += 12;
+        }
+        if (!meridiem && endHour24 <= 7) {
+          endHour24 += 12;
+        }
+        let startHour24 = startHour;
+        if (meridiem === "pm" && startHour24 < 12) {
+          startHour24 += 12;
+        }
+        if (!meridiem && startHour24 <= 7) {
+          startHour24 += 12;
+        }
+        const dateLabel2 = formatSpokenDate(targetDate);
+        const startLabel = formatSpokenTime(startHour24, Number.parseInt(betweenTimes[2] ?? "0", 10));
+        const endLabel = formatSpokenTime(endHour24, Number.parseInt(betweenTimes[4] ?? "0", 10));
+        return {
+          status: "needs_confirmation",
+          spoken: `${dateLabel2} between ${startLabel.replace(/ AM| PM/, "")} and ${endLabel}`,
+          isoStart: makeUtcDate(
+            targetDate.year,
+            targetDate.month,
+            targetDate.day,
+            startHour24,
+            Number.parseInt(betweenTimes[2] ?? "0", 10),
+            timeZone
+          ).toISOString(),
+          isoEnd: makeUtcDate(
+            targetDate.year,
+            targetDate.month,
+            targetDate.day,
+            endHour24,
+            Number.parseInt(betweenTimes[4] ?? "0", 10),
+            timeZone
+          ).toISOString(),
+          raw
+        };
+      }
+    }
+    const dateLabel = formatSpokenDate(targetDate);
+    const spokenTime = formatSpokenTime(time.hour, time.minute);
+    const isoStart = makeUtcDate(
+      targetDate.year,
+      targetDate.month,
+      targetDate.day,
+      time.hour,
+      time.minute,
+      timeZone
+    ).toISOString();
+    return {
+      status: "needs_confirmation",
+      spoken: `${dateLabel} at ${spokenTime}`,
+      isoStart,
+      raw
+    };
+  }
+  return { status: "nothing_schedulable", raw };
+}
+function buildScheduleConfirmationQuestion(spoken) {
+  if (spoken.startsWith("Would ")) {
+    return `${spoken} Is that correct?`;
+  }
+  return `Just to confirm, you'd prefer a call on ${spoken.replace(/^on /i, "")}. Is that correct?`;
+}
+function isScheduleConfirmedSpeech(speech) {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  return /^(yes|yeah|yep|yup|correct|right|that's right|thats right|that works|sounds good)\b/.test(
+    normalized
+  );
+}
+function isScheduleRejectedSpeech(speech) {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  return /^(no|nope|nah|not quite|incorrect|wrong|change|fix|update)\b/.test(normalized);
+}
+function applyScheduleParseResult(fields, result) {
+  if (result.status === "nothing_schedulable") {
+    return fields;
+  }
+  return syncLegacyStringFields({
+    ...fields,
+    appointment_preference_raw: result.raw,
+    schedule_confirmed: false,
+    appointment_schedule_iso: result.status === "needs_confirmation" ? result.isoStart : void 0,
+    appointment_schedule_iso_end: result.status === "needs_confirmation" ? result.isoEnd : void 0,
+    appointment_preference: result.status === "needs_confirmation" ? result.spoken : fields.appointment_preference
+  });
+}
+function confirmSchedule(fields) {
+  const spoken = fields.appointment_preference?.trim() || fields.appointment_preference_raw?.trim() || "the requested time";
+  return syncLegacyStringFields({
+    ...fields,
+    appointment_preference: spoken,
+    schedule_confirmed: true
+  });
+}
+function needsScheduleClarification(fields) {
+  return Boolean(fields.schedule_pending_clarification);
+}
+function needsScheduleConfirmation(fields) {
+  return Boolean(fields.appointment_schedule_iso || fields.appointment_preference) && fields.schedule_confirmed !== true && !fields.schedule_pending_clarification;
+}
+function isScheduleComplete(fields) {
+  return typeof fields.appointment_preference === "string" && fields.appointment_preference.trim().length > 0 && fields.schedule_confirmed === true;
+}
+function processScheduleCapture(fields, speech, now = /* @__PURE__ */ new Date()) {
+  try {
+    const combined = `${fields.appointment_preference_raw ?? ""} ${speech}`.trim();
+    const parsed = parseScheduleSpeech(combined, now);
+    let updated = applyScheduleParseResult(
+      {
+        ...fields,
+        appointment_preference_raw: combined
+      },
+      parsed
+    );
+    if (parsed.status === "needs_time_clarification") {
+      updated = {
+        ...updated,
+        schedule_pending_clarification: true,
+        schedule_clarification_prompt: parsed.prompt
+      };
+      return { fields: updated, clarificationPrompt: parsed.prompt };
+    }
+    if (parsed.status === "needs_date_clarification") {
+      updated = {
+        ...updated,
+        schedule_pending_clarification: true,
+        schedule_clarification_prompt: parsed.prompt
+      };
+      return { fields: updated, clarificationPrompt: parsed.prompt };
+    }
+    if (parsed.status === "needs_confirmation") {
+      updated = {
+        ...updated,
+        schedule_pending_clarification: false,
+        schedule_clarification_prompt: void 0
+      };
+      return {
+        fields: updated,
+        confirmationPrompt: buildScheduleConfirmationQuestion(parsed.spoken)
+      };
+    }
+    updated = {
+      ...updated,
+      schedule_pending_clarification: true,
+      schedule_clarification_prompt: SCHEDULE_PARSE_FALLBACK_PROMPT
+    };
+    return {
+      fields: updated,
+      clarificationPrompt: SCHEDULE_PARSE_FALLBACK_PROMPT
+    };
+  } catch (error) {
+    logScheduleParseError(error, speech);
+    const combined = `${fields.appointment_preference_raw ?? ""} ${speech}`.trim();
+    const updated = {
+      ...fields,
+      appointment_preference_raw: combined,
+      schedule_pending_clarification: true,
+      schedule_clarification_prompt: SCHEDULE_PARSE_FALLBACK_PROMPT,
+      schedule_confirmed: false
+    };
+    return {
+      fields: updated,
+      clarificationPrompt: SCHEDULE_PARSE_FALLBACK_PROMPT
+    };
+  }
+}
+
+// src/orchestrator/pending-question.ts
+function hasValue2(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+function needsCallbackConfirmation(fields) {
+  return Boolean(
+    hasValue2(fields.callback_phone) && fields.callback_phone_confirmed !== true
+  );
+}
+function needsAddressConfirmation(fields) {
+  return hasConfirmableAddress(fields.address) && fields.address_confirmed !== true;
+}
+function mapRequiredFieldToPending(field) {
+  switch (field) {
+    case "problem_description":
+      return "call_reason";
+    case "full_name":
+      return "caller_name";
+    case "callback_phone":
+      return "callback_phone";
+    case "address":
+      return "service_address";
+    case "emergency_or_active_leak":
+      return "active_leak";
+    case "urgency":
+      return "urgency";
+    case "insurance_claim_started":
+      return "insurance_claim";
+    case "adjuster_contacted":
+      return "adjuster_contacted";
+    case "appointment_preference":
+      return "preferred_callback_time";
+    default:
+      return "call_reason";
+  }
+}
+function isPendingQuestionKey(value) {
+  return value === "caller_name" || value === "callback_phone" || value === "callback_confirmation" || value === "service_address" || value === "address_confirmation" || value === "call_reason" || value === "insurance_claim" || value === "adjuster_contacted" || value === "active_leak" || value === "urgency" || value === "preferred_callback_time" || value === "schedule_confirmation" || value === "additional_notes" || value === "summary_confirmation";
+}
+function isStoredPendingQuestionStillValid(fields, pending) {
+  switch (pending) {
+    case "callback_confirmation":
+      return needsCallbackConfirmation(fields);
+    case "address_confirmation":
+      return needsAddressConfirmation(fields);
+    case "preferred_callback_time":
+      return needsScheduleClarification(fields);
+    case "schedule_confirmation":
+      return needsScheduleConfirmation(fields);
+    default:
+      return true;
+  }
+}
+function resolvePendingQuestion(fields, conversationState) {
+  const stored = fields.pending_question?.trim();
+  if (stored && isPendingQuestionKey(stored) && isStoredPendingQuestionStillValid(fields, stored)) {
+    return stored;
+  }
+  if (conversationState === "awaiting_callback_confirmation") {
+    return "callback_confirmation";
+  }
+  if (conversationState === "awaiting_address_confirmation") {
+    return "address_confirmation";
+  }
+  if (conversationState === "awaiting_schedule_clarification") {
+    return "preferred_callback_time";
+  }
+  if (conversationState === "awaiting_schedule_confirmation") {
+    return "schedule_confirmation";
+  }
+  if (conversationState === "awaiting_additional_notes") {
+    return "additional_notes";
+  }
+  if (conversationState === "awaiting_summary_confirmation" || conversationState === "handling_correction" || conversationState === "presenting_summary") {
+    return "summary_confirmation";
+  }
+  const nextRequired = getNextRequiredField(fields);
+  if (needsCallbackConfirmation(fields) && nextRequired === "callback_phone" && isCallerNameResolved(fields) && !needsImmediateSafetyClarification(fields)) {
+    return "callback_confirmation";
+  }
+  if (needsAddressConfirmation(fields) && nextRequired === "address" && isCallbackPhoneResolved(fields) && isCallerNameResolved(fields)) {
+    return "address_confirmation";
+  }
+  if (needsScheduleClarification(fields) || needsScheduleConfirmation(fields)) {
+    return needsScheduleConfirmation(fields) ? "schedule_confirmation" : "preferred_callback_time";
+  }
+  return nextRequired ? mapRequiredFieldToPending(nextRequired) : null;
+}
+function pendingQuestionForConversationState(conversationState) {
+  switch (conversationState) {
+    case "awaiting_callback_confirmation":
+      return "callback_confirmation";
+    case "awaiting_address_confirmation":
+      return "address_confirmation";
+    case "awaiting_schedule_clarification":
+      return "preferred_callback_time";
+    case "awaiting_schedule_confirmation":
+      return "schedule_confirmation";
+    case "awaiting_additional_notes":
+      return "additional_notes";
+    case "awaiting_summary_confirmation":
+    case "handling_correction":
+    case "presenting_summary":
+      return "summary_confirmation";
+    default:
+      return null;
+  }
+}
+function pendingQuestionForNextField(field) {
+  return field ? mapRequiredFieldToPending(field) : null;
+}
+function attachPendingQuestion(fields, pendingQuestion) {
+  if (!pendingQuestion) {
+    return {
+      ...fields,
+      pending_question: void 0
+    };
+  }
+  return {
+    ...fields,
+    pending_question: pendingQuestion
+  };
+}
+function allowsCallbackAffirmativeReuse(pendingQuestion) {
+  return pendingQuestion === "callback_phone" || pendingQuestion === "callback_confirmation";
+}
+function allowsBooleanDirectAnswer(pendingQuestion, field) {
+  return pendingQuestion === field;
+}
+function resolveActivePendingQuestion(fields, conversationState, override) {
+  if (override !== void 0) {
+    return override;
+  }
+  const stored = fields.pending_question?.trim();
+  if (stored && isPendingQuestionKey(stored) && isStoredPendingQuestionStillValid(fields, stored)) {
+    return stored;
+  }
+  return resolvePendingQuestion(fields, conversationState);
+}
+
+// src/orchestrator/required-intake.ts
+var BRANCH_FIELD_ORDER = [
+  "urgency",
+  "insurance_claim_started",
+  "adjuster_contacted",
+  "appointment_preference"
+];
+var REQUIRED_FIELD_ORDER = [
+  "problem_description",
+  "full_name",
+  "callback_phone",
+  "address",
+  "emergency_or_active_leak",
+  ...BRANCH_FIELD_ORDER
+];
+function hasValue3(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+function isCallerNameResolved(fields) {
+  if (fields.caller_name_declined === true || fields.caller_name_unavailable === true) {
+    return true;
+  }
+  return hasValue3(fields.full_name) && isPlausibleCallerName(fields.full_name ?? "");
+}
+function isAdditionalNotesResolved(fields) {
+  return fields.additional_notes_responded === true;
+}
+function mapRequiredFieldToShared(field) {
+  switch (field) {
+    case "full_name":
+      return "callerName";
+    case "callback_phone":
+      return "callbackPhone";
+    case "address":
+      return "serviceAddress";
+    case "problem_description":
+      return "callReason";
+    case "urgency":
+      return "urgencyStatus";
+    case "emergency_or_active_leak":
+      return "safetyStatus";
+    case "appointment_preference":
+      return "callbackSchedule";
+    default:
+      return "issueDetails";
+  }
+}
+function isCallbackComplete(fields) {
+  return hasValue3(fields.callback_phone) && fields.callback_phone_confirmed === true;
+}
+function isCallbackPhoneResolved(fields) {
+  return isCallbackComplete(fields);
+}
+function isFieldComplete(field, fields) {
+  switch (field) {
+    case "full_name":
+      return isCallerNameResolved(fields);
+    case "callback_phone":
+      return isCallbackComplete(fields);
+    case "address":
+      return isAddressConfirmed(fields);
+    case "problem_description":
+      return hasValue3(fields.problem_description);
+    case "urgency":
+      return hasValue3(fields.urgency);
+    case "emergency_or_active_leak":
+      return !isStructuredBooleanUnset(fields.emergency_or_active_leak);
+    case "insurance_claim_started":
+      return !isStructuredBooleanUnset(fields.insurance_claim_started);
+    case "adjuster_contacted":
+      if (fields.insurance_claim_started !== true) {
+        return true;
+      }
+      return !isStructuredBooleanUnset(fields.adjuster_contacted);
+    case "appointment_preference":
+      return isScheduleComplete(fields);
+    default:
+      return false;
+  }
+}
+function needsImmediateSafetyClarification(fields) {
+  if (!isStructuredBooleanUnset(fields.emergency_or_active_leak)) {
+    return false;
+  }
+  if (fields.emergency_acknowledged === true) {
+    return true;
+  }
+  const problem = fields.problem_description?.toLowerCase() ?? "";
+  return /\b(active leak|water (is )?((getting )?in|inside|pouring)|pouring in|flooding|emergency|collapse|structural damage|someone (is )?hurt|injured)\b/i.test(
+    problem
+  );
+}
+function collectMissingFieldsInPriorityOrder(fields) {
+  const missing = [];
+  if (!hasValue3(fields.problem_description)) {
+    missing.push("problem_description");
+  }
+  if (needsImmediateSafetyClarification(fields)) {
+    missing.push("emergency_or_active_leak");
+  }
+  if (!isCallerNameResolved(fields)) {
+    missing.push("full_name");
+  }
+  if (!isCallbackComplete(fields)) {
+    missing.push("callback_phone");
+  }
+  if (!isAddressConfirmed(fields)) {
+    missing.push("address");
+  }
+  if (!isFieldComplete("emergency_or_active_leak", fields) && !missing.includes("emergency_or_active_leak")) {
+    missing.push("emergency_or_active_leak");
+  }
+  for (const field of BRANCH_FIELD_ORDER) {
+    if (!isFieldComplete(field, fields)) {
+      missing.push(field);
+    }
+  }
+  return missing;
+}
+function getMissingRequiredFields(fields) {
+  return collectMissingFieldsInPriorityOrder(fields);
+}
+function getSharedMissingFields(fields) {
+  const missing = /* @__PURE__ */ new Set();
+  if (!isCallerNameResolved(fields)) {
+    missing.add("callerName");
+  }
+  for (const field of getMissingRequiredFields(fields)) {
+    missing.add(mapRequiredFieldToShared(field));
+  }
+  if (!isAdditionalNotesResolved(fields)) {
+    missing.add("additionalNotes");
+  }
+  return [...missing];
+}
+function isSharedIntakeComplete(fields) {
+  return getSharedMissingFields(fields).length === 0;
+}
+function getNextRequiredField(fields) {
+  return collectMissingFieldsInPriorityOrder(fields)[0] ?? null;
+}
+var FIELD_QUESTIONS = {
+  problem_description: "What's going on with the roof?",
+  full_name: EARLY_CALLER_NAME_QUESTION,
+  callback_phone: "What's the best callback number?",
+  address: "What's the property address?",
+  emergency_or_active_leak: "Is there an active leak or water getting inside right now?",
+  urgency: "How urgent is this?",
+  insurance_claim_started: "Have you started an insurance claim?",
+  adjuster_contacted: "Have you contacted your adjuster yet?",
+  appointment_preference: "What day and time would be best for the roofing team to contact you?"
+};
+function getRequiredFieldQuestion(field, fields, callerPhone) {
+  const firstName = fields.full_name?.trim().split(/\s+/)[0];
+  if (field === "callback_phone" && callerPhone) {
+    if (firstName) {
+      return `${firstName}, is this the best number to reach you?`;
+    }
+    return "Is this the best number to reach you?";
+  }
+  return FIELD_QUESTIONS[field];
+}
+var CONTEXTUAL_TRANSITIONS = {
+  full_name: EARLY_CALLER_NAME_QUESTION,
+  address: "What's the property address?",
+  emergency_or_active_leak: "Is there an active leak or water getting inside right now?",
+  urgency: "How urgent is this?",
+  insurance_claim_started: "Have you started an insurance claim?",
+  adjuster_contacted: "Have you contacted your adjuster yet?",
+  appointment_preference: "What day and time would be best for the roofing team to contact you?"
+};
+function getNaturalTransitionQuestion(field, fields, callerPhone) {
+  if (field === "callback_phone") {
+    return getRequiredFieldQuestion(field, fields, callerPhone);
+  }
+  return CONTEXTUAL_TRANSITIONS[field] ?? getRequiredFieldQuestion(field, fields, callerPhone);
+}
+function applyDirectAnswerToMissingField(fields, answer, callerPhone, pendingQuestion = null) {
+  const trimmed = answer.trim();
+  if (!trimmed) {
+    return fields;
+  }
+  const target = getNextRequiredField(fields);
+  if (!target) {
+    return fields;
+  }
+  if (pendingQuestion !== null && pendingQuestion !== mapRequiredFieldToPending(target)) {
+    return fields;
+  }
+  let updated = { ...fields };
+  switch (target) {
+    case "full_name": {
+      if (isCallerNameDeclinedSpeech(trimmed)) {
+        updated.caller_name_declined = true;
+        updated.full_name = void 0;
+        updated.name_needs_clarification = false;
+        break;
+      }
+      if (isCallerNameUnavailableSpeech(trimmed)) {
+        updated.caller_name_unavailable = true;
+        updated.full_name = void 0;
+        updated.name_needs_clarification = false;
+        break;
+      }
+      if (!isCallerNameResolved(updated)) {
+        const validated = validateCallerNameCandidate(trimmed, { isDirectNameAnswer: true });
+        if (validated.value) {
+          updated.full_name = validated.value.slice(0, 100);
+          updated.name_needs_clarification = false;
+          updated.caller_name_declined = false;
+          updated.caller_name_unavailable = false;
+        } else if (validated.needsClarification) {
+          updated.name_needs_clarification = true;
+          updated.name_clarification_attempts = (updated.name_clarification_attempts ?? 0) + 1;
+        }
+      }
+      break;
+    }
+    case "address":
+      if (!hasValue3(updated.address) && isPlausibleServiceAddress(trimmed)) {
+        updated.address = trimmed.slice(0, 500);
+        updated.address_confirmed = false;
+      }
+      break;
+    case "problem_description":
+      if (!hasValue3(updated.problem_description)) {
+        updated.problem_description = extractDamageOrCallReason(trimmed) ?? trimmed.slice(0, 500);
+      }
+      break;
+    case "urgency":
+      if (!hasValue3(updated.urgency)) {
+        updated.urgency = trimmed.slice(0, 200);
+      }
+      break;
+    case "appointment_preference":
+      if (!hasValue3(updated.appointment_preference_raw)) {
+        updated.appointment_preference_raw = trimmed.slice(0, 200);
+        updated.schedule_confirmed = false;
+      }
+      break;
+    case "emergency_or_active_leak":
+    case "insurance_claim_started":
+    case "adjuster_contacted": {
+      const parsed = parseExplicitBoolean(trimmed);
+      if (parsed !== null) {
+        updated[target] = parsed;
+      }
+      break;
+    }
+    case "callback_phone":
+      if (/^(yes|yeah|yep|correct|this one|that one|same number)\b/i.test(trimmed) && callerPhone) {
+        updated.callback_phone = normalizeCallbackPhoneE164(callerPhone);
+        updated.callback_phone_confirmed = false;
+      }
+      break;
+    default:
+      break;
+  }
+  return syncLegacyStringFields(updated);
+}
+function needsCallbackReadback(fields) {
+  return needsCallbackConfirmation(fields);
+}
+
+// src/bridge/turn-diagnostic.ts
+var activeTurn = null;
+var lastTurnSnapshot = null;
+var lastConversationState = null;
+var lastPendingQuestion = null;
+var TRACKED_FIELD_KEYS = [
+  "full_name",
+  "problem_description",
+  "callback_phone",
+  "callback_phone_confirmed",
+  "address",
+  "address_confirmed",
+  "photos_available",
+  "insurance_claim_started",
+  "adjuster_contacted",
+  "appointment_preference",
+  "appointment_preference_raw",
+  "schedule_confirmed",
+  "pending_question",
+  "additional_notes_responded",
+  "summary_confirmed"
+];
+function formatTrackedValue(value) {
+  if (value === void 0) {
+    return null;
+  }
+  if (typeof value === "boolean" || value === null) {
+    return value;
+  }
+  if (typeof value === "string") {
+    return value.length > 120 ? `${value.slice(0, 117)}...` : value;
+  }
+  return String(value);
+}
+function maskPhone(value) {
+  if (!value?.trim()) {
+    return null;
+  }
+  const digits = value.replace(/\D/g, "");
+  if (digits.length >= 4) {
+    return `***${digits.slice(-4)}`;
+  }
+  return "***";
+}
+function formatPhotosValue(value) {
+  if (value === void 0 || value === null) {
+    return null;
+  }
+  return String(value);
+}
+function isTurnDiagnosticsEnabled() {
+  const explicit = process.env.REALTIME_TURN_DIAGNOSTICS?.trim().toLowerCase();
+  if (explicit === "true" || explicit === "1") {
+    return true;
+  }
+  if (explicit === "false" || explicit === "0") {
+    return false;
+  }
+  return process.env.NODE_ENV !== "production";
+}
+function snapshotTurnState(fields, conversationState) {
+  const nextRequired = getNextRequiredField(fields);
+  return {
+    pendingQuestion: fields.pending_question?.trim() ?? resolvePendingQuestion(fields, conversationState),
+    callbackPhonePresent: Boolean(fields.callback_phone?.trim()),
+    callbackPhoneConfirmed: fields.callback_phone_confirmed === void 0 ? null : fields.callback_phone_confirmed,
+    addressPresent: Boolean(fields.address?.trim()),
+    addressConfirmed: fields.address_confirmed === void 0 ? null : fields.address_confirmed,
+    photosAvailable: formatPhotosValue(fields.photos_available),
+    insuranceClaimStarted: fields.insurance_claim_started === void 0 ? null : fields.insurance_claim_started,
+    adjusterContacted: fields.adjuster_contacted === void 0 ? null : fields.adjuster_contacted,
+    scheduleConfirmed: fields.schedule_confirmed === void 0 ? null : fields.schedule_confirmed,
+    appointmentPreference: fields.appointment_preference?.trim() ?? null,
+    nextRequiredField: nextRequired,
+    needsCallbackConfirmation: needsCallbackConfirmation(fields),
+    needsAddressConfirmation: needsAddressConfirmation(fields)
+  };
+}
+function diffTrackedFields(before, after) {
+  const updates = [];
+  for (const field of TRACKED_FIELD_KEYS) {
+    const beforeValue = formatTrackedValue(before[field]);
+    const afterValue = formatTrackedValue(after[field]);
+    if (beforeValue === afterValue) {
+      continue;
+    }
+    updates.push({
+      field,
+      before: beforeValue,
+      after: afterValue,
+      accepted: true
+    });
+  }
+  return updates;
+}
+function beginTurnDiagnostic(callId, turnId) {
+  if (!isTurnDiagnosticsEnabled()) {
+    return;
+  }
+  activeTurn = { callId, turnId };
+}
+function clearTurnDiagnostic() {
+  activeTurn = null;
+}
+function logTurnDiagnostic(event, fields) {
+  if (!isTurnDiagnosticsEnabled()) {
+    return;
+  }
+  logInfo(event, {
+    callId: activeTurn?.callId,
+    turnId: activeTurn?.turnId,
+    ...fields
+  });
+}
+function logTurnStart(input) {
+  beginTurnDiagnostic(input.callId, input.turnId);
+  lastConversationState = input.conversationState;
+  lastPendingQuestion = input.fieldsBefore.pending_question?.trim() ?? null;
+  const before = snapshotTurnState(input.fieldsBefore, input.conversationState);
+  lastTurnSnapshot = before;
+  logTurnDiagnostic("turn_diag_start", {
+    callerTranscript: input.transcript,
+    conversationStateBefore: input.conversationState,
+    pendingQuestionBefore: before.pendingQuestion,
+    callbackPhoneBefore: maskPhone(input.fieldsBefore.callback_phone),
+    callbackPhoneConfirmedBefore: before.callbackPhoneConfirmed,
+    photosStateBefore: before.photosAvailable,
+    insuranceStateBefore: before.insuranceClaimStarted,
+    schedulingStateBefore: {
+      scheduleConfirmed: before.scheduleConfirmed,
+      appointmentPreference: before.appointmentPreference
+    },
+    stateBefore: before
+  });
+  return before;
+}
+function logAnswerHandler(input) {
+  logTurnDiagnostic("turn_diag_answer_handler", {
+    handlerChosen: input.handler,
+    pendingQuestionUsed: input.pendingQuestion,
+    shortAnswer: input.shortAnswer,
+    validatedFieldUpdates: input.fieldUpdates,
+    rejectedFieldUpdates: input.rejectedUpdates ?? []
+  });
+}
+function logTurnStateAfterMerge(input) {
+  const after = snapshotTurnState(input.fieldsAfter, input.conversationState);
+  lastTurnSnapshot = after;
+  lastPendingQuestion = input.fieldsAfter.pending_question?.trim() ?? null;
+  logTurnDiagnostic("turn_diag_state_after_merge", {
+    stateAfter: after,
+    callbackPhoneAfter: maskPhone(input.fieldsAfter.callback_phone),
+    callbackPhoneConfirmedAfter: after.callbackPhoneConfirmed,
+    pendingQuestionAfter: after.pendingQuestion
+  });
+  return after;
+}
+function logNextActionSelection(input) {
+  lastConversationState = input.nextConversationState;
+  lastPendingQuestion = input.pendingQuestionAfter;
+  logTurnDiagnostic("turn_diag_next_action", {
+    nextActionSelected: input.nextAction,
+    nextActionReason: input.reason,
+    nextConversationState: input.nextConversationState,
+    pendingQuestionAfter: input.pendingQuestionAfter,
+    replyPreview: input.replyPreview.slice(0, 160)
+  });
+}
+function explainPostIntakeBranch(fields, options) {
+  const nextRequired = getNextRequiredField(fields);
+  if (options.isFirstCallerTurn === true && fields.intake_intro_delivered !== true && fields.problem_description?.trim() && (nextRequired === "full_name" || nextRequired === "emergency_or_active_leak")) {
+    return {
+      action: "first_turn_intro",
+      reason: `first caller turn with nextRequired=${nextRequired}`
+    };
+  }
+  if (isCallerNameResolved(fields) && needsCallbackConfirmation(fields) && nextRequired === "callback_phone" && !needsImmediateSafetyClarification(fields)) {
+    return {
+      action: "callback_confirmation_readback",
+      reason: `needsCallbackConfirmation=true callbackPhoneConfirmed=${String(fields.callback_phone_confirmed)} nextRequired=${nextRequired}`
+    };
+  }
+  if (isCallerNameResolved(fields) && isCallbackPhoneResolved(fields) && needsAddressReadback(fields) && nextRequired === "address") {
+    return {
+      action: "address_confirmation_readback",
+      reason: `needsAddressReadback=true addressConfirmed=${String(fields.address_confirmed)} nextRequired=${nextRequired}`
+    };
+  }
+  if (needsScheduleClarification(fields)) {
+    return {
+      action: "schedule_clarification",
+      reason: "needsScheduleClarification=true"
+    };
+  }
+  if (needsScheduleConfirmation(fields)) {
+    return {
+      action: "schedule_confirmation",
+      reason: "needsScheduleConfirmation=true"
+    };
+  }
+  return {
+    action: "standard_intake_question",
+    reason: `nextRequired=${nextRequired ?? "wrap_up"}`
+  };
+}
+function logResponseCreateSent() {
+  logTurnDiagnostic("turn_diag_response_create_sent", {
+    responseCreateSent: true
+  });
+}
+function logFirstAssistantAudioReceived() {
+  logTurnDiagnostic("turn_diag_first_audio_received", {
+    firstAssistantAudioReceived: true
+  });
+}
+function logCallDisconnect(input) {
+  if (!isTurnDiagnosticsEnabled()) {
+    logInfo("call_bridge_cleanup", { reason: input.reason, callSid: input.callId });
+    return;
+  }
+  logWarn("turn_diag_call_disconnect", {
+    callId: input.callId,
+    disconnectReason: input.reason,
+    lastConversationState: input.conversationState ?? lastConversationState,
+    lastPendingQuestion: input.lastPendingQuestion ?? lastPendingQuestion,
+    lastCallbackPhoneConfirmed: input.lastSnapshot?.callbackPhoneConfirmed ?? lastTurnSnapshot?.callbackPhoneConfirmed,
+    lastState: input.lastSnapshot ?? lastTurnSnapshot,
+    callerHeardMessage: input.callerHeardMessage ?? false,
+    leadPreserved: input.leadPreserved ?? true
+  });
+  clearTurnDiagnostic();
+}
+function getLastTurnDiagnosticSnapshot() {
+  return lastTurnSnapshot;
+}
+
 // src/bridge/playback-tracker.ts
 var PlaybackTracker = class {
   bytesSent = 0;
@@ -3089,1256 +4575,6 @@ function processNameCaptureTurn(input) {
   };
 }
 
-// ../../lib/twilio/company-phone.ts
-var DEFAULT_COMPANY_PHONE_E164 = "+14027611540";
-function getCompanyPhoneE164() {
-  return process.env.TWILIO_PHONE_NUMBER?.trim() || DEFAULT_COMPANY_PHONE_E164;
-}
-
-// src/orchestrator/callback-phone.ts
-function normalizeCallbackPhoneE164(phone) {
-  const digits = phone.replace(/\D/g, "");
-  if (digits.length === 10) {
-    return `+1${digits}`;
-  }
-  if (digits.length === 11 && digits.startsWith("1")) {
-    return `+${digits}`;
-  }
-  if (phone.trim().startsWith("+") && digits.length >= 10) {
-    return `+${digits}`;
-  }
-  return phone.trim();
-}
-function formatCallbackForSpeech(phone) {
-  const digits = phone.replace(/\D/g, "").slice(-10);
-  if (digits.length !== 10) {
-    return phone.trim();
-  }
-  return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
-}
-function isCompanyPhoneNumber(phone) {
-  const normalized = normalizeCallbackPhoneE164(phone);
-  const company = normalizeCallbackPhoneE164(getCompanyPhoneE164());
-  return normalized === company;
-}
-function buildCallbackReadbackConfirmation(phone) {
-  const spoken = formatCallbackForSpeech(phone);
-  return `I have your callback number as ${spoken}. Is that correct?`;
-}
-function isCallbackConfirmed(speech) {
-  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
-  return /^(yes|yeah|yep|yup|correct|right|that's right|thats right|that's correct|thats correct|affirmative)\b/.test(
-    normalized
-  );
-}
-function isCallbackRejected(speech) {
-  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
-  return /^(no|nope|nah|not quite|incorrect|wrong|change|fix|update)\b/.test(normalized);
-}
-function extractCallbackPhoneFromSpeech(speech, callerPhone, options = {}) {
-  const normalized = speech.toLowerCase();
-  const phonePattern = /(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/g;
-  const matches = [...speech.matchAll(phonePattern)];
-  if (matches.length > 0) {
-    const hasCorrection = /\b(actually|make that|correction|instead|rather|change it to|should be)\b/i.test(
-      speech
-    );
-    const chosen = hasCorrection ? matches[matches.length - 1] : matches[0];
-    const digits = chosen[0].replace(/\D/g, "");
-    if (digits.length >= 10) {
-      const e164 = normalizeCallbackPhoneE164(digits.slice(-10));
-      if (!isCompanyPhoneNumber(e164)) {
-        return e164;
-      }
-    }
-  }
-  if (options.allowAffirmativeReuse === true && callerPhone && /^(yes|yeah|yep|correct|this one|that one|same number|this number|calling from)\b/i.test(
-    normalized.trim()
-  )) {
-    const e164 = normalizeCallbackPhoneE164(callerPhone);
-    if (!isCompanyPhoneNumber(e164)) {
-      return e164;
-    }
-  }
-  return null;
-}
-
-// src/orchestrator/photos-field.ts
-function normalizePhotosValue(value) {
-  if (value === true || value === false || value === "unknown" || value === "declined") {
-    return value;
-  }
-  if (value === "yes") {
-    return true;
-  }
-  if (value === "no") {
-    return false;
-  }
-  if (value === "unknown") {
-    return "unknown";
-  }
-  if (value === "declined") {
-    return "declined";
-  }
-  if (value === null || value === void 0) {
-    return null;
-  }
-  return null;
-}
-
-// src/orchestrator/structured-intake.ts
-var EXPLICIT_YES = /^(yes|yeah|yep|yup|sure|correct|right|already|i have|i did|i've|we have|we've)\b/i;
-var EXPLICIT_NO = /^(no|nope|nah|not yet|haven't|havent|have not|none|negative|i haven't|i have not|we haven't|we have not)\b/i;
-var NOT_YET = /\bnot yet\b/i;
-function parseCorrectionBoolean(speech) {
-  const normalized = speech.trim().toLowerCase();
-  if (!normalized) {
-    return null;
-  }
-  if (/\b(not yet|haven't started|have not started|haven't|have not|no claim)\b/.test(
-    normalized
-  ) && !/\b(actually|wrong|incorrect|correction|did start|started a claim|have started)\b/.test(
-    normalized
-  )) {
-    return false;
-  }
-  if (/\b(yes|yeah|yep|i did start|i have started|we started|already started|did start a claim|started a claim|started the claim)\b/.test(
-    normalized
-  )) {
-    return true;
-  }
-  if (/^(no|nope|nah)\b/.test(normalized) && !/\b(wrong|incorrect|actually|correction)\b/.test(normalized)) {
-    return false;
-  }
-  return parseExplicitBoolean(speech);
-}
-function parseExplicitBoolean(speech) {
-  const normalized = speech.trim().toLowerCase();
-  if (!normalized) {
-    return null;
-  }
-  if (NOT_YET.test(normalized) || EXPLICIT_NO.test(normalized)) {
-    return false;
-  }
-  if (EXPLICIT_YES.test(normalized)) {
-    return true;
-  }
-  return null;
-}
-function isStructuredBooleanUnset(value) {
-  return value === void 0 || value === null;
-}
-function syncLegacyStringFields(fields) {
-  return { ...fields };
-}
-function toCollectedFields(fields) {
-  return {
-    ...fields,
-    insurance_claim: triStateToLegacyString(fields.insurance_claim_started),
-    adjuster_contacted: triStateToLegacyString(normalizeTriState(fields.adjuster_contacted)),
-    photos_available: photosValueToLegacyString(normalizePhotosValue(fields.photos_available)),
-    active_leak: triStateToLegacyString(fields.emergency_or_active_leak)
-  };
-}
-function normalizeTriStateField(value) {
-  return normalizeTriState(value);
-}
-function normalizeTriState(value) {
-  if (value === true || value === false || value === null) {
-    return value;
-  }
-  if (value === "yes") {
-    return true;
-  }
-  if (value === "no") {
-    return false;
-  }
-  return null;
-}
-function triStateToLegacyString(value) {
-  if (value === true) {
-    return "yes";
-  }
-  if (value === false) {
-    return "no";
-  }
-  return void 0;
-}
-function photosValueToLegacyString(value) {
-  if (value === true) {
-    return "yes";
-  }
-  if (value === false) {
-    return "no";
-  }
-  if (value === "unknown") {
-    return "unknown";
-  }
-  if (value === "declined") {
-    return "declined";
-  }
-  return void 0;
-}
-function applyCorrectionToStructuredField(fields, speech) {
-  let updated = { ...fields };
-  const normalized = speech.toLowerCase();
-  if (/insurance|claim/.test(normalized)) {
-    const parsed = parseCorrectionBoolean(speech);
-    if (parsed !== null) {
-      updated.insurance_claim_started = parsed;
-    }
-  }
-  if (/adjuster/.test(normalized)) {
-    const parsed = parseCorrectionBoolean(speech);
-    if (parsed !== null) {
-      updated.adjuster_contacted = parsed;
-    }
-  }
-  if (/photo|picture|image/.test(normalized)) {
-    const parsed = parseCorrectionBoolean(speech);
-    if (parsed !== null) {
-      updated.photos_available = parsed;
-    }
-  }
-  if (/leak|water|emergency|urgent/.test(normalized)) {
-    const parsed = parseCorrectionBoolean(speech);
-    if (parsed !== null) {
-      updated.emergency_or_active_leak = parsed;
-    }
-  }
-  return syncLegacyStringFields(updated);
-}
-
-// src/orchestrator/address-confirmation.ts
-function hasValue(value) {
-  return typeof value === "string" && value.trim().length > 0;
-}
-function hasConfirmableAddress(address) {
-  if (!hasValue(address)) {
-    return false;
-  }
-  const trimmed = address.trim();
-  return /\d/.test(trimmed) && trimmed.length >= 8;
-}
-function formatAddressForSpeech(address) {
-  let formatted = address.trim().replace(/\s+/g, " ");
-  if (/\bin\b/i.test(formatted) && !/,/.test(formatted)) {
-    formatted = formatted.replace(/\s+in\s+/i, ", ");
-  }
-  return formatted;
-}
-function buildAddressReadbackConfirmation(address) {
-  return `I have ${formatAddressForSpeech(address)}. Is that right?`;
-}
-function needsAddressReadback(fields) {
-  return hasConfirmableAddress(fields.address) && fields.address_confirmed !== true;
-}
-function isAddressConfirmed(fields) {
-  return hasConfirmableAddress(fields.address) && fields.address_confirmed === true;
-}
-function isAddressConfirmedSpeech(speech) {
-  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
-  return /^(yes|yeah|yep|yup|correct|right|that's right|thats right|that's correct|thats correct)\b/.test(
-    normalized
-  );
-}
-function isAddressRejectedSpeech(speech) {
-  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
-  return /^(no|nope|nah|not quite|incorrect|wrong|change|fix|update)\b/.test(normalized);
-}
-function applyAddressCorrection(fields, speech) {
-  const trimmed = speech.trim();
-  if (!trimmed) {
-    return fields;
-  }
-  return syncLegacyStringFields({
-    ...fields,
-    address: trimmed.slice(0, 500),
-    address_confirmed: false
-  });
-}
-function confirmAddress(fields) {
-  return syncLegacyStringFields({
-    ...fields,
-    address: fields.address ? formatAddressForSpeech(fields.address) : fields.address,
-    address_confirmed: true
-  });
-}
-
-// src/orchestrator/field-validation.ts
-var DAMAGE_AND_INTAKE_TERMS = /\b(hail|storm|roof|roofing|leak|leaking|shingles?|damage|damaged|insurance|claim|adjuster|pictures?|photos?|tomorrow|morning|afternoon|evening|urgent|emergency|water|tree|wind|repair|replace|inspection|callback|address|property|number|yes|no|yeah|nope)\b/i;
-var PHONE_PATTERN = /(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/;
-function containsRoofingDamageLanguage(text) {
-  return DAMAGE_AND_INTAKE_TERMS.test(text.trim());
-}
-function isPlausibleCallerName(name) {
-  const trimmed = name.trim();
-  if (trimmed.length < 2 || trimmed.length > 60) {
-    return false;
-  }
-  if (/\d/.test(trimmed) || PHONE_PATTERN.test(trimmed)) {
-    return false;
-  }
-  if (/[.!?]/.test(trimmed)) {
-    return false;
-  }
-  if (trimmed.split(/\s+/).length > 4) {
-    return false;
-  }
-  if (containsRoofingDamageLanguage(trimmed)) {
-    return false;
-  }
-  if (/\b(street|st|avenue|ave|road|rd|drive|dr|lane|ln|boulevard|blvd|way|court|ct)\b/i.test(trimmed)) {
-    return false;
-  }
-  return /^[A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){0,3}$/.test(trimmed);
-}
-function extractExplicitCallerName(speech) {
-  const patterns = [
-    /\b(?:my name is|name is)\s+([A-Za-z][A-Za-z'\-]+(?:\s+[A-Za-z][A-Za-z'\-]+)?)(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i,
-    /\b(?:this is|i am|i'm|name's)\s+([A-Za-z][A-Za-z'\-]+(?:\s+[A-Za-z][A-Za-z'\-]+)?)(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i
-  ];
-  for (const pattern of patterns) {
-    const match = speech.match(pattern);
-    const candidate = match?.[1]?.trim();
-    if (candidate && isPlausibleCallerName(candidate)) {
-      return candidate;
-    }
-  }
-  return null;
-}
-function validateCallerNameCandidate(speech, options = {}) {
-  const explicit = extractExplicitCallerName(speech);
-  if (explicit) {
-    return { value: explicit, needsClarification: false };
-  }
-  const trimmed = speech.trim();
-  if (options.isDirectNameAnswer && isPlausibleCallerName(trimmed)) {
-    return { value: trimmed, needsClarification: false };
-  }
-  if (options.isDirectNameAnswer && trimmed.length > 0) {
-    return { value: null, needsClarification: true };
-  }
-  return { value: null, needsClarification: false };
-}
-function isPlausibleServiceAddress(address) {
-  const trimmed = address.trim();
-  if (trimmed.length < 8 || trimmed.length > 200) {
-    return false;
-  }
-  if (!/\d/.test(trimmed)) {
-    return false;
-  }
-  if (containsRoofingDamageLanguage(trimmed) && !/\b(street|st|avenue|ave|road|rd|drive|dr|lane|ln|way|court|ct|place|pl)\b/i.test(trimmed)) {
-    return false;
-  }
-  return true;
-}
-function isPlausibleDamageDescription(text) {
-  const trimmed = text.trim();
-  if (trimmed.length < 4) {
-    return false;
-  }
-  if (isPlausibleCallerName(trimmed)) {
-    return false;
-  }
-  return containsRoofingDamageLanguage(trimmed) || /tree|water|hole|missing|broken|hit|fell|last night|yesterday/i.test(trimmed);
-}
-function extractDamageOrCallReason(speech) {
-  const trimmed = speech.trim();
-  if (!isPlausibleDamageDescription(trimmed)) {
-    return null;
-  }
-  return trimmed.slice(0, 500);
-}
-function buildNameClarificationPrompt(currentGuess, options = {}) {
-  if (options.askToSpell) {
-    return "Could you spell your name for me?";
-  }
-  if (currentGuess && currentGuess.length <= 12) {
-    return `I'm sorry, I heard "${currentGuess}," but I want to make sure I have your name right. Could you say or spell it one more time?`;
-  }
-  return "I'm sorry, I didn't catch your name clearly. Could you say it one more time?";
-}
-function isCallerNameDeclinedSpeech(speech) {
-  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
-  return /\b(prefer not to|rather not|don't want to|do not want to|won't give|will not give|no name|not giving my name)\b/.test(
-    normalized
-  ) || /\b(i'd rather not say|id rather not say)\b/.test(normalized);
-}
-function isCallerNameUnavailableSpeech(speech) {
-  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
-  return /\b(don't know|do not know|not sure|can't remember|cant remember|unavailable)\b/.test(
-    normalized
-  );
-}
-var EARLY_CALLER_NAME_QUESTION = "Could I start with your name?";
-
-// src/orchestrator/schedule-normalizer.ts
-var COMPANY_TIMEZONE = process.env.COMPANY_TIMEZONE?.trim() || "America/Chicago";
-var SCHEDULE_PARSE_FALLBACK_PROMPT = "I'm sorry, I had trouble understanding the timing. What specific day and time would work best for you?";
-function getLocalParts(date, timeZone) {
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    year: "numeric",
-    month: "numeric",
-    day: "numeric",
-    weekday: "short"
-  });
-  const parts = formatter.formatToParts(date);
-  const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  const weekdayMap = {
-    Sun: 0,
-    Mon: 1,
-    Tue: 2,
-    Wed: 3,
-    Thu: 4,
-    Fri: 5,
-    Sat: 6
-  };
-  return {
-    year: Number.parseInt(lookup.year ?? "1970", 10),
-    month: Number.parseInt(lookup.month ?? "1", 10),
-    day: Number.parseInt(lookup.day ?? "1", 10),
-    weekday: weekdayMap[lookup.weekday ?? "Sun"] ?? 0
-  };
-}
-function makeUtcDate(year, month, day, hour, minute, timeZone) {
-  let guess = Date.UTC(year, month - 1, day, hour, minute);
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const parts = getLocalParts(new Date(guess), timeZone);
-    const deltaHours = hour - deriveHour(new Date(guess), timeZone);
-    const deltaDays = day - parts.day;
-    guess += deltaDays * 864e5 + deltaHours * 36e5;
-  }
-  return new Date(guess);
-}
-function deriveHour(date, timeZone) {
-  const hour = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    hour: "numeric",
-    minute: "numeric",
-    hour12: false
-  }).formatToParts(date);
-  const lookup = Object.fromEntries(hour.map((part) => [part.type, part.value]));
-  return Number.parseInt(lookup.hour ?? "0", 10);
-}
-function addDays(parts, days) {
-  const date = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + days));
-  return {
-    year: date.getUTCFullYear(),
-    month: date.getUTCMonth() + 1,
-    day: date.getUTCDate(),
-    weekday: date.getUTCDay()
-  };
-}
-function resolveWeekday(parts, targetWeekday, useNextWeek) {
-  let delta = (targetWeekday - parts.weekday + 7) % 7;
-  if (delta === 0 && useNextWeek) {
-    delta = 7;
-  }
-  if (delta === 0 && !useNextWeek) {
-    return parts;
-  }
-  return addDays(parts, delta);
-}
-function formatSpokenDate(parts) {
-  const monthNames = [
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December"
-  ];
-  return `${monthNames[parts.month - 1] ?? "January"} ${parts.day}`;
-}
-function formatSpokenTime(hour, minute) {
-  const suffix = hour >= 12 ? "PM" : "AM";
-  const hour12 = hour % 12 === 0 ? 12 : hour % 12;
-  const minutePart = `:${String(minute).padStart(2, "0")}`;
-  return `${hour12}${minutePart} ${suffix}`.replace("  ", " ");
-}
-var SPOKEN_HOUR_WORDS = {
-  one: 1,
-  two: 2,
-  three: 3,
-  four: 4,
-  five: 5,
-  six: 6,
-  seven: 7,
-  eight: 8,
-  nine: 9,
-  ten: 10,
-  eleven: 11,
-  twelve: 12
-};
-function parseHourToken(token) {
-  const numeric = Number.parseInt(token, 10);
-  if (Number.isFinite(numeric) && numeric >= 1 && numeric <= 12) {
-    return numeric;
-  }
-  return SPOKEN_HOUR_WORDS[token.toLowerCase()] ?? null;
-}
-function parseTimeFromSpeech(normalized) {
-  const atTime = normalized.match(/\bat\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(am|pm)?/i);
-  if (atTime) {
-    const parsedHour = parseHourToken(atTime[1] ?? "");
-    if (parsedHour === null) {
-      return null;
-    }
-    let hour = parsedHour;
-    const minute = Number.parseInt(atTime[2] ?? "0", 10);
-    const meridiem = atTime[3]?.toLowerCase();
-    if (meridiem === "pm" && hour < 12) {
-      hour += 12;
-    }
-    if (meridiem === "am" && hour === 12) {
-      hour = 0;
-    }
-    if (!meridiem && hour <= 7) {
-      hour += 12;
-    }
-    return { hour, minute };
-  }
-  const aboutTime = normalized.match(
-    /\babout\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\b/i
-  );
-  if (aboutTime) {
-    const parsedHour = parseHourToken(aboutTime[1] ?? "");
-    if (parsedHour === null) {
-      return null;
-    }
-    let hour = parsedHour;
-    const minute = Number.parseInt(aboutTime[2] ?? "0", 10);
-    if (hour <= 7) {
-      hour += 12;
-    }
-    return { hour, minute };
-  }
-  const aroundTime = normalized.match(
-    /\baround\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\b/i
-  );
-  if (aroundTime) {
-    const parsedHour = parseHourToken(aroundTime[1] ?? "");
-    if (parsedHour === null) {
-      return null;
-    }
-    let hour = parsedHour;
-    const minute = Number.parseInt(aroundTime[2] ?? "0", 10);
-    if (hour <= 7) {
-      hour += 12;
-    }
-    return { hour, minute };
-  }
-  const betweenTimes = normalized.match(
-    /\bbetween\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(?:am|pm)?\s+and\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(am|pm)?/i
-  );
-  if (betweenTimes) {
-    const startHour = parseHourToken(betweenTimes[1] ?? "");
-    const endHour = parseHourToken(betweenTimes[3] ?? "");
-    if (startHour === null || endHour === null) {
-      return null;
-    }
-    let hour = startHour;
-    const minute = Number.parseInt(betweenTimes[2] ?? "0", 10);
-    const meridiem = betweenTimes[5]?.toLowerCase();
-    if (meridiem === "pm" && hour < 12) {
-      hour += 12;
-    }
-    if (meridiem === "am" && hour === 12) {
-      hour = 0;
-    }
-    if (!meridiem && hour <= 7) {
-      hour += 12;
-    }
-    return { hour, minute };
-  }
-  return null;
-}
-function weekdayIndex(name) {
-  const map = {
-    sunday: 0,
-    monday: 1,
-    tuesday: 2,
-    wednesday: 3,
-    thursday: 4,
-    friday: 5,
-    saturday: 6
-  };
-  return map[name.toLowerCase()] ?? null;
-}
-function parseScheduleSpeech(speech, now = /* @__PURE__ */ new Date(), timeZone = COMPANY_TIMEZONE) {
-  try {
-    return parseScheduleSpeechInternal(speech, now, timeZone);
-  } catch (error) {
-    logScheduleParseError(error, speech);
-    return {
-      status: "needs_date_clarification",
-      prompt: SCHEDULE_PARSE_FALLBACK_PROMPT,
-      raw: speech.trim()
-    };
-  }
-}
-function logScheduleParseError(error, speech) {
-  logError("schedule_parse_failed", { speechLength: speech.trim().length }, error);
-}
-function parseScheduleSpeechInternal(speech, now = /* @__PURE__ */ new Date(), timeZone = COMPANY_TIMEZONE) {
-  const raw = speech.trim();
-  const normalized = raw.toLowerCase().replace(/[^\w\s:]/g, " ").replace(/\s+/g, " ").trim();
-  if (!normalized) {
-    return { status: "nothing_schedulable", raw };
-  }
-  if (/\bafter work\b|\bafter i get off\b|\bwhen i get off\b/.test(normalized)) {
-    return {
-      status: "needs_time_clarification",
-      prompt: "What time should I put down?",
-      raw
-    };
-  }
-  const today = getLocalParts(now, timeZone);
-  let targetDate = { ...today };
-  let useNextWeek = false;
-  if (/\btomorrow\b/.test(normalized)) {
-    targetDate = addDays(today, 1);
-  } else if (/\bnext week\b/.test(normalized)) {
-    targetDate = addDays(today, 7);
-  } else {
-    const weekdayMatch = normalized.match(/\b(next\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i);
-    if (weekdayMatch) {
-      useNextWeek = Boolean(weekdayMatch[1]);
-      const weekday = weekdayIndex(weekdayMatch[2] ?? "");
-      if (weekday !== null) {
-        targetDate = resolveWeekday(today, weekday, useNextWeek);
-      }
-    }
-  }
-  const time = parseTimeFromSpeech(normalized);
-  const hasMorning = /\bmorning\b/.test(normalized);
-  const hasAfternoon = /\bafternoon\b/.test(normalized);
-  const hasEvening = /\bevening\b/.test(normalized);
-  if ((hasMorning || hasAfternoon || hasEvening) && !time) {
-    const dateLabel = formatSpokenDate(targetDate);
-    if (hasMorning) {
-      return {
-        status: "needs_confirmation",
-        spoken: `Would ${dateLabel} between 8:00 and 11:00 AM work?`,
-        isoStart: makeUtcDate(targetDate.year, targetDate.month, targetDate.day, 8, 0, timeZone).toISOString(),
-        isoEnd: makeUtcDate(targetDate.year, targetDate.month, targetDate.day, 11, 0, timeZone).toISOString(),
-        raw
-      };
-    }
-    if (hasAfternoon) {
-      const afternoonLabel = /\btomorrow\b/.test(normalized) ? "tomorrow afternoon" : `${formatSpokenDate(targetDate)} afternoon`;
-      return {
-        status: "needs_time_clarification",
-        prompt: `What time ${afternoonLabel} works best?`,
-        raw
-      };
-    }
-    if (hasEvening) {
-      return {
-        status: "needs_time_clarification",
-        prompt: "What time in the evening works best?",
-        raw
-      };
-    }
-  }
-  if (!time && /\btomorrow\b|\bnext\b|\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/.test(normalized)) {
-    return {
-      status: "needs_time_clarification",
-      prompt: "What time works best?",
-      raw
-    };
-  }
-  if (time) {
-    const betweenTimes = normalized.match(
-      /\bbetween\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(?:am|pm)?\s+and\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(am|pm)?/i
-    );
-    if (betweenTimes) {
-      const startHour = parseHourToken(betweenTimes[1] ?? "");
-      const endHour = parseHourToken(betweenTimes[3] ?? "");
-      if (startHour !== null && endHour !== null) {
-        let endHour24 = endHour;
-        const meridiem = betweenTimes[5]?.toLowerCase();
-        if (meridiem === "pm" && endHour24 < 12) {
-          endHour24 += 12;
-        }
-        if (!meridiem && endHour24 <= 7) {
-          endHour24 += 12;
-        }
-        let startHour24 = startHour;
-        if (meridiem === "pm" && startHour24 < 12) {
-          startHour24 += 12;
-        }
-        if (!meridiem && startHour24 <= 7) {
-          startHour24 += 12;
-        }
-        const dateLabel2 = formatSpokenDate(targetDate);
-        const startLabel = formatSpokenTime(startHour24, Number.parseInt(betweenTimes[2] ?? "0", 10));
-        const endLabel = formatSpokenTime(endHour24, Number.parseInt(betweenTimes[4] ?? "0", 10));
-        return {
-          status: "needs_confirmation",
-          spoken: `${dateLabel2} between ${startLabel.replace(/ AM| PM/, "")} and ${endLabel}`,
-          isoStart: makeUtcDate(
-            targetDate.year,
-            targetDate.month,
-            targetDate.day,
-            startHour24,
-            Number.parseInt(betweenTimes[2] ?? "0", 10),
-            timeZone
-          ).toISOString(),
-          isoEnd: makeUtcDate(
-            targetDate.year,
-            targetDate.month,
-            targetDate.day,
-            endHour24,
-            Number.parseInt(betweenTimes[4] ?? "0", 10),
-            timeZone
-          ).toISOString(),
-          raw
-        };
-      }
-    }
-    const dateLabel = formatSpokenDate(targetDate);
-    const spokenTime = formatSpokenTime(time.hour, time.minute);
-    const isoStart = makeUtcDate(
-      targetDate.year,
-      targetDate.month,
-      targetDate.day,
-      time.hour,
-      time.minute,
-      timeZone
-    ).toISOString();
-    return {
-      status: "needs_confirmation",
-      spoken: `${dateLabel} at ${spokenTime}`,
-      isoStart,
-      raw
-    };
-  }
-  return { status: "nothing_schedulable", raw };
-}
-function buildScheduleConfirmationQuestion(spoken) {
-  if (spoken.startsWith("Would ")) {
-    return `${spoken} Is that correct?`;
-  }
-  return `Just to confirm, you'd prefer a call on ${spoken.replace(/^on /i, "")}. Is that correct?`;
-}
-function isScheduleConfirmedSpeech(speech) {
-  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
-  return /^(yes|yeah|yep|yup|correct|right|that's right|thats right|that works|sounds good)\b/.test(
-    normalized
-  );
-}
-function isScheduleRejectedSpeech(speech) {
-  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
-  return /^(no|nope|nah|not quite|incorrect|wrong|change|fix|update)\b/.test(normalized);
-}
-function applyScheduleParseResult(fields, result) {
-  if (result.status === "nothing_schedulable") {
-    return fields;
-  }
-  return syncLegacyStringFields({
-    ...fields,
-    appointment_preference_raw: result.raw,
-    schedule_confirmed: false,
-    appointment_schedule_iso: result.status === "needs_confirmation" ? result.isoStart : void 0,
-    appointment_schedule_iso_end: result.status === "needs_confirmation" ? result.isoEnd : void 0,
-    appointment_preference: result.status === "needs_confirmation" ? result.spoken : fields.appointment_preference
-  });
-}
-function confirmSchedule(fields) {
-  const spoken = fields.appointment_preference?.trim() || fields.appointment_preference_raw?.trim() || "the requested time";
-  return syncLegacyStringFields({
-    ...fields,
-    appointment_preference: spoken,
-    schedule_confirmed: true
-  });
-}
-function needsScheduleClarification(fields) {
-  return Boolean(fields.schedule_pending_clarification);
-}
-function needsScheduleConfirmation(fields) {
-  return Boolean(fields.appointment_schedule_iso || fields.appointment_preference) && fields.schedule_confirmed !== true && !fields.schedule_pending_clarification;
-}
-function isScheduleComplete(fields) {
-  return typeof fields.appointment_preference === "string" && fields.appointment_preference.trim().length > 0 && fields.schedule_confirmed === true;
-}
-function processScheduleCapture(fields, speech, now = /* @__PURE__ */ new Date()) {
-  try {
-    const combined = `${fields.appointment_preference_raw ?? ""} ${speech}`.trim();
-    const parsed = parseScheduleSpeech(combined, now);
-    let updated = applyScheduleParseResult(
-      {
-        ...fields,
-        appointment_preference_raw: combined
-      },
-      parsed
-    );
-    if (parsed.status === "needs_time_clarification") {
-      updated = {
-        ...updated,
-        schedule_pending_clarification: true,
-        schedule_clarification_prompt: parsed.prompt
-      };
-      return { fields: updated, clarificationPrompt: parsed.prompt };
-    }
-    if (parsed.status === "needs_date_clarification") {
-      updated = {
-        ...updated,
-        schedule_pending_clarification: true,
-        schedule_clarification_prompt: parsed.prompt
-      };
-      return { fields: updated, clarificationPrompt: parsed.prompt };
-    }
-    if (parsed.status === "needs_confirmation") {
-      updated = {
-        ...updated,
-        schedule_pending_clarification: false,
-        schedule_clarification_prompt: void 0
-      };
-      return {
-        fields: updated,
-        confirmationPrompt: buildScheduleConfirmationQuestion(parsed.spoken)
-      };
-    }
-    updated = {
-      ...updated,
-      schedule_pending_clarification: true,
-      schedule_clarification_prompt: SCHEDULE_PARSE_FALLBACK_PROMPT
-    };
-    return {
-      fields: updated,
-      clarificationPrompt: SCHEDULE_PARSE_FALLBACK_PROMPT
-    };
-  } catch (error) {
-    logScheduleParseError(error, speech);
-    const combined = `${fields.appointment_preference_raw ?? ""} ${speech}`.trim();
-    const updated = {
-      ...fields,
-      appointment_preference_raw: combined,
-      schedule_pending_clarification: true,
-      schedule_clarification_prompt: SCHEDULE_PARSE_FALLBACK_PROMPT,
-      schedule_confirmed: false
-    };
-    return {
-      fields: updated,
-      clarificationPrompt: SCHEDULE_PARSE_FALLBACK_PROMPT
-    };
-  }
-}
-
-// src/orchestrator/pending-question.ts
-function hasValue2(value) {
-  return typeof value === "string" && value.trim().length > 0;
-}
-function needsCallbackConfirmation(fields) {
-  return Boolean(
-    hasValue2(fields.callback_phone) && fields.callback_phone_confirmed !== true
-  );
-}
-function needsAddressConfirmation(fields) {
-  return hasConfirmableAddress(fields.address) && fields.address_confirmed !== true;
-}
-function mapRequiredFieldToPending(field) {
-  switch (field) {
-    case "problem_description":
-      return "call_reason";
-    case "full_name":
-      return "caller_name";
-    case "callback_phone":
-      return "callback_phone";
-    case "address":
-      return "service_address";
-    case "emergency_or_active_leak":
-      return "active_leak";
-    case "urgency":
-      return "urgency";
-    case "insurance_claim_started":
-      return "insurance_claim";
-    case "adjuster_contacted":
-      return "adjuster_contacted";
-    case "appointment_preference":
-      return "preferred_callback_time";
-    default:
-      return "call_reason";
-  }
-}
-function isPendingQuestionKey(value) {
-  return value === "caller_name" || value === "callback_phone" || value === "callback_confirmation" || value === "service_address" || value === "address_confirmation" || value === "call_reason" || value === "insurance_claim" || value === "adjuster_contacted" || value === "active_leak" || value === "urgency" || value === "preferred_callback_time" || value === "schedule_confirmation" || value === "additional_notes" || value === "summary_confirmation";
-}
-function isStoredPendingQuestionStillValid(fields, pending) {
-  switch (pending) {
-    case "callback_confirmation":
-      return needsCallbackConfirmation(fields);
-    case "address_confirmation":
-      return needsAddressConfirmation(fields);
-    case "preferred_callback_time":
-      return needsScheduleClarification(fields);
-    case "schedule_confirmation":
-      return needsScheduleConfirmation(fields);
-    default:
-      return true;
-  }
-}
-function resolvePendingQuestion(fields, conversationState) {
-  const stored = fields.pending_question?.trim();
-  if (stored && isPendingQuestionKey(stored) && isStoredPendingQuestionStillValid(fields, stored)) {
-    return stored;
-  }
-  if (conversationState === "awaiting_callback_confirmation") {
-    return "callback_confirmation";
-  }
-  if (conversationState === "awaiting_address_confirmation") {
-    return "address_confirmation";
-  }
-  if (conversationState === "awaiting_schedule_clarification") {
-    return "preferred_callback_time";
-  }
-  if (conversationState === "awaiting_schedule_confirmation") {
-    return "schedule_confirmation";
-  }
-  if (conversationState === "awaiting_additional_notes") {
-    return "additional_notes";
-  }
-  if (conversationState === "awaiting_summary_confirmation" || conversationState === "handling_correction" || conversationState === "presenting_summary") {
-    return "summary_confirmation";
-  }
-  const nextRequired = getNextRequiredField(fields);
-  if (needsCallbackConfirmation(fields) && nextRequired === "callback_phone" && isCallerNameResolved(fields) && !needsImmediateSafetyClarification(fields)) {
-    return "callback_confirmation";
-  }
-  if (needsAddressConfirmation(fields) && nextRequired === "address" && isCallbackPhoneResolved(fields) && isCallerNameResolved(fields)) {
-    return "address_confirmation";
-  }
-  if (needsScheduleClarification(fields) || needsScheduleConfirmation(fields)) {
-    return needsScheduleConfirmation(fields) ? "schedule_confirmation" : "preferred_callback_time";
-  }
-  return nextRequired ? mapRequiredFieldToPending(nextRequired) : null;
-}
-function pendingQuestionForConversationState(conversationState) {
-  switch (conversationState) {
-    case "awaiting_callback_confirmation":
-      return "callback_confirmation";
-    case "awaiting_address_confirmation":
-      return "address_confirmation";
-    case "awaiting_schedule_clarification":
-      return "preferred_callback_time";
-    case "awaiting_schedule_confirmation":
-      return "schedule_confirmation";
-    case "awaiting_additional_notes":
-      return "additional_notes";
-    case "awaiting_summary_confirmation":
-    case "handling_correction":
-    case "presenting_summary":
-      return "summary_confirmation";
-    default:
-      return null;
-  }
-}
-function pendingQuestionForNextField(field) {
-  return field ? mapRequiredFieldToPending(field) : null;
-}
-function attachPendingQuestion(fields, pendingQuestion) {
-  if (!pendingQuestion) {
-    return {
-      ...fields,
-      pending_question: void 0
-    };
-  }
-  return {
-    ...fields,
-    pending_question: pendingQuestion
-  };
-}
-function allowsCallbackAffirmativeReuse(pendingQuestion) {
-  return pendingQuestion === "callback_phone" || pendingQuestion === "callback_confirmation";
-}
-function allowsBooleanDirectAnswer(pendingQuestion, field) {
-  return pendingQuestion === field;
-}
-function resolveActivePendingQuestion(fields, conversationState, override) {
-  if (override !== void 0) {
-    return override;
-  }
-  const stored = fields.pending_question?.trim();
-  if (stored && isPendingQuestionKey(stored) && isStoredPendingQuestionStillValid(fields, stored)) {
-    return stored;
-  }
-  return resolvePendingQuestion(fields, conversationState);
-}
-
-// src/orchestrator/required-intake.ts
-var BRANCH_FIELD_ORDER = [
-  "urgency",
-  "insurance_claim_started",
-  "adjuster_contacted",
-  "appointment_preference"
-];
-var REQUIRED_FIELD_ORDER = [
-  "problem_description",
-  "full_name",
-  "callback_phone",
-  "address",
-  "emergency_or_active_leak",
-  ...BRANCH_FIELD_ORDER
-];
-function hasValue3(value) {
-  return typeof value === "string" && value.trim().length > 0;
-}
-function isCallerNameResolved(fields) {
-  if (fields.caller_name_declined === true || fields.caller_name_unavailable === true) {
-    return true;
-  }
-  return hasValue3(fields.full_name) && isPlausibleCallerName(fields.full_name ?? "");
-}
-function isAdditionalNotesResolved(fields) {
-  return fields.additional_notes_responded === true;
-}
-function mapRequiredFieldToShared(field) {
-  switch (field) {
-    case "full_name":
-      return "callerName";
-    case "callback_phone":
-      return "callbackPhone";
-    case "address":
-      return "serviceAddress";
-    case "problem_description":
-      return "callReason";
-    case "urgency":
-      return "urgencyStatus";
-    case "emergency_or_active_leak":
-      return "safetyStatus";
-    case "appointment_preference":
-      return "callbackSchedule";
-    default:
-      return "issueDetails";
-  }
-}
-function isCallbackComplete(fields) {
-  return hasValue3(fields.callback_phone) && fields.callback_phone_confirmed === true;
-}
-function isCallbackPhoneResolved(fields) {
-  return isCallbackComplete(fields);
-}
-function isFieldComplete(field, fields) {
-  switch (field) {
-    case "full_name":
-      return isCallerNameResolved(fields);
-    case "callback_phone":
-      return isCallbackComplete(fields);
-    case "address":
-      return isAddressConfirmed(fields);
-    case "problem_description":
-      return hasValue3(fields.problem_description);
-    case "urgency":
-      return hasValue3(fields.urgency);
-    case "emergency_or_active_leak":
-      return !isStructuredBooleanUnset(fields.emergency_or_active_leak);
-    case "insurance_claim_started":
-      return !isStructuredBooleanUnset(fields.insurance_claim_started);
-    case "adjuster_contacted":
-      if (fields.insurance_claim_started !== true) {
-        return true;
-      }
-      return !isStructuredBooleanUnset(fields.adjuster_contacted);
-    case "appointment_preference":
-      return isScheduleComplete(fields);
-    default:
-      return false;
-  }
-}
-function needsImmediateSafetyClarification(fields) {
-  if (!isStructuredBooleanUnset(fields.emergency_or_active_leak)) {
-    return false;
-  }
-  if (fields.emergency_acknowledged === true) {
-    return true;
-  }
-  const problem = fields.problem_description?.toLowerCase() ?? "";
-  return /\b(active leak|water (is )?((getting )?in|inside|pouring)|pouring in|flooding|emergency|collapse|structural damage|someone (is )?hurt|injured)\b/i.test(
-    problem
-  );
-}
-function collectMissingFieldsInPriorityOrder(fields) {
-  const missing = [];
-  if (!hasValue3(fields.problem_description)) {
-    missing.push("problem_description");
-  }
-  if (needsImmediateSafetyClarification(fields)) {
-    missing.push("emergency_or_active_leak");
-  }
-  if (!isCallerNameResolved(fields)) {
-    missing.push("full_name");
-  }
-  if (!isCallbackComplete(fields)) {
-    missing.push("callback_phone");
-  }
-  if (!isAddressConfirmed(fields)) {
-    missing.push("address");
-  }
-  if (!isFieldComplete("emergency_or_active_leak", fields) && !missing.includes("emergency_or_active_leak")) {
-    missing.push("emergency_or_active_leak");
-  }
-  for (const field of BRANCH_FIELD_ORDER) {
-    if (!isFieldComplete(field, fields)) {
-      missing.push(field);
-    }
-  }
-  return missing;
-}
-function getMissingRequiredFields(fields) {
-  return collectMissingFieldsInPriorityOrder(fields);
-}
-function getSharedMissingFields(fields) {
-  const missing = /* @__PURE__ */ new Set();
-  if (!isCallerNameResolved(fields)) {
-    missing.add("callerName");
-  }
-  for (const field of getMissingRequiredFields(fields)) {
-    missing.add(mapRequiredFieldToShared(field));
-  }
-  if (!isAdditionalNotesResolved(fields)) {
-    missing.add("additionalNotes");
-  }
-  return [...missing];
-}
-function isSharedIntakeComplete(fields) {
-  return getSharedMissingFields(fields).length === 0;
-}
-function getNextRequiredField(fields) {
-  return collectMissingFieldsInPriorityOrder(fields)[0] ?? null;
-}
-var FIELD_QUESTIONS = {
-  problem_description: "What's going on with the roof?",
-  full_name: EARLY_CALLER_NAME_QUESTION,
-  callback_phone: "What's the best callback number?",
-  address: "What's the property address?",
-  emergency_or_active_leak: "Is there an active leak or water getting inside right now?",
-  urgency: "How urgent is this?",
-  insurance_claim_started: "Have you started an insurance claim?",
-  adjuster_contacted: "Have you contacted your adjuster yet?",
-  appointment_preference: "What day and time would be best for the roofing team to contact you?"
-};
-function getRequiredFieldQuestion(field, fields, callerPhone) {
-  const firstName = fields.full_name?.trim().split(/\s+/)[0];
-  if (field === "callback_phone" && callerPhone) {
-    if (firstName) {
-      return `${firstName}, is this the best number to reach you?`;
-    }
-    return "Is this the best number to reach you?";
-  }
-  return FIELD_QUESTIONS[field];
-}
-var CONTEXTUAL_TRANSITIONS = {
-  full_name: EARLY_CALLER_NAME_QUESTION,
-  address: "What's the property address?",
-  emergency_or_active_leak: "Is there an active leak or water getting inside right now?",
-  urgency: "How urgent is this?",
-  insurance_claim_started: "Have you started an insurance claim?",
-  adjuster_contacted: "Have you contacted your adjuster yet?",
-  appointment_preference: "What day and time would be best for the roofing team to contact you?"
-};
-function getNaturalTransitionQuestion(field, fields, callerPhone) {
-  if (field === "callback_phone") {
-    return getRequiredFieldQuestion(field, fields, callerPhone);
-  }
-  return CONTEXTUAL_TRANSITIONS[field] ?? getRequiredFieldQuestion(field, fields, callerPhone);
-}
-function applyDirectAnswerToMissingField(fields, answer, callerPhone, pendingQuestion = null) {
-  const trimmed = answer.trim();
-  if (!trimmed) {
-    return fields;
-  }
-  const target = getNextRequiredField(fields);
-  if (!target) {
-    return fields;
-  }
-  if (pendingQuestion !== null && pendingQuestion !== mapRequiredFieldToPending(target)) {
-    return fields;
-  }
-  let updated = { ...fields };
-  switch (target) {
-    case "full_name": {
-      if (isCallerNameDeclinedSpeech(trimmed)) {
-        updated.caller_name_declined = true;
-        updated.full_name = void 0;
-        updated.name_needs_clarification = false;
-        break;
-      }
-      if (isCallerNameUnavailableSpeech(trimmed)) {
-        updated.caller_name_unavailable = true;
-        updated.full_name = void 0;
-        updated.name_needs_clarification = false;
-        break;
-      }
-      if (!isCallerNameResolved(updated)) {
-        const validated = validateCallerNameCandidate(trimmed, { isDirectNameAnswer: true });
-        if (validated.value) {
-          updated.full_name = validated.value.slice(0, 100);
-          updated.name_needs_clarification = false;
-          updated.caller_name_declined = false;
-          updated.caller_name_unavailable = false;
-        } else if (validated.needsClarification) {
-          updated.name_needs_clarification = true;
-          updated.name_clarification_attempts = (updated.name_clarification_attempts ?? 0) + 1;
-        }
-      }
-      break;
-    }
-    case "address":
-      if (!hasValue3(updated.address) && isPlausibleServiceAddress(trimmed)) {
-        updated.address = trimmed.slice(0, 500);
-        updated.address_confirmed = false;
-      }
-      break;
-    case "problem_description":
-      if (!hasValue3(updated.problem_description)) {
-        updated.problem_description = extractDamageOrCallReason(trimmed) ?? trimmed.slice(0, 500);
-      }
-      break;
-    case "urgency":
-      if (!hasValue3(updated.urgency)) {
-        updated.urgency = trimmed.slice(0, 200);
-      }
-      break;
-    case "appointment_preference":
-      if (!hasValue3(updated.appointment_preference_raw)) {
-        updated.appointment_preference_raw = trimmed.slice(0, 200);
-        updated.schedule_confirmed = false;
-      }
-      break;
-    case "emergency_or_active_leak":
-    case "insurance_claim_started":
-    case "adjuster_contacted": {
-      const parsed = parseExplicitBoolean(trimmed);
-      if (parsed !== null) {
-        updated[target] = parsed;
-      }
-      break;
-    }
-    case "callback_phone":
-      if (/^(yes|yeah|yep|correct|this one|that one|same number)\b/i.test(trimmed) && callerPhone) {
-        updated.callback_phone = normalizeCallbackPhoneE164(callerPhone);
-        updated.callback_phone_confirmed = false;
-      }
-      break;
-    default:
-      break;
-  }
-  return syncLegacyStringFields(updated);
-}
-function needsCallbackReadback(fields) {
-  return needsCallbackConfirmation(fields);
-}
-
 // src/orchestrator/safe-field-merge.ts
 function preserveConfirmedFieldState(before, after) {
   const callbackUnchanged = (before.callback_phone?.trim() ?? "") === (after.callback_phone?.trim() ?? "");
@@ -4359,8 +4595,8 @@ function hasValue4(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 function isShortPendingStyleAnswer(speech) {
-  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
-  return /^(yes|yeah|yep|yup|correct|right|no|nope|nah|not yet|i did|i have|i haven't|i havent|haven't|havent)\b/.test(
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").replace(/\s+/g, " ").trim();
+  return /^(yes|yeah|yep|yup|correct|right|no|nope|nah|not yet|i did|i have|i haven't|i havent|haven't|havent)$/i.test(
     normalized
   );
 }
@@ -4773,12 +5009,14 @@ function mergeRealtimeCallerAnswer(fields, answer, callerPhone, options = {}) {
     conversationState,
     options.pendingQuestion
   );
+  const fieldsBeforeMerge = fields;
   let updated = applyAnswerForPendingQuestion(fields, answer, callerPhone, pendingQuestion);
   updated = {
     ...updated,
     pending_question: void 0
   };
   const shortAnswer = isShortPendingStyleAnswer(answer);
+  const afterPendingOnly = updated;
   if (!shortAnswer) {
     const extracted = extractAllFieldsFromTranscript(answer, callerPhone, pendingQuestion);
     updated = mergeExtractedFields(updated, extracted);
@@ -4790,7 +5028,19 @@ function mergeRealtimeCallerAnswer(fields, answer, callerPhone, options = {}) {
   if (hasValue5(updated.appointment_preference_raw) && updated.schedule_confirmed !== true) {
     updated = processScheduleCapture(updated, answer).fields;
   }
-  return preserveConfirmedFieldState(fields, updated);
+  const merged = preserveConfirmedFieldState(fields, updated);
+  if (isTurnDiagnosticsEnabled()) {
+    logAnswerHandler({
+      handler: pendingQuestion ? `applyAnswerForPendingQuestion:${pendingQuestion}` : shortAnswer ? "short_answer_without_pending" : "mergeExtractedFields",
+      pendingQuestion,
+      shortAnswer,
+      fieldUpdates: diffTrackedFields(fieldsBeforeMerge, afterPendingOnly),
+      rejectedUpdates: diffTrackedFields(afterPendingOnly, merged).filter(
+        (update) => update.field === "callback_phone_confirmed" && update.before === true && update.after !== true
+      )
+    });
+  }
+  return merged;
 }
 function applyCallbackCorrection(fields, speech, callerPhone) {
   const phone = extractCallbackPhoneFromSpeech(speech, callerPhone);
@@ -4966,10 +5216,21 @@ function finalizeIntakeFields(fields, nextState) {
   }
   return attachPendingQuestion(fields, pendingQuestionForNextField(getNextRequiredField(fields)));
 }
-function packagePostIntakeResult(fields, replyText, nextState) {
+function packagePostIntakeResult(fields, replyText, nextState, options = {}) {
+  const finalized = finalizeIntakeFields(fields, nextState);
+  if (isTurnDiagnosticsEnabled()) {
+    const branch = explainPostIntakeBranch(fields, options);
+    logNextActionSelection({
+      nextAction: branch.action,
+      reason: branch.reason,
+      nextConversationState: nextState,
+      pendingQuestionAfter: finalized.pending_question?.trim() ?? null,
+      replyPreview: replyText
+    });
+  }
   return {
     replyText,
-    fields: finalizeIntakeFields(fields, nextState),
+    fields: finalized,
     nextState
   };
 }
@@ -4985,21 +5246,24 @@ function buildPostIntakeReply(policy, fieldsBefore, updatedFields, trimmedSpeech
       ensureSingleIntakeQuestion(
         `${REALTIME_INTRO_TRANSITION} ${question}`.replace(/\s+/g, " ").trim()
       ),
-      "collecting_intake"
+      "collecting_intake",
+      options
     );
   }
   if (isCallerNameResolved(updatedFields) && !needsImmediateSafetyClarification(updatedFields) && needsCallbackReadback(updatedFields) && nextRequired === "callback_phone") {
     return packagePostIntakeResult(
       updatedFields,
       buildCallbackConfirmationReply(updatedFields),
-      "awaiting_callback_confirmation"
+      "awaiting_callback_confirmation",
+      options
     );
   }
   if (isCallerNameResolved(updatedFields) && isCallbackPhoneResolved(updatedFields) && needsAddressReadback(updatedFields) && nextRequired === "address") {
     return packagePostIntakeResult(
       updatedFields,
       buildAddressConfirmationReply(updatedFields),
-      "awaiting_address_confirmation"
+      "awaiting_address_confirmation",
+      options
     );
   }
   if (needsScheduleClarification(updatedFields)) {
@@ -5007,14 +5271,16 @@ function buildPostIntakeReply(policy, fieldsBefore, updatedFields, trimmedSpeech
     return packagePostIntakeResult(
       updatedFields,
       ensureSingleIntakeQuestion(prompt),
-      "awaiting_schedule_clarification"
+      "awaiting_schedule_clarification",
+      options
     );
   }
   if (needsScheduleConfirmation(updatedFields)) {
     return packagePostIntakeResult(
       updatedFields,
       buildScheduleConfirmationReply(updatedFields),
-      "awaiting_schedule_confirmation"
+      "awaiting_schedule_confirmation",
+      options
     );
   }
   const missing = getMissingRequiredFields(updatedFields);
@@ -5024,7 +5290,7 @@ function buildPostIntakeReply(policy, fieldsBefore, updatedFields, trimmedSpeech
   if (missing.length === 0 && sharedMissing.length === 0) {
     const anythingElseQuestion = REALTIME_ANYTHING_ELSE_QUESTION;
     const reply = ensureSingleIntakeQuestion(anythingElseQuestion);
-    return packagePostIntakeResult(updatedFields, reply, "awaiting_additional_notes");
+    return packagePostIntakeResult(updatedFields, reply, "awaiting_additional_notes", options);
   }
   const intakeReply = buildIntakeReply(
     policy,
@@ -5035,7 +5301,7 @@ function buildPostIntakeReply(policy, fieldsBefore, updatedFields, trimmedSpeech
     options.afterConfirmation === true
   );
   const combinedReply = ensureSingleIntakeQuestion(intakeReply);
-  return packagePostIntakeResult(updatedFields, combinedReply, "collecting_intake");
+  return packagePostIntakeResult(updatedFields, combinedReply, "collecting_intake", options);
 }
 function isNameCaptureTurn(fields, conversationState) {
   if (isAwaitingNameConfirmation(fields) || fields.name_awaiting_repeat === true) {
@@ -5085,6 +5351,15 @@ async function processRealtimeCallerTurn(input) {
   const fieldsBefore = normalizeRealtimeFields(
     session.collected_fields ?? {}
   );
+  if (isTurnDiagnosticsEnabled()) {
+    logTurnStart({
+      callId: callSid,
+      turnId: input.turnId ?? 0,
+      transcript: trimmedSpeech,
+      conversationState,
+      fieldsBefore
+    });
+  }
   if (conversationState === "awaiting_callback_confirmation") {
     if (!trimmedSpeech) {
       return {
@@ -5563,6 +5838,12 @@ async function processRealtimeCallerTurn(input) {
   let updatedFields = mergeRealtimeCallerAnswer(fieldsBefore, trimmedSpeech, callerPhone, {
     conversationState
   });
+  if (isTurnDiagnosticsEnabled()) {
+    logTurnStateAfterMerge({
+      fieldsAfter: updatedFields,
+      conversationState
+    });
+  }
   if (detectEmergency(trimmedSpeech) && !updatedFields.emergency_acknowledged) {
     updatedFields = {
       ...updatedFields,
@@ -5735,7 +6016,7 @@ var SessionOrchestrator = class {
   markOpeningDelivered() {
     this.awaitingFirstCallerTurn = true;
   }
-  async handleCallerTranscript(transcript) {
+  async handleCallerTranscript(transcript, turnId) {
     const trimmed = transcript.trim();
     if (!trimmed) {
       return null;
@@ -5760,7 +6041,8 @@ var SessionOrchestrator = class {
         speechResult: trimmed,
         conversationState: this.conversationState,
         acknowledgmentPolicy: this.acknowledgmentPolicy,
-        isFirstCallerTurn: this.awaitingFirstCallerTurn
+        isFirstCallerTurn: this.awaitingFirstCallerTurn,
+        turnId
       });
       this.session = outcome.session;
       this.conversationState = outcome.nextConversationState;
@@ -5974,6 +6256,7 @@ var CallBridge = class {
         this.pendingClientResponse = true;
         this.responseGuard.recordTrigger(triggerReason, turnId);
         this.turnTiming.record("response_create_sent", this.callSid ?? void 0, { turnId });
+        logResponseCreateSent();
       }
     );
     if (sent === "sent") {
@@ -6077,6 +6360,7 @@ var CallBridge = class {
         this.turnTiming.record("first_audio_received", this.callSid ?? void 0, {
           turnId: this.activeTurnId
         });
+        logFirstAssistantAudioReceived();
         this.responseGuard.onAssistantAudioDelta();
         this.forwardAssistantAudio(delta);
         break;
@@ -6153,6 +6437,7 @@ var CallBridge = class {
     this.turnTiming.record("transcript_completed", this.callSid ?? void 0, {
       turnId: this.activeTurnId
     });
+    beginTurnDiagnostic(this.callSid ?? "unknown", this.activeTurnId);
     void this.processCallerTurnReply(transcript);
   }
   scheduleResponseWatchdog(turnId, request) {
@@ -6221,7 +6506,7 @@ var CallBridge = class {
       return;
     }
     const turnId = this.activeTurnId;
-    void this.orchestrator.handleCallerTranscript(transcript).then((result) => {
+    void this.orchestrator.handleCallerTranscript(transcript, this.activeTurnId).then((result) => {
       if (this.turnTiming.isStaleTurn(turnId)) {
         return;
       }
@@ -6326,6 +6611,14 @@ var CallBridge = class {
       return;
     }
     this.closed = true;
+    logCallDisconnect({
+      callId: this.callSid ?? void 0,
+      reason,
+      conversationState: this.orchestrator?.getConversationState() ?? null,
+      lastSnapshot: getLastTurnDiagnosticSnapshot(),
+      callerHeardMessage: reason === "call_completed" || reason.includes("closing"),
+      leadPreserved: true
+    });
     logInfo("call_bridge_cleanup", { reason, callSid: this.callSid ?? void 0 });
     if (this.callTimeout) {
       clearTimeout(this.callTimeout);

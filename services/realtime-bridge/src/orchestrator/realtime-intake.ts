@@ -54,6 +54,11 @@ import {
 } from "./photos-field.js";
 import { preserveConfirmedFieldState } from "./safe-field-merge.js";
 import type { ConversationState } from "./conversation-state.js";
+import {
+  diffTrackedFields,
+  isTurnDiagnosticsEnabled,
+  logAnswerHandler,
+} from "../bridge/turn-diagnostic.js";
 
 export type RealtimeIntakeStage = RequiredFieldKey;
 
@@ -98,6 +103,7 @@ export function mergeRealtimeCallerAnswer(
     options.pendingQuestion,
   );
 
+  const fieldsBeforeMerge = fields;
   let updated = applyAnswerForPendingQuestion(fields, answer, callerPhone, pendingQuestion);
   updated = {
     ...updated,
@@ -105,6 +111,7 @@ export function mergeRealtimeCallerAnswer(
   };
 
   const shortAnswer = isShortPendingStyleAnswer(answer);
+  const afterPendingOnly = updated;
 
   if (!shortAnswer) {
     const extracted = extractAllFieldsFromTranscript(answer, callerPhone, pendingQuestion);
@@ -123,7 +130,28 @@ export function mergeRealtimeCallerAnswer(
     updated = processScheduleCapture(updated, answer).fields;
   }
 
-  return preserveConfirmedFieldState(fields, updated);
+  const merged = preserveConfirmedFieldState(fields, updated);
+
+  if (isTurnDiagnosticsEnabled()) {
+    logAnswerHandler({
+      handler: pendingQuestion
+        ? `applyAnswerForPendingQuestion:${pendingQuestion}`
+        : shortAnswer
+          ? "short_answer_without_pending"
+          : "mergeExtractedFields",
+      pendingQuestion,
+      shortAnswer,
+      fieldUpdates: diffTrackedFields(fieldsBeforeMerge, afterPendingOnly),
+      rejectedUpdates: diffTrackedFields(afterPendingOnly, merged).filter(
+        (update) =>
+          update.field === "callback_phone_confirmed" &&
+          update.before === true &&
+          update.after !== true,
+      ),
+    });
+  }
+
+  return merged;
 }
 
 export function applyCallbackCorrection(

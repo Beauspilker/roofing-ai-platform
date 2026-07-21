@@ -113,7 +113,7 @@ export class SessionOrchestrator {
     this.awaitingFirstCallerTurn = true;
   }
 
-  async handleCallerTranscript(transcript: string): Promise<OrchestratorReply | null> {
+  async handleCallerTranscript(transcript: string, turnId?: number): Promise<OrchestratorReply | null> {
     const trimmed = transcript.trim();
 
     if (!trimmed) {
@@ -144,6 +144,7 @@ export class SessionOrchestrator {
         conversationState: this.conversationState,
         acknowledgmentPolicy: this.acknowledgmentPolicy,
         isFirstCallerTurn: this.awaitingFirstCallerTurn,
+        turnId,
       });
 
       this.session = outcome.session;

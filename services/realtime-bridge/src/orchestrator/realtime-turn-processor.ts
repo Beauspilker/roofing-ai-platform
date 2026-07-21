@@ -85,6 +85,13 @@ import {
 } from "./required-intake.js";
 import { applyCorrectionToStructuredField, syncLegacyStringFields } from "./structured-intake.js";
 import { logError } from "../logger.js";
+import {
+  explainPostIntakeBranch,
+  isTurnDiagnosticsEnabled,
+  logNextActionSelection,
+  logTurnStart,
+  logTurnStateAfterMerge,
+} from "../bridge/turn-diagnostic.js";
 
 export type RealtimeTurnOutcome = {
   replyText: string;
@@ -103,6 +110,7 @@ export type ProcessRealtimeTurnInput = {
   conversationState: ConversationState;
   acknowledgmentPolicy: AcknowledgmentPolicy;
   isFirstCallerTurn?: boolean;
+  turnId?: number;
 };
 
 function applyLocalSessionUpdate(
@@ -253,10 +261,24 @@ function packagePostIntakeResult(
   fields: RealtimeFields,
   replyText: string,
   nextState: ConversationState,
+  options: { isFirstCallerTurn?: boolean; afterConfirmation?: boolean } = {},
 ): { replyText: string; fields: RealtimeFields; nextState: ConversationState } {
+  const finalized = finalizeIntakeFields(fields, nextState);
+
+  if (isTurnDiagnosticsEnabled()) {
+    const branch = explainPostIntakeBranch(fields, options);
+    logNextActionSelection({
+      nextAction: branch.action,
+      reason: branch.reason,
+      nextConversationState: nextState,
+      pendingQuestionAfter: finalized.pending_question?.trim() ?? null,
+      replyPreview: replyText,
+    });
+  }
+
   return {
     replyText,
-    fields: finalizeIntakeFields(fields, nextState),
+    fields: finalized,
     nextState,
   };
 }
@@ -292,6 +314,7 @@ function buildPostIntakeReply(
         `${REALTIME_INTRO_TRANSITION} ${question}`.replace(/\s+/g, " ").trim(),
       ),
       "collecting_intake",
+      options,
     );
   }
 
@@ -305,6 +328,7 @@ function buildPostIntakeReply(
       updatedFields,
       buildCallbackConfirmationReply(updatedFields),
       "awaiting_callback_confirmation",
+      options,
     );
   }
 
@@ -318,6 +342,7 @@ function buildPostIntakeReply(
       updatedFields,
       buildAddressConfirmationReply(updatedFields),
       "awaiting_address_confirmation",
+      options,
     );
   }
 
@@ -329,6 +354,7 @@ function buildPostIntakeReply(
       updatedFields,
       ensureSingleIntakeQuestion(prompt),
       "awaiting_schedule_clarification",
+      options,
     );
   }
 
@@ -337,6 +363,7 @@ function buildPostIntakeReply(
       updatedFields,
       buildScheduleConfirmationReply(updatedFields),
       "awaiting_schedule_confirmation",
+      options,
     );
   }
 
@@ -349,7 +376,7 @@ function buildPostIntakeReply(
     const anythingElseQuestion = REALTIME_ANYTHING_ELSE_QUESTION;
     const reply = ensureSingleIntakeQuestion(anythingElseQuestion);
 
-    return packagePostIntakeResult(updatedFields, reply, "awaiting_additional_notes");
+    return packagePostIntakeResult(updatedFields, reply, "awaiting_additional_notes", options);
   }
 
   const intakeReply = buildIntakeReply(
@@ -362,7 +389,7 @@ function buildPostIntakeReply(
   );
   const combinedReply = ensureSingleIntakeQuestion(intakeReply);
 
-  return packagePostIntakeResult(updatedFields, combinedReply, "collecting_intake");
+  return packagePostIntakeResult(updatedFields, combinedReply, "collecting_intake", options);
 }
 
 function isNameCaptureTurn(
@@ -430,6 +457,16 @@ export async function processRealtimeCallerTurn(
   const fieldsBefore = normalizeRealtimeFields(
     (session.collected_fields ?? {}) as RealtimeFields,
   );
+
+  if (isTurnDiagnosticsEnabled()) {
+    logTurnStart({
+      callId: callSid,
+      turnId: input.turnId ?? 0,
+      transcript: trimmedSpeech,
+      conversationState,
+      fieldsBefore,
+    });
+  }
 
   if (conversationState === "awaiting_callback_confirmation") {
     if (!trimmedSpeech) {
@@ -990,6 +1027,13 @@ export async function processRealtimeCallerTurn(
   let updatedFields = mergeRealtimeCallerAnswer(fieldsBefore, trimmedSpeech, callerPhone, {
     conversationState,
   });
+
+  if (isTurnDiagnosticsEnabled()) {
+    logTurnStateAfterMerge({
+      fieldsAfter: updatedFields,
+      conversationState,
+    });
+  }
 
   if (detectEmergency(trimmedSpeech) && !updatedFields.emergency_acknowledged) {
     updatedFields = {

@@ -4,6 +4,13 @@ import { verifyStreamAuthToken } from "../auth/stream-token.js";
 import { BargeInController } from "../bridge/barge-in.js";
 import { CallTimingTracker } from "../bridge/call-timing.js";
 import { TurnTimingTracker } from "../bridge/turn-timing.js";
+import {
+  getLastTurnDiagnosticSnapshot,
+  logCallDisconnect,
+  logFirstAssistantAudioReceived,
+  logResponseCreateSent,
+  beginTurnDiagnostic,
+} from "../bridge/turn-diagnostic.js";
 import { PlaybackTracker } from "../bridge/playback-tracker.js";
 import {
   ResponseStateGuard,
@@ -251,6 +258,7 @@ export class CallBridge {
         this.pendingClientResponse = true;
         this.responseGuard.recordTrigger(triggerReason, turnId);
         this.turnTiming.record("response_create_sent", this.callSid ?? undefined, { turnId });
+        logResponseCreateSent();
       },
     );
 
@@ -373,6 +381,7 @@ export class CallBridge {
         this.turnTiming.record("first_audio_received", this.callSid ?? undefined, {
           turnId: this.activeTurnId,
         });
+        logFirstAssistantAudioReceived();
         this.responseGuard.onAssistantAudioDelta();
         this.forwardAssistantAudio(delta);
         break;
@@ -464,6 +473,8 @@ export class CallBridge {
       turnId: this.activeTurnId,
     });
 
+    beginTurnDiagnostic(this.callSid ?? "unknown", this.activeTurnId);
+
     void this.processCallerTurnReply(transcript);
   }
 
@@ -549,7 +560,7 @@ export class CallBridge {
 
     const turnId = this.activeTurnId;
 
-    void this.orchestrator.handleCallerTranscript(transcript).then((result) => {
+    void this.orchestrator.handleCallerTranscript(transcript, this.activeTurnId).then((result) => {
       if (this.turnTiming.isStaleTurn(turnId)) {
         return;
       }
@@ -683,6 +694,16 @@ export class CallBridge {
     }
 
     this.closed = true;
+
+    logCallDisconnect({
+      callId: this.callSid ?? undefined,
+      reason,
+      conversationState: this.orchestrator?.getConversationState() ?? null,
+      lastSnapshot: getLastTurnDiagnosticSnapshot(),
+      callerHeardMessage: reason === "call_completed" || reason.includes("closing"),
+      leadPreserved: true,
+    });
+
     logInfo("call_bridge_cleanup", { reason, callSid: this.callSid ?? undefined });
 
     if (this.callTimeout) {

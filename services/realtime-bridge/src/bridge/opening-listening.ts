@@ -3,6 +3,7 @@ import {
   extractExplicitCallerName,
   isLikelyCallReasonSpeech,
 } from "../orchestrator/field-validation.js";
+import { normalizeCallReasonFromSpeech } from "../orchestrator/call-reason-handling.js";
 import type { RealtimeFields } from "../orchestrator/realtime-prompts.js";
 import { REALTIME_OPENING_GREETING, REALTIME_OPENING_QUESTION } from "../orchestrator/realtime-prompts.js";
 
@@ -83,22 +84,7 @@ export function isMeaningfulOpeningCallerTranscript(speech: string): boolean {
 }
 
 export function resolveCallReasonFromSpeech(speech: string): string | null {
-  const trimmed = speech.trim();
-
-  if (!trimmed) {
-    return null;
-  }
-
-  const extracted = extractDamageOrCallReason(trimmed);
-  if (extracted) {
-    return extracted;
-  }
-
-  if (isLikelyCallReasonSpeech(trimmed)) {
-    return trimmed.slice(0, 500);
-  }
-
-  return null;
+  return normalizeCallReasonFromSpeech(speech);
 }
 
 export function canAdvanceAfterOpening(

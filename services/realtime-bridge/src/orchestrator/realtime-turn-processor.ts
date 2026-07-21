@@ -70,6 +70,11 @@ import {
   type OpeningSilencePrompt,
 } from "../bridge/opening-listening.js";
 import {
+  applyCallReasonCapture,
+  isPendingCallReasonQuestion,
+  resolveCallReasonClarificationReply,
+} from "./call-reason-handling.js";
+import {
   buildNameClarificationPrompt,
   EARLY_CALLER_NAME_QUESTION,
   isLikelyCallReasonSpeech,
@@ -193,6 +198,34 @@ function finishTurn(
 function ensureNonEmptyReply(replyText: string, fallback: string): string {
   const trimmed = replyText.trim();
   return trimmed || fallback;
+}
+
+function clearErroneousNameCaptureForReason(fields: RealtimeFields): RealtimeFields {
+  if (fields.problem_description?.trim()) {
+    return fields;
+  }
+
+  const cleaned: RealtimeFields = { ...fields };
+
+  if (cleaned.full_name && !isPlausibleCallerName(cleaned.full_name)) {
+    cleaned.full_name = undefined;
+  }
+
+  const pendingName = cleaned.name_pending_confirmation?.trim();
+  if (pendingName && !isPlausibleCallerName(pendingName)) {
+    cleaned.name_pending_confirmation = undefined;
+    cleaned.name_awaiting_repeat = undefined;
+  }
+
+  return cleaned;
+}
+
+function shouldHandlePendingCallReason(
+  fields: RealtimeFields,
+  conversationState: ConversationState,
+): boolean {
+  const pending = resolvePendingQuestion(fields, conversationState);
+  return isPendingCallReasonQuestion(pending) && !fields.problem_description?.trim();
 }
 
 function buildInvalidNameCaptureRepeatOutcome(input: {
@@ -431,6 +464,12 @@ function isNameCaptureTurn(
   speech: string,
   options: { isFirstCallerTurn?: boolean } = {},
 ): boolean {
+  const pending = resolvePendingQuestion(fields, conversationState);
+
+  if (isPendingCallReasonQuestion(pending) || !fields.problem_description?.trim()) {
+    return false;
+  }
+
   if (isAwaitingNameConfirmation(fields) || fields.name_awaiting_repeat === true) {
     return true;
   }
@@ -501,8 +540,8 @@ export async function processRealtimeCallerTurn(
     });
   }
 
-  const fieldsBefore = normalizeRealtimeFields(
-    (session.collected_fields ?? {}) as RealtimeFields,
+  const fieldsBefore = clearErroneousNameCaptureForReason(
+    normalizeRealtimeFields((session.collected_fields ?? {}) as RealtimeFields),
   );
 
   if (isTurnDiagnosticsEnabled()) {
@@ -1009,6 +1048,87 @@ export async function processRealtimeCallerTurn(
       session,
       nextConversationState: "awaiting_summary_confirmation",
     };
+  }
+
+  if (shouldHandlePendingCallReason(fieldsBefore, conversationState)) {
+    const capture = applyCallReasonCapture(fieldsBefore, trimmedSpeech);
+
+    if (!capture.resolved) {
+      const reply = ensureSingleIntakeQuestion(
+        resolveCallReasonClarificationReply(capture.fields, trimmedSpeech),
+      );
+
+      session = applyLocalSessionUpdate(session, {
+        collectedFields: capture.fields,
+        currentQuestion: reply,
+      });
+
+      persistTurnAsync(callSid, {
+        collectedFields: capture.fields,
+        currentQuestion: reply,
+        callerSpeech: trimmedSpeech,
+        assistantReply: reply,
+      });
+
+      return finishTurn(input, {
+        replyText: reply,
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: "collecting_intake",
+      });
+    }
+
+    let updatedFields = syncLegacyStringFields({
+      ...capture.fields,
+      pending_question: undefined,
+      call_reason_awaiting_clarification: false,
+    });
+
+    if (detectEmergency(trimmedSpeech) && !updatedFields.emergency_acknowledged) {
+      updatedFields = {
+        ...updatedFields,
+        urgency: updatedFields.urgency ?? "emergency",
+        emergency_acknowledged: true,
+      };
+    }
+
+    const filledCount = countNewlyFilledFields(fieldsBefore, updatedFields);
+    const post = buildPostIntakeReply(
+      acknowledgmentPolicy,
+      fieldsBefore,
+      updatedFields,
+      trimmedSpeech,
+      callerPhone,
+      filledCount,
+      {
+        isFirstCallerTurn: input.isFirstCallerTurn,
+        hasReceivedMeaningfulCallerTranscript: input.hasReceivedMeaningfulCallerTranscript,
+      },
+    );
+
+    session = applyLocalSessionUpdate(session, {
+      collectedFields: post.fields,
+      currentQuestion: post.replyText,
+    });
+
+    persistTurnAsync(callSid, {
+      collectedFields: post.fields,
+      currentQuestion: post.replyText,
+      callerSpeech: trimmedSpeech,
+      assistantReply: post.replyText,
+    });
+
+    return finishTurn(input, {
+      replyText: ensureNonEmptyReply(
+        post.replyText,
+        "Thanks for your patience. Could you tell me what you're calling about?",
+      ),
+      hangup: false,
+      hangupAfterMark: false,
+      session,
+      nextConversationState: post.nextState,
+    });
   }
 
   if (isNameCaptureTurn(fieldsBefore, conversationState, trimmedSpeech, {

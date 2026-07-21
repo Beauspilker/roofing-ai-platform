@@ -42,6 +42,8 @@ export type RealtimeFields = Omit<
   name_clarification_attempts?: number;
   additional_notes_responded?: boolean;
   name_needs_clarification?: boolean;
+  call_reason_awaiting_clarification?: boolean;
+  call_reason_clarification_attempts?: number;
   pending_question?: string;
   insurance_claim?: string;
   adjuster_contacted_legacy?: string;

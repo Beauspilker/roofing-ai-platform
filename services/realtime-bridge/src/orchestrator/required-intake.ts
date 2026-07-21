@@ -12,7 +12,7 @@ import {
   isPlausibleServiceAddress,
   validateCallerNameCandidate,
 } from "./field-validation.js";
-import { resolveCallReasonFromSpeech } from "../bridge/opening-listening.js";
+import { normalizeCallReasonFromSpeech } from "./call-reason-handling.js";
 import { isScheduleComplete } from "./schedule-normalizer.js";
 import { needsCallbackConfirmation, mapRequiredFieldToPending } from "./pending-question.js";
 import {
@@ -346,7 +346,7 @@ export function applyDirectAnswerToMissingField(
       break;
     case "problem_description":
       if (!hasValue(updated.problem_description)) {
-        const reason = resolveCallReasonFromSpeech(trimmed);
+        const reason = normalizeCallReasonFromSpeech(trimmed);
         if (reason) {
           updated.problem_description = reason;
         }

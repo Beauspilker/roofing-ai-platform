@@ -61,6 +61,10 @@ export function isPlausibleCallerName(name: string): boolean {
     return false;
   }
 
+  if (/^(calling|call|yes|no|yeah|nope|nah|correct|right)$/i.test(trimmed)) {
+    return false;
+  }
+
   if (containsRoofingDamageLanguage(trimmed)) {
     return false;
   }
@@ -79,7 +83,7 @@ export function isPlausibleCallerName(name: string): boolean {
 export function extractExplicitCallerName(speech: string): string | null {
   const patterns = [
     /\b(?:my name is|name is)\s+([A-Za-z][A-Za-z'\-]+(?:\s+[A-Za-z][A-Za-z'\-]+)?)(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i,
-    /\b(?:this is|i am|i'm|name's)\s+([A-Za-z][A-Za-z'\-]+(?:\s+[A-Za-z][A-Za-z'\-]+)?)(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i,
+    /\b(?:this is|i am|i'm|name's)\s+(?!calling\b|call(?:ing)?\s+(?:for|about|regarding)\b)([A-Za-z][A-Za-z'\-]+(?:\s+[A-Za-z][A-Za-z'\-]+)?)(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i,
   ];
 
   for (const pattern of patterns) {

@@ -115,7 +115,7 @@ test("opening response This is Beau with tree damage stores both fields", async 
 
   const fields = outcome.session?.collected_fields as RealtimeFields;
   assert.equal(fields.full_name, "Beau");
-  assert.match(fields.problem_description ?? "", /tree fell on my roof/i);
+  assert.match(fields.problem_description ?? "", /tree damage/i);
 });
 
 test("hail damage and roof leak cannot pass caller-name validation", () => {

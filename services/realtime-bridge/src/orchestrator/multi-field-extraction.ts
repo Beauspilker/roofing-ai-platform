@@ -21,7 +21,11 @@ import {
   isPlausibleServiceAddress,
   validateCallerNameCandidate,
 } from "./field-validation.js";
-import { resolveCallReasonFromSpeech } from "../bridge/opening-listening.js";
+import {
+  isPendingCallReasonQuestion,
+  isShortYesNoReasonAnswer,
+  normalizeCallReasonFromSpeech,
+} from "./call-reason-handling.js";
 import { isCallerNameResolved } from "./required-intake.js";
 import { preserveConfirmedFieldState } from "./safe-field-merge.js";
 import type { PendingQuestionKey } from "./pending-question.js";
@@ -141,14 +145,26 @@ export function extractAllFieldsFromTranscript(
 
   const extracted: Partial<RealtimeFields> = {};
 
-  const explicitName = extractExplicitCallerName(trimmed);
-  if (explicitName) {
-    extracted.full_name = explicitName;
-  }
+  if (isPendingCallReasonQuestion(pendingQuestion)) {
+    const reason = normalizeCallReasonFromSpeech(trimmed);
+    if (reason) {
+      extracted.problem_description = reason;
+    }
 
-  const damage = extractDamageOrCallReason(trimmed);
-  if (damage) {
-    extracted.problem_description = damage;
+    const volunteeredName = extractExplicitCallerName(trimmed);
+    if (volunteeredName) {
+      extracted.full_name = volunteeredName;
+    }
+  } else {
+    const explicitName = extractExplicitCallerName(trimmed);
+    if (explicitName) {
+      extracted.full_name = explicitName;
+    }
+
+    const damage = extractDamageOrCallReason(trimmed);
+    if (damage) {
+      extracted.problem_description = damage;
+    }
   }
 
   const address = extractAddressFromSpeech(trimmed);
@@ -301,9 +317,28 @@ export function applyAnswerForPendingQuestion(
     }
     case "call_reason":
       if (!hasValue(updated.problem_description)) {
-        const reason = resolveCallReasonFromSpeech(trimmed);
+        if (isShortYesNoReasonAnswer(trimmed)) {
+          updated.call_reason_awaiting_clarification = true;
+          updated.call_reason_clarification_attempts =
+            (updated.call_reason_clarification_attempts ?? 0) + 1;
+          break;
+        }
+
+        const reason = normalizeCallReasonFromSpeech(trimmed);
         if (reason) {
           updated.problem_description = reason;
+          updated.call_reason_awaiting_clarification = false;
+          updated.name_pending_confirmation = undefined;
+          updated.name_awaiting_repeat = undefined;
+
+          const volunteeredName = extractExplicitCallerName(trimmed);
+          if (volunteeredName && !hasValue(updated.full_name)) {
+            updated.full_name = volunteeredName;
+          }
+        } else if (trimmed.length > 0) {
+          updated.call_reason_awaiting_clarification = true;
+          updated.call_reason_clarification_attempts =
+            (updated.call_reason_clarification_attempts ?? 0) + 1;
         }
       }
       break;

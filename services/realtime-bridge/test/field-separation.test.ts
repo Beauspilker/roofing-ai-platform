@@ -193,6 +193,7 @@ test("opening explanation occurs after caller explains reason for calling", asyn
     conversationState: "collecting_intake",
     acknowledgmentPolicy: policy,
     isFirstCallerTurn: true,
+    hasReceivedMeaningfulCallerTranscript: true,
   });
 
   assert.match(outcome.replyText, /few questions/i);

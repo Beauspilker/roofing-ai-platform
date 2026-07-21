@@ -21,6 +21,7 @@ import {
   isPlausibleServiceAddress,
   validateCallerNameCandidate,
 } from "./field-validation.js";
+import { resolveCallReasonFromSpeech } from "../bridge/opening-listening.js";
 import { isCallerNameResolved } from "./required-intake.js";
 import { preserveConfirmedFieldState } from "./safe-field-merge.js";
 import type { PendingQuestionKey } from "./pending-question.js";
@@ -300,9 +301,9 @@ export function applyAnswerForPendingQuestion(
     }
     case "call_reason":
       if (!hasValue(updated.problem_description)) {
-        const damage = extractDamageOrCallReason(trimmed);
-        if (damage) {
-          updated.problem_description = damage;
+        const reason = resolveCallReasonFromSpeech(trimmed);
+        if (reason) {
+          updated.problem_description = reason;
         }
       }
       break;

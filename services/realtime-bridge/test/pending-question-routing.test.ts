@@ -49,6 +49,7 @@ test("We had hail damage captures reason and selects caller_name next", async ()
     conversationState: "collecting_intake",
     acknowledgmentPolicy: policy,
     isFirstCallerTurn: true,
+    hasReceivedMeaningfulCallerTranscript: true,
   });
 
   assert.match(outcome.replyText, /Could I start with your name/i);
@@ -68,6 +69,7 @@ test("volunteered name on first turn is stored and not asked again", async () =>
     conversationState: "collecting_intake",
     acknowledgmentPolicy: policy,
     isFirstCallerTurn: true,
+    hasReceivedMeaningfulCallerTranscript: true,
   });
 
   const fields = outcome.session?.collected_fields as RealtimeFields;

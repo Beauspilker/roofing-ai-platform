@@ -8,11 +8,13 @@ import {
 import { logError, logInfo } from "../logger.js";
 import type { ConversationState } from "./conversation-state.js";
 import { AcknowledgmentPolicy } from "./acknowledgment-policy.js";
+import { isMeaningfulOpeningCallerTranscript } from "../bridge/opening-listening.js";
 import { processRealtimeCallerTurn } from "./realtime-turn-processor.js";
 import {
   ensureSingleIntakeQuestion,
   REALTIME_OPENING_GREETING,
   REALTIME_OPENING_QUESTION,
+  type RealtimeFields,
 } from "./realtime-prompts.js";
 
 export type OrchestratorContext = {
@@ -34,6 +36,8 @@ export class SessionOrchestrator {
   private pendingTranscript: string | null = null;
   private conversationState: ConversationState = "collecting_intake";
   private awaitingFirstCallerTurn = false;
+  private listeningForReason = false;
+  private hasReceivedMeaningfulCallerTranscript = false;
   private readonly acknowledgmentPolicy = new AcknowledgmentPolicy();
 
   constructor(private readonly context: OrchestratorContext) {}
@@ -113,10 +117,52 @@ export class SessionOrchestrator {
     this.awaitingFirstCallerTurn = true;
   }
 
+  onOpeningGreetingComplete(): void {
+    this.listeningForReason = true;
+    this.attachPendingCallReason();
+  }
+
+  isListeningForReason(): boolean {
+    return this.listeningForReason && !this.hasReceivedMeaningfulCallerTranscript;
+  }
+
+  hasMeaningfulCallerTranscript(): boolean {
+    return this.hasReceivedMeaningfulCallerTranscript;
+  }
+
+  onMeaningfulCallerTranscriptProcessed(): void {
+    this.hasReceivedMeaningfulCallerTranscript = true;
+    this.listeningForReason = false;
+  }
+
+  private attachPendingCallReason(): void {
+    if (!this.session) {
+      return;
+    }
+
+    const fields = (this.session.collected_fields ?? {}) as RealtimeFields;
+
+    this.session = {
+      ...this.session,
+      collected_fields: {
+        ...fields,
+        pending_question: "call_reason",
+      },
+    };
+  }
+
   async handleCallerTranscript(transcript: string, turnId?: number): Promise<OrchestratorReply | null> {
     const trimmed = transcript.trim();
 
     if (!trimmed) {
+      return null;
+    }
+
+    if (this.listeningForReason && !isMeaningfulOpeningCallerTranscript(trimmed)) {
+      logInfo("opening_transcript_ignored", {
+        callSid: this.context.callSid,
+        transcriptLength: trimmed.length,
+      });
       return null;
     }
 
@@ -144,8 +190,18 @@ export class SessionOrchestrator {
         conversationState: this.conversationState,
         acknowledgmentPolicy: this.acknowledgmentPolicy,
         isFirstCallerTurn: this.awaitingFirstCallerTurn,
+        hasReceivedMeaningfulCallerTranscript:
+          this.hasReceivedMeaningfulCallerTranscript ||
+          isMeaningfulOpeningCallerTranscript(trimmed),
         turnId,
       });
+
+      if (
+        isMeaningfulOpeningCallerTranscript(trimmed) &&
+        outcome.session?.collected_fields?.problem_description
+      ) {
+        this.onMeaningfulCallerTranscriptProcessed();
+      }
 
       this.session = outcome.session;
       this.conversationState = outcome.nextConversationState;

@@ -51,6 +51,7 @@ test("opening response Hail damage captures reason and selects caller_name next"
     conversationState: "collecting_intake",
     acknowledgmentPolicy: policy,
     isFirstCallerTurn: true,
+    hasReceivedMeaningfulCallerTranscript: true,
   });
 
   const fields = outcome.session?.collected_fields as RealtimeFields;
@@ -71,6 +72,7 @@ test("opening response My roof is leaking captures reason and selects caller_nam
     conversationState: "collecting_intake",
     acknowledgmentPolicy: policy,
     isFirstCallerTurn: true,
+    hasReceivedMeaningfulCallerTranscript: true,
   });
 
   const fields = outcome.session?.collected_fields as RealtimeFields;
@@ -89,6 +91,7 @@ test("opening response with volunteered name does not ask again", async () => {
     conversationState: "collecting_intake",
     acknowledgmentPolicy: policy,
     isFirstCallerTurn: true,
+    hasReceivedMeaningfulCallerTranscript: true,
   });
 
   const fields = outcome.session?.collected_fields as RealtimeFields;
@@ -107,6 +110,7 @@ test("opening response This is Beau with tree damage stores both fields", async 
     conversationState: "collecting_intake",
     acknowledgmentPolicy: policy,
     isFirstCallerTurn: true,
+    hasReceivedMeaningfulCallerTranscript: true,
   });
 
   const fields = outcome.session?.collected_fields as RealtimeFields;

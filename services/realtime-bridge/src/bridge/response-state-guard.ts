@@ -2,6 +2,7 @@ import { logInfo, logWarn } from "../logger.js";
 
 export type ResponseTriggerReason =
   | "opening_greeting"
+  | "opening_silence_reprompt"
   | "caller_turn_reply"
   | "closing_message";
 
@@ -20,6 +21,8 @@ export class ResponseStateGuard {
   private callerTurnReady = false;
   private awaitingClosingMark = false;
   private assistantAudioPending = false;
+  private listeningForOpeningReason = false;
+  private lastTriggerReason: ResponseTriggerReason | null = null;
   private lastTranscriptItemId: string | null = null;
   private activeTurnId = 0;
   private responseTurnId: number | null = null;
@@ -40,7 +43,12 @@ export class ResponseStateGuard {
       return false;
     }
 
-    if (reason !== "opening_greeting" && this.waitingForCaller && !this.callerTurnReady) {
+    if (
+      reason !== "opening_greeting" &&
+      reason !== "opening_silence_reprompt" &&
+      this.waitingForCaller &&
+      !this.callerTurnReady
+    ) {
       this.logBlocked(reason, "waiting_for_caller");
       return false;
     }
@@ -51,6 +59,29 @@ export class ResponseStateGuard {
     }
 
     return true;
+  }
+
+  beginOpeningReasonListen(): void {
+    this.listeningForOpeningReason = true;
+    this.waitingForCaller = true;
+    this.callerTurnReady = false;
+  }
+
+  completeOpeningReasonListen(): void {
+    this.listeningForOpeningReason = false;
+    this.lastTriggerReason = null;
+  }
+
+  isListeningForOpeningReason(): boolean {
+    return this.listeningForOpeningReason;
+  }
+
+  getLastTriggerReason(): ResponseTriggerReason | null {
+    return this.lastTriggerReason;
+  }
+
+  wasLastResponseOpeningGreeting(): boolean {
+    return this.lastTriggerReason === "opening_greeting";
   }
 
   beginCallerTurn(turnId: number): void {
@@ -87,7 +118,14 @@ export class ResponseStateGuard {
     this.activeResponse = true;
     this.clientInitiatedResponse = true;
     this.callerTurnReady = false;
-    this.waitingForCaller = false;
+    this.lastTriggerReason = reason;
+
+    if (reason === "opening_greeting" || reason === "opening_silence_reprompt") {
+      this.waitingForCaller = reason === "opening_silence_reprompt";
+    } else {
+      this.waitingForCaller = false;
+    }
+
     this.assistantAudioPending = true;
     this.responseTurnId = turnId ?? this.activeTurnId;
   }
@@ -120,6 +158,10 @@ export class ResponseStateGuard {
     this.callerTurnReady = false;
     this.assistantAudioPending = false;
     this.responseTurnId = null;
+
+    if (this.lastTriggerReason === "opening_greeting") {
+      this.beginOpeningReasonListen();
+    }
   }
 
   onResponseCancelled(): void {
@@ -138,7 +180,6 @@ export class ResponseStateGuard {
     this.releaseActiveResponse({ waitingForCaller: false });
   }
 
-  /** Idempotent release for recovery paths and terminal response events. */
   releaseActiveResponse(
     options: { waitingForCaller?: boolean; preserveCallerTurnReady?: boolean } = {},
   ): void {

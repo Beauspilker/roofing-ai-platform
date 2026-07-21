@@ -52,6 +52,7 @@ test("hail damage with volunteered name does not ask again", async () => {
     conversationState: "collecting_intake",
     acknowledgmentPolicy: policy,
     isFirstCallerTurn: true,
+    hasReceivedMeaningfulCallerTranscript: true,
   });
 
   assert.doesNotMatch(outcome.replyText, /Could I start with your name/i);
@@ -74,6 +75,7 @@ test("immediate safety issue is handled before caller name", async () => {
     conversationState: "collecting_intake",
     acknowledgmentPolicy: policy,
     isFirstCallerTurn: true,
+    hasReceivedMeaningfulCallerTranscript: true,
   });
 
   assert.match(outcome.replyText, /active leak|water getting inside/i);

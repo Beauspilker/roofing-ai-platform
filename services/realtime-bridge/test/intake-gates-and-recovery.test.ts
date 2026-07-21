@@ -105,6 +105,7 @@ test("intro asks for caller name early after reason for calling", async () => {
     conversationState: "collecting_intake",
     acknowledgmentPolicy: policy,
     isFirstCallerTurn: true,
+    hasReceivedMeaningfulCallerTranscript: true,
   });
 
   assert.match(outcome.replyText, /Could I start with your name/i);

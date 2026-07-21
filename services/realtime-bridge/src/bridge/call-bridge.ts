@@ -16,6 +16,12 @@ import {
   ResponseStateGuard,
   type ResponseTriggerReason,
 } from "../bridge/response-state-guard.js";
+import {
+  isMeaningfulOpeningCallerTranscript,
+  OpeningSilenceController,
+  OPENING_SILENCE_GOODBYE,
+  type OpeningSilencePrompt,
+} from "../bridge/opening-listening.js";
 import { logError, logInfo, logWarn } from "../logger.js";
 import { OpenAiRealtimeSession } from "../openai/realtime-session.js";
 import { SessionOrchestrator } from "../orchestrator/session-orchestrator.js";
@@ -69,6 +75,10 @@ export class CallBridge {
   private responseWatchdogTurnId: number | null = null;
   private responseWatchdogRetryUsed = false;
   private responseWatchdogRequest: PendingSpeechRequest | null = null;
+  private readonly openingSilence = new OpeningSilenceController();
+  private responseCreateCount = 0;
+  private openingResponseCreateCount = 0;
+  private postOpeningResponseCreateCount = 0;
 
   constructor(private readonly params: CallBridgeParams) {}
 
@@ -239,6 +249,35 @@ export class CallBridge {
     }
   }
 
+  private beginOpeningReasonListen(): void {
+    this.openingSilence.beginListeningForReason();
+    this.orchestrator?.onOpeningGreetingComplete();
+    this.scheduleOpeningSilenceReprompt();
+  }
+
+  private scheduleOpeningSilenceReprompt(): void {
+    this.openingSilence.scheduleSilenceCheck((prompt) => {
+      this.handleOpeningSilencePrompt(prompt);
+    });
+  }
+
+  private handleOpeningSilencePrompt(prompt: OpeningSilencePrompt): void {
+    if (this.closed || !this.openingSilence.isListeningForReason()) {
+      return;
+    }
+
+    if (prompt === OPENING_SILENCE_GOODBYE) {
+      this.requestAssistantSpeech(prompt, "opening_silence_reprompt");
+      this.cleanup("opening_silence_timeout");
+      return;
+    }
+
+    const sent = this.requestAssistantSpeech(prompt, "opening_silence_reprompt");
+    if (sent) {
+      this.scheduleOpeningSilenceReprompt();
+    }
+  }
+
   private requestAssistantSpeech(
     text: string,
     reason: ResponseTriggerReason,
@@ -257,6 +296,14 @@ export class CallBridge {
       (triggerReason) => {
         this.pendingClientResponse = true;
         this.responseGuard.recordTrigger(triggerReason, turnId);
+        this.responseCreateCount += 1;
+
+        if (reason === "opening_greeting") {
+          this.openingResponseCreateCount += 1;
+        } else if (this.orchestrator?.hasMeaningfulCallerTranscript()) {
+          this.postOpeningResponseCreateCount += 1;
+        }
+
         this.turnTiming.record("response_create_sent", this.callSid ?? undefined, { turnId });
         logResponseCreateSent();
       },
@@ -288,7 +335,10 @@ export class CallBridge {
     if (sent) {
       if (request.hangup && !request.hangupAfterMark) {
         this.cleanup("call_completed");
-      } else if (request.reason === "caller_turn_reply") {
+      } else if (
+        request.reason === "caller_turn_reply" &&
+        !this.openingSilence.isListeningForReason()
+      ) {
         this.scheduleResponseWatchdog(turnId, request);
       }
       return true;
@@ -402,6 +452,15 @@ export class CallBridge {
       case "response.done":
         this.bargeIn?.handleResponseCompleted();
         this.responseGuard.onResponseDone();
+
+        if (this.responseGuard.wasLastResponseOpeningGreeting()) {
+          this.beginOpeningReasonListen();
+        } else if (
+          this.responseGuard.getLastTriggerReason() === "opening_silence_reprompt"
+        ) {
+          this.scheduleOpeningSilenceReprompt();
+        }
+
         this.orchestrator?.onAssistantResponseDone();
         this.clearResponseWatchdog();
         this.flushPendingSpeech();
@@ -455,6 +514,18 @@ export class CallBridge {
       return;
     }
 
+    if (
+      this.openingSilence.isListeningForReason() &&
+      !isMeaningfulOpeningCallerTranscript(transcript)
+    ) {
+      logInfo("opening_transcript_ignored_at_bridge", {
+        callSid: this.callSid ?? undefined,
+        transcriptLength: transcript.length,
+      });
+      this.scheduleOpeningSilenceReprompt();
+      return;
+    }
+
     const itemId = String(
       (event.item_id as string | undefined) ??
         ((event.item as { id?: string } | undefined)?.id ?? ""),
@@ -475,10 +546,19 @@ export class CallBridge {
 
     beginTurnDiagnostic(this.callSid ?? "unknown", this.activeTurnId);
 
+    if (isMeaningfulOpeningCallerTranscript(transcript)) {
+      this.openingSilence.onMeaningfulCallerTranscript();
+      this.responseGuard.completeOpeningReasonListen();
+    }
+
     void this.processCallerTurnReply(transcript);
   }
 
   private scheduleResponseWatchdog(turnId: number, request: PendingSpeechRequest): void {
+    if (this.openingSilence.isListeningForReason()) {
+      return;
+    }
+
     this.clearResponseWatchdog();
     this.responseWatchdogTurnId = turnId;
     this.responseWatchdogRequest = request;
@@ -568,6 +648,10 @@ export class CallBridge {
       this.turnTiming.record("caller_turn_processed", this.callSid ?? undefined, { turnId });
 
       if (!result?.replyText) {
+        if (this.openingSilence.isListeningForReason()) {
+          return;
+        }
+
         this.attemptEmptyReplyRecovery(transcript);
         return;
       }
@@ -607,6 +691,10 @@ export class CallBridge {
 
   private async processQueuedCallerTranscript(): Promise<void> {
     if (!this.orchestrator || !this.orchestrator.hasPendingTranscript()) {
+      return;
+    }
+
+    if (this.openingSilence.isListeningForReason()) {
       return;
     }
 
@@ -713,6 +801,7 @@ export class CallBridge {
 
     this.clearOpeningFallbackTimer();
     this.clearResponseWatchdog();
+    this.openingSilence.reset();
     this.pendingSpeech = null;
 
     this.responseGuard.onWebSocketClosed();

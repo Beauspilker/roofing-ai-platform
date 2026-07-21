@@ -64,6 +64,12 @@ import {
   type RealtimeFields,
 } from "./realtime-prompts.js";
 import {
+  canAdvanceAfterOpening,
+  isMeaningfulOpeningCallerTranscript,
+  OpeningSilenceController,
+  type OpeningSilencePrompt,
+} from "../bridge/opening-listening.js";
+import {
   buildNameClarificationPrompt,
   EARLY_CALLER_NAME_QUESTION,
   isLikelyCallReasonSpeech,
@@ -112,6 +118,7 @@ export type ProcessRealtimeTurnInput = {
   conversationState: ConversationState;
   acknowledgmentPolicy: AcknowledgmentPolicy;
   isFirstCallerTurn?: boolean;
+  hasReceivedMeaningfulCallerTranscript?: boolean;
   turnId?: number;
 };
 
@@ -313,12 +320,15 @@ function buildPostIntakeReply(
   trimmedSpeech: string,
   callerPhone: string,
   filledCount: number,
-  options: { afterConfirmation?: boolean; isFirstCallerTurn?: boolean } = {},
+  options: { afterConfirmation?: boolean; isFirstCallerTurn?: boolean; hasReceivedMeaningfulCallerTranscript?: boolean } = {},
 ): { replyText: string; fields: RealtimeFields; nextState: ConversationState } {
   const nextRequired = getNextRequiredField(updatedFields);
 
   if (
     options.isFirstCallerTurn === true &&
+    canAdvanceAfterOpening(updatedFields, {
+      hasReceivedMeaningfulCallerTranscript: options.hasReceivedMeaningfulCallerTranscript,
+    }) &&
     updatedFields.intake_intro_delivered !== true &&
     updatedFields.problem_description?.trim() &&
     (nextRequired === "full_name" || nextRequired === "emergency_or_active_leak")
@@ -1163,6 +1173,7 @@ export async function processRealtimeCallerTurn(
     {
       afterConfirmation: false,
       isFirstCallerTurn: input.isFirstCallerTurn,
+      hasReceivedMeaningfulCallerTranscript: input.hasReceivedMeaningfulCallerTranscript,
     },
   );
 

@@ -98,6 +98,8 @@ import {
   isCallbackPhoneResolved,
   isSharedIntakeComplete,
   needsImmediateSafetyClarification,
+  canCloseCall,
+  canPresentSummary,
 } from "./required-intake.js";
 import { applyCorrectionToStructuredField, syncLegacyStringFields } from "./structured-intake.js";
 import { logError } from "../logger.js";
@@ -197,6 +199,12 @@ function finishTurn(
     structuredStateUpdated: true,
   };
 }
+
+const SAFE_INTAKE_REPROMPT =
+  "Thanks for your patience. Could you tell me what the roofing team can help you with?";
+
+const SAFE_ERROR_REPROMPT =
+  "Thanks for your patience. Could you repeat that last answer for me?";
 
 function ensureNonEmptyReply(replyText: string, fallback: string): string {
   const trimmed = replyText.trim();
@@ -947,7 +955,7 @@ export async function processRealtimeCallerTurn(
       updatedFields = appendAnythingElseNotes(updatedFields, trimmedSpeech);
     }
 
-    if (!isSharedIntakeComplete(updatedFields)) {
+    if (!isSharedIntakeComplete(updatedFields) || !canPresentSummary(updatedFields)) {
       const reply = ensureSingleIntakeQuestion(
         buildIntakeReply(acknowledgmentPolicy, updatedFields, trimmedSpeech, callerPhone, 0),
       );
@@ -993,11 +1001,27 @@ export async function processRealtimeCallerTurn(
         hangup: false,
         hangupAfterMark: false,
         session,
-        nextConversationState: "awaiting_summary_confirmation",
+        nextConversationState: canPresentSummary(fieldsBefore)
+          ? "awaiting_summary_confirmation"
+          : "collecting_intake",
       };
     }
 
-    if (isSummaryConfirmed(trimmedSpeech)) {
+    if (!canPresentSummary(fieldsBefore)) {
+      const reply = ensureSingleIntakeQuestion(
+        buildIntakeReply(acknowledgmentPolicy, fieldsBefore, trimmedSpeech, callerPhone, 0),
+      );
+
+      return finishTurn(input, {
+        replyText: reply,
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: "collecting_intake",
+      });
+    }
+
+    if (isSummaryConfirmed(trimmedSpeech) && canCloseCall(fieldsBefore, conversationState, trimmedSpeech)) {
       const confirmedFields = syncLegacyStringFields({
         ...fieldsBefore,
         summary_confirmed: true,
@@ -1123,7 +1147,7 @@ export async function processRealtimeCallerTurn(
     return finishTurn(input, {
       replyText: ensureNonEmptyReply(
         post.replyText,
-        "Thanks for your patience. Could you tell me what you're calling about?",
+        SAFE_INTAKE_REPROMPT,
       ),
       hangup: false,
       hangupAfterMark: false,
@@ -1326,7 +1350,7 @@ export async function processRealtimeCallerTurn(
   return finishTurn(input, {
     replyText: ensureNonEmptyReply(
       post.replyText,
-      "Thanks for your patience. Could you repeat that last answer for me?",
+      SAFE_ERROR_REPROMPT,
     ),
     hangup: false,
     hangupAfterMark: false,

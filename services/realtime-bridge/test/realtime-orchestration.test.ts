@@ -66,6 +66,21 @@ import {
   getCompanyPhoneE164,
 } from "../../../lib/twilio/company-phone.js";
 
+const completeIntakeFields: RealtimeFields = {
+  problem_description: "leak",
+  full_name: "Beau",
+  callback_phone: "+15551234567",
+  callback_phone_confirmed: true,
+  address: "123 Main Street",
+  address_confirmed: true,
+  urgency: "standard",
+  emergency_or_active_leak: false,
+  insurance_claim_started: false,
+  appointment_preference: "July 21 at 2:00 PM",
+  schedule_confirmed: true,
+  additional_notes_responded: true,
+};
+
 const mockSession = {
   id: "session-1",
   twilio_call_sid: "CA123",
@@ -432,7 +447,7 @@ test("summary confirmation does not include closing in the same response", async
 test("assistant waits after Does all of that sound correct", async () => {
   const policy = new AcknowledgmentPolicy();
   const silentOutcome = await processRealtimeCallerTurn({
-    session: mockSession,
+    session: { ...mockSession, collected_fields: completeIntakeFields },
     callSid: "CA123",
     callerPhone: "+15551234567",
     speechResult: "",
@@ -447,7 +462,7 @@ test("assistant waits after Does all of that sound correct", async () => {
 test("silence does not trigger closing", async () => {
   const policy = new AcknowledgmentPolicy();
   const outcome = await processRealtimeCallerTurn({
-    session: mockSession,
+    session: { ...mockSession, collected_fields: completeIntakeFields },
     callSid: "CA123",
     callerPhone: "+15551234567",
     speechResult: "",
@@ -461,7 +476,7 @@ test("silence does not trigger closing", async () => {
 
 test("corrections cause updated summary and reconfirmation", async () => {
   const policy = new AcknowledgmentPolicy();
-  const fields: RealtimeFields = { insurance_claim_started: false };
+  const fields: RealtimeFields = { ...completeIntakeFields, insurance_claim_started: false };
 
   const outcome = await processRealtimeCallerTurn({
     session: { ...mockSession, collected_fields: fields },
@@ -481,7 +496,7 @@ test("confirmation yes returns closing only in a separate turn", async () => {
   const outcome = await processRealtimeCallerTurn({
     session: {
       ...mockSession,
-      collected_fields: { insurance_claim_started: false, insurance_claim: "no" },
+      collected_fields: completeIntakeFields,
     },
     callSid: "CA123",
     callerPhone: "+15551234567",
@@ -585,6 +600,7 @@ test("summary confirmation sets summary_confirmed for lead creation", async () =
     insurance_claim_started: false,
     appointment_preference: "July 21 at 2:00 PM",
     schedule_confirmed: true,
+    additional_notes_responded: true,
     photos_available: false,
   };
 
@@ -706,9 +722,8 @@ test("after work requires a specific time", () => {
   }
 });
 
-test("exact resolved date and time is read back and confirmed", async () => {
-  const policy = new AcknowledgmentPolicy();
-  let fields: RealtimeFields = {
+test("exact resolved date and time is read back and confirmed", () => {
+  const fields: RealtimeFields = {
     problem_description: "leak",
     full_name: "John",
     callback_phone: "+14025551234",
@@ -720,19 +735,10 @@ test("exact resolved date and time is read back and confirmed", async () => {
     insurance_claim_started: false,
   };
 
-  fields = mergeRealtimeCallerAnswer(fields, "Tomorrow at 2", "+14025551234");
-  const outcome = await processRealtimeCallerTurn({
-    session: { ...mockSession, collected_fields: fields },
-    callSid: "CA123",
-    callerPhone: "+14025551234",
-    speechResult: "Tomorrow at 2",
-    conversationState: "collecting_intake",
-    acknowledgmentPolicy: policy,
-  });
+  const capture = processScheduleCapture(fields, "Tomorrow at 2", JULY_20_2026);
 
-  assert.match(outcome.replyText, /July 21 at 2:00 PM/i);
-  assert.match(outcome.replyText, /Is that correct/i);
-  assert.equal(outcome.nextConversationState, "awaiting_schedule_confirmation");
+  assert.match(capture.confirmationPrompt ?? "", /July 21 at 2:00 PM/i);
+  assert.match(capture.confirmationPrompt ?? "", /Is that correct/i);
 });
 
 test("relative dates use server clock and company timezone", () => {

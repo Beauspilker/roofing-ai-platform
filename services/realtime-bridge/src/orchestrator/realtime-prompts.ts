@@ -166,6 +166,18 @@ export function isAnythingElseDeclined(speech: string): boolean {
 export function isSummaryConfirmed(speech: string): boolean {
   const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
 
+  if (!normalized) {
+    return false;
+  }
+
+  if (normalized.split(/\s+/).length > 5) {
+    return false;
+  }
+
+  if (/\b(calling|call about|roof|hail|damage|leak|insurance|appointment|address|phone|name)\b/i.test(normalized)) {
+    return false;
+  }
+
   return /^(yes|yeah|yep|yup|correct|right|that's right|thats right|sounds good|all good|perfect)\b/.test(
     normalized,
   );

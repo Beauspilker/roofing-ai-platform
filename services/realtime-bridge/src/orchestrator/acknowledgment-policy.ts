@@ -122,6 +122,20 @@ export function sanitizeIntakeReply(text: string): string {
   return sanitized.replace(/\s+/g, " ").trim();
 }
 
+import type { ConversationState } from "./conversation-state.js";
+import { blocksPrematureCallClosing } from "./required-intake.js";
+
+export function blockClosingPhraseForConversationState(
+  conversationState: ConversationState,
+  text: string,
+): string {
+  if (!blocksPrematureCallClosing(conversationState) || !containsClosingPhrase(text)) {
+    return text;
+  }
+
+  return "";
+}
+
 export function guardIntakeReply(reply: string, fallbackQuestion: string): string {
   const sanitized = sanitizeIntakeReply(reply).trim();
 

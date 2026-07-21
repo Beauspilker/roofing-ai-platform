@@ -22,6 +22,9 @@ import {
   OPENING_SILENCE_GOODBYE,
   type OpeningSilencePrompt,
 } from "../bridge/opening-listening.js";
+import {
+  blockClosingPhraseForConversationState,
+} from "../orchestrator/acknowledgment-policy.js";
 import { logError, logInfo, logWarn } from "../logger.js";
 import { OpenAiRealtimeSession } from "../openai/realtime-session.js";
 import { SessionOrchestrator } from "../orchestrator/session-orchestrator.js";
@@ -363,11 +366,45 @@ export class CallBridge {
     request: PendingSpeechRequest,
     options: { turnId?: number } = {},
   ): boolean {
+    const conversationState =
+      this.orchestrator?.getConversationState() ?? "collecting_intake";
+    const sanitizedText = blockClosingPhraseForConversationState(
+      conversationState,
+      request.text,
+    ).trim();
+
     const turnId = options.turnId ?? this.activeTurnId;
-    const sent = this.requestAssistantSpeech(request.text, request.reason, {
-      hangupAfterMark: request.hangupAfterMark,
-      turnId,
-    });
+
+    if (!sanitizedText) {
+      if (request.reason === "closing_message") {
+        return false;
+      }
+
+      logWarn("closing_phrase_blocked_during_intake", {
+        callSid: this.callSid ?? undefined,
+        conversationState,
+        reason: request.reason,
+      });
+
+      if (request.reason === "caller_turn_reply") {
+        return this.requestAssistantSpeech(
+          "Thanks for your patience. Could you tell me what the roofing team can help you with?",
+          request.reason,
+          { hangupAfterMark: request.hangupAfterMark, turnId },
+        );
+      }
+
+      return false;
+    }
+
+    const sent = this.requestAssistantSpeech(
+      sanitizedText,
+      request.reason,
+      {
+        hangupAfterMark: request.hangupAfterMark,
+        turnId,
+      },
+    );
 
     if (sent) {
       if (request.hangup && !request.hangupAfterMark) {
@@ -376,12 +413,12 @@ export class CallBridge {
         request.reason === "caller_turn_reply" &&
         !this.openingSilence.isListeningForReason()
       ) {
-        this.scheduleResponseWatchdog(turnId, request);
+        this.scheduleResponseWatchdog(turnId, { ...request, text: sanitizedText });
       }
       return true;
     }
 
-    this.pendingSpeech = request;
+    this.pendingSpeech = { ...request, text: sanitizedText };
     logWarn("caller_turn_reply_deferred", { callSid: this.callSid ?? undefined, turnId });
     return false;
   }

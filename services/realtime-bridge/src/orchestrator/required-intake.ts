@@ -1,4 +1,6 @@
+import type { ConversationState } from "./conversation-state.js";
 import type { RealtimeFields } from "./realtime-prompts.js";
+import { isSummaryConfirmed } from "./realtime-prompts.js";
 import { normalizeCallbackPhoneE164 } from "./callback-phone.js";
 import { isAddressConfirmed } from "./address-confirmation.js";
 import {
@@ -220,6 +222,54 @@ export function isSharedIntakeComplete(fields: RealtimeFields): boolean {
 
 export function isRequiredIntakeComplete(fields: RealtimeFields): boolean {
   return getMissingRequiredFields(fields).length === 0 && isAdditionalNotesResolved(fields);
+}
+
+function hasValidMissingFieldLists(fields: RealtimeFields): boolean {
+  const missing = getMissingRequiredFields(fields);
+  const sharedMissing = getSharedMissingFields(fields);
+
+  return Array.isArray(missing) && Array.isArray(sharedMissing);
+}
+
+/** Summary may be presented only when every shared/required intake field is resolved. */
+export function canPresentSummary(fields: RealtimeFields): boolean {
+  if (!hasValidMissingFieldLists(fields)) {
+    return false;
+  }
+
+  return isRequiredIntakeComplete(fields) && isSharedIntakeComplete(fields);
+}
+
+/** Closing is allowed only after full intake, summary presentation, and explicit confirmation. */
+export function canCloseCall(
+  fields: RealtimeFields,
+  conversationState: ConversationState,
+  confirmedSpeech: string,
+): boolean {
+  if (!canPresentSummary(fields)) {
+    return false;
+  }
+
+  if (
+    conversationState !== "awaiting_summary_confirmation" &&
+    conversationState !== "handling_correction"
+  ) {
+    return false;
+  }
+
+  return isSummaryConfirmed(confirmedSpeech);
+}
+
+export function blocksPrematureCallClosing(conversationState: ConversationState): boolean {
+  return (
+    conversationState === "listening_for_reason" ||
+    conversationState === "collecting_intake" ||
+    conversationState === "awaiting_callback_confirmation" ||
+    conversationState === "awaiting_address_confirmation" ||
+    conversationState === "awaiting_schedule_clarification" ||
+    conversationState === "awaiting_schedule_confirmation" ||
+    conversationState === "awaiting_additional_notes"
+  );
 }
 
 export function getNextRequiredField(fields: RealtimeFields): RequiredFieldKey | null {

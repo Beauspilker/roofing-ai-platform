@@ -5,7 +5,10 @@ import {
   type CallSession,
   updateCallSession,
 } from "../../../../lib/call-sessions.js";
-import { logError, logInfo } from "../logger.js";
+import { logError, logInfo, logWarn } from "../logger.js";
+import {
+  canPresentSummary,
+} from "./required-intake.js";
 import type { ConversationState } from "./conversation-state.js";
 import { AcknowledgmentPolicy } from "./acknowledgment-policy.js";
 import { isMeaningfulOpeningCallerTranscript } from "../bridge/opening-listening.js";
@@ -84,7 +87,17 @@ export class SessionOrchestrator {
 
   onAssistantResponseDone(): void {
     if (this.conversationState === "presenting_summary") {
-      this.conversationState = "awaiting_summary_confirmation";
+      const fields = (this.session?.collected_fields ?? {}) as RealtimeFields;
+
+      if (canPresentSummary(fields)) {
+        this.conversationState = "awaiting_summary_confirmation";
+      } else {
+        this.conversationState = "collecting_intake";
+        logWarn("summary_state_reverted_incomplete_intake", {
+          callSid: this.context.callSid,
+        });
+      }
+
       logInfo("conversation_state_transition", {
         callSid: this.context.callSid,
         state: this.conversationState,

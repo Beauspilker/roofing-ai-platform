@@ -600,61 +600,8 @@ function applyCorrectionToStructuredField(fields, speech) {
   return syncLegacyStringFields(updated);
 }
 
-// src/orchestrator/address-confirmation.ts
-function hasValue(value) {
-  return typeof value === "string" && value.trim().length > 0;
-}
-function hasConfirmableAddress(address) {
-  if (!hasValue(address)) {
-    return false;
-  }
-  const trimmed = address.trim();
-  return /\d/.test(trimmed) && trimmed.length >= 8;
-}
-function formatAddressForSpeech(address) {
-  let formatted = address.trim().replace(/\s+/g, " ");
-  if (/\bin\b/i.test(formatted) && !/,/.test(formatted)) {
-    formatted = formatted.replace(/\s+in\s+/i, ", ");
-  }
-  return formatted;
-}
-function buildAddressReadbackConfirmation(address) {
-  return `I have ${formatAddressForSpeech(address)}. Is that right?`;
-}
-function needsAddressReadback(fields) {
-  return hasConfirmableAddress(fields.address) && fields.address_confirmed !== true;
-}
-function isAddressConfirmed(fields) {
-  return hasConfirmableAddress(fields.address) && fields.address_confirmed === true;
-}
-function isAddressConfirmedSpeech(speech) {
-  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
-  return /^(yes|yeah|yep|yup|correct|right|that's right|thats right|that's correct|thats correct)\b/.test(
-    normalized
-  );
-}
-function isAddressRejectedSpeech(speech) {
-  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
-  return /^(no|nope|nah|not quite|incorrect|wrong|change|fix|update)\b/.test(normalized);
-}
-function applyAddressCorrection(fields, speech) {
-  const trimmed = speech.trim();
-  if (!trimmed) {
-    return fields;
-  }
-  return syncLegacyStringFields({
-    ...fields,
-    address: trimmed.slice(0, 500),
-    address_confirmed: false
-  });
-}
-function confirmAddress(fields) {
-  return syncLegacyStringFields({
-    ...fields,
-    address: fields.address ? formatAddressForSpeech(fields.address) : fields.address,
-    address_confirmed: true
-  });
-}
+// src/orchestrator/conversation-state.ts
+var CLOSING_MESSAGE = "Great. I'll send this information to the roofing team, and someone will follow up with you by call or text. Thanks for calling Beau's Roofing. Have a great day.";
 
 // src/orchestrator/field-validation.ts
 var DAMAGE_AND_INTAKE_TERMS = /\b(hail(?:\s+damage)?|storm(?:\s+damage)?|roof(?:ing)?(?:\s+leak)?|roof\s+leak|leak(?:ing)?|missing\s+shingles?|shingles?|damage|damaged|insurance|claim|adjuster|estimate|inspection|replacement|pictures?|photos?|appointment|today|tomorrow|morning|afternoon|evening|urgent|emergency|water|tree(?:\s+damage)?|wind|gutter|repair|replace|callback|address|property|number|yes|no|yeah|nope|yep|nah|correct|right)\b/i;
@@ -815,6 +762,211 @@ function isCallerNameUnavailableSpeech(speech) {
   );
 }
 var EARLY_CALLER_NAME_QUESTION = "Could I start with your name?";
+
+// src/orchestrator/summary-builder.ts
+function buildSummaryDataObject(fields) {
+  const name = fields.full_name?.trim() ?? null;
+  const phone = fields.callback_phone?.trim() ?? null;
+  const address = fields.address?.trim() ?? null;
+  return {
+    name: name && isPlausibleCallerName(name) ? name : null,
+    phone: phone && fields.callback_phone_confirmed === true ? phone : null,
+    address: address && isPlausibleServiceAddress(address) ? address : null,
+    reason: fields.problem_description?.trim() ?? null,
+    damage: fields.problem_description?.trim() ?? null,
+    urgency: fields.urgency?.trim() ?? null,
+    leak: fields.emergency_or_active_leak === true || fields.emergency_or_active_leak === false ? fields.emergency_or_active_leak : null,
+    insurance: fields.insurance_claim_started === true || fields.insurance_claim_started === false ? fields.insurance_claim_started : null,
+    adjuster: fields.adjuster_contacted === true || fields.adjuster_contacted === false ? fields.adjuster_contacted : null,
+    photos: fields.photos_available === true || fields.photos_available === false ? fields.photos_available : null,
+    callbackPreference: fields.appointment_preference?.trim() ?? null,
+    notes: fields.additional_notes?.trim() ?? null
+  };
+}
+function validateSummaryData(data, fields) {
+  const issues = [];
+  if (fields.full_name?.trim() && !isPlausibleCallerName(fields.full_name)) {
+    issues.push("invalid_name");
+  }
+  if (data.address && !isPlausibleServiceAddress(data.address)) {
+    issues.push("invalid_address");
+  }
+  if (!data.reason && !data.damage) {
+    issues.push("missing_reason");
+  }
+  return issues;
+}
+function buildValidatedSpokenSummary(fields) {
+  const data = buildSummaryDataObject(fields);
+  const issues = validateSummaryData(data, fields);
+  if (issues.includes("invalid_name")) {
+    return { summary: "", issues };
+  }
+  const detailParts = [];
+  if (data.name) {
+    detailParts.push(`Your name is ${data.name}`);
+  }
+  if (data.phone) {
+    detailParts.push(`your callback number is ${formatCallbackForSpeech(data.phone)}`);
+  }
+  if (data.address) {
+    detailParts.push(`the property is at ${data.address}`);
+  }
+  const situationParts = [];
+  if (data.damage) {
+    situationParts.push(`you're calling about ${data.damage.replace(/\.$/, "")}`);
+  }
+  if (data.leak === true) {
+    situationParts.push("there is active water intrusion");
+  } else if (data.leak === false) {
+    situationParts.push("there isn't an active leak");
+  }
+  if (data.insurance === true) {
+    situationParts.push(
+      data.adjuster === true ? "you've started an insurance claim and contacted your adjuster" : data.adjuster === false ? "you've started an insurance claim but haven't contacted your adjuster yet" : "you've started an insurance claim"
+    );
+  } else if (data.insurance === false) {
+    situationParts.push("you haven't started an insurance claim yet");
+  }
+  if (data.callbackPreference) {
+    situationParts.push(`you'd prefer a call on ${data.callbackPreference.replace(/\.$/, "")}`);
+  }
+  if (data.notes) {
+    situationParts.push(`I also noted ${data.notes.replace(/\.$/, "")}`);
+  }
+  const sentences = ["Here's what I have."];
+  if (detailParts.length > 0) {
+    sentences.push(`${detailParts.join(", ")}.`);
+  }
+  if (situationParts.length > 0) {
+    const joined = situationParts.map((part) => part.replace(/\.$/, "")).join(", ");
+    sentences.push(`${joined.charAt(0).toUpperCase()}${joined.slice(1)}.`);
+  }
+  return {
+    summary: sentences.join(" "),
+    issues
+  };
+}
+
+// src/orchestrator/realtime-prompts.ts
+var REALTIME_OPENING_GREETING = "Thank you for calling Beau's Roofing. I'm Beau's Roofing's AI assistant. How can I help you today?";
+var REALTIME_INTRO_TRANSITION = "Absolutely. I'll run you through a few questions so the roofing team has everything they need.";
+var REALTIME_OPENING_QUESTION = "How can I help you today?";
+var REALTIME_ANYTHING_ELSE_QUESTION = "Is there anything else you'd like the roofing team to know?";
+function ensureSingleIntakeQuestion(text) {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+  const questionIndexes = [];
+  for (let index = 0; index < trimmed.length; index += 1) {
+    if (trimmed[index] === "?") {
+      questionIndexes.push(index);
+    }
+  }
+  if (questionIndexes.length <= 1) {
+    return trimmed;
+  }
+  const firstQuestionEnd = questionIndexes[0] + 1;
+  return trimmed.slice(0, firstQuestionEnd).trim();
+}
+function buildStructuredSpokenSummary(fields) {
+  const { summary, issues } = buildValidatedSpokenSummary(fields);
+  if (issues.includes("invalid_name")) {
+    return "";
+  }
+  if (!summary) {
+    return "Let me make sure I have everything right.";
+  }
+  return summary.replace(/^Here's what I have\./, "Let me make sure I have everything right.");
+}
+function buildSummaryWithConfirmation(fields) {
+  return `${buildStructuredSpokenSummary(fields)} Does all of that sound correct?`;
+}
+function buildClosingMessage() {
+  return CLOSING_MESSAGE;
+}
+function isAnythingElseDeclined(speech) {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  return /^(no|nope|nah|nothing|none|that's all|thats all|that is all|i'm good|im good|all set|nothing else)\b/.test(
+    normalized
+  ) || normalized.includes("nothing else");
+}
+function isSummaryConfirmed(speech) {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  if (!normalized) {
+    return false;
+  }
+  if (normalized.split(/\s+/).length > 5) {
+    return false;
+  }
+  if (/\b(calling|call about|roof|hail|damage|leak|insurance|appointment|address|phone|name)\b/i.test(normalized)) {
+    return false;
+  }
+  return /^(yes|yeah|yep|yup|correct|right|that's right|thats right|sounds good|all good|perfect)\b/.test(
+    normalized
+  );
+}
+function isSummaryRejected(speech) {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  return /^(no|nope|nah|not quite|incorrect|wrong|change|fix|update)\b/.test(normalized);
+}
+
+// src/orchestrator/address-confirmation.ts
+function hasValue(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+function hasConfirmableAddress(address) {
+  if (!hasValue(address)) {
+    return false;
+  }
+  const trimmed = address.trim();
+  return /\d/.test(trimmed) && trimmed.length >= 8;
+}
+function formatAddressForSpeech(address) {
+  let formatted = address.trim().replace(/\s+/g, " ");
+  if (/\bin\b/i.test(formatted) && !/,/.test(formatted)) {
+    formatted = formatted.replace(/\s+in\s+/i, ", ");
+  }
+  return formatted;
+}
+function buildAddressReadbackConfirmation(address) {
+  return `I have ${formatAddressForSpeech(address)}. Is that right?`;
+}
+function needsAddressReadback(fields) {
+  return hasConfirmableAddress(fields.address) && fields.address_confirmed !== true;
+}
+function isAddressConfirmed(fields) {
+  return hasConfirmableAddress(fields.address) && fields.address_confirmed === true;
+}
+function isAddressConfirmedSpeech(speech) {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  return /^(yes|yeah|yep|yup|correct|right|that's right|thats right|that's correct|thats correct)\b/.test(
+    normalized
+  );
+}
+function isAddressRejectedSpeech(speech) {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  return /^(no|nope|nah|not quite|incorrect|wrong|change|fix|update)\b/.test(normalized);
+}
+function applyAddressCorrection(fields, speech) {
+  const trimmed = speech.trim();
+  if (!trimmed) {
+    return fields;
+  }
+  return syncLegacyStringFields({
+    ...fields,
+    address: trimmed.slice(0, 500),
+    address_confirmed: false
+  });
+}
+function confirmAddress(fields) {
+  return syncLegacyStringFields({
+    ...fields,
+    address: fields.address ? formatAddressForSpeech(fields.address) : fields.address,
+    address_confirmed: true
+  });
+}
 
 // src/orchestrator/schedule-normalizer.ts
 var COMPANY_TIMEZONE = process.env.COMPANY_TIMEZONE?.trim() || "America/Chicago";
@@ -1417,149 +1569,6 @@ function resolveActivePendingQuestion(fields, conversationState, override) {
   return resolvePendingQuestion(fields, conversationState);
 }
 
-// src/orchestrator/conversation-state.ts
-var CLOSING_MESSAGE = "Great. I'll send this information to the roofing team, and someone will follow up with you by call or text. Thanks for calling Beau's Roofing. Have a great day.";
-
-// src/orchestrator/summary-builder.ts
-function buildSummaryDataObject(fields) {
-  const name = fields.full_name?.trim() ?? null;
-  const phone = fields.callback_phone?.trim() ?? null;
-  const address = fields.address?.trim() ?? null;
-  return {
-    name: name && isPlausibleCallerName(name) ? name : null,
-    phone: phone && fields.callback_phone_confirmed === true ? phone : null,
-    address: address && isPlausibleServiceAddress(address) ? address : null,
-    reason: fields.problem_description?.trim() ?? null,
-    damage: fields.problem_description?.trim() ?? null,
-    urgency: fields.urgency?.trim() ?? null,
-    leak: fields.emergency_or_active_leak === true || fields.emergency_or_active_leak === false ? fields.emergency_or_active_leak : null,
-    insurance: fields.insurance_claim_started === true || fields.insurance_claim_started === false ? fields.insurance_claim_started : null,
-    adjuster: fields.adjuster_contacted === true || fields.adjuster_contacted === false ? fields.adjuster_contacted : null,
-    photos: fields.photos_available === true || fields.photos_available === false ? fields.photos_available : null,
-    callbackPreference: fields.appointment_preference?.trim() ?? null,
-    notes: fields.additional_notes?.trim() ?? null
-  };
-}
-function validateSummaryData(data, fields) {
-  const issues = [];
-  if (fields.full_name?.trim() && !isPlausibleCallerName(fields.full_name)) {
-    issues.push("invalid_name");
-  }
-  if (data.address && !isPlausibleServiceAddress(data.address)) {
-    issues.push("invalid_address");
-  }
-  if (!data.reason && !data.damage) {
-    issues.push("missing_reason");
-  }
-  return issues;
-}
-function buildValidatedSpokenSummary(fields) {
-  const data = buildSummaryDataObject(fields);
-  const issues = validateSummaryData(data, fields);
-  if (issues.includes("invalid_name")) {
-    return { summary: "", issues };
-  }
-  const detailParts = [];
-  if (data.name) {
-    detailParts.push(`Your name is ${data.name}`);
-  }
-  if (data.phone) {
-    detailParts.push(`your callback number is ${formatCallbackForSpeech(data.phone)}`);
-  }
-  if (data.address) {
-    detailParts.push(`the property is at ${data.address}`);
-  }
-  const situationParts = [];
-  if (data.damage) {
-    situationParts.push(`you're calling about ${data.damage.replace(/\.$/, "")}`);
-  }
-  if (data.leak === true) {
-    situationParts.push("there is active water intrusion");
-  } else if (data.leak === false) {
-    situationParts.push("there isn't an active leak");
-  }
-  if (data.insurance === true) {
-    situationParts.push(
-      data.adjuster === true ? "you've started an insurance claim and contacted your adjuster" : data.adjuster === false ? "you've started an insurance claim but haven't contacted your adjuster yet" : "you've started an insurance claim"
-    );
-  } else if (data.insurance === false) {
-    situationParts.push("you haven't started an insurance claim yet");
-  }
-  if (data.callbackPreference) {
-    situationParts.push(`you'd prefer a call on ${data.callbackPreference.replace(/\.$/, "")}`);
-  }
-  if (data.notes) {
-    situationParts.push(`I also noted ${data.notes.replace(/\.$/, "")}`);
-  }
-  const sentences = ["Here's what I have."];
-  if (detailParts.length > 0) {
-    sentences.push(`${detailParts.join(", ")}.`);
-  }
-  if (situationParts.length > 0) {
-    const joined = situationParts.map((part) => part.replace(/\.$/, "")).join(", ");
-    sentences.push(`${joined.charAt(0).toUpperCase()}${joined.slice(1)}.`);
-  }
-  return {
-    summary: sentences.join(" "),
-    issues
-  };
-}
-
-// src/orchestrator/realtime-prompts.ts
-var REALTIME_OPENING_GREETING = "Thank you for calling Beau's Roofing. I'm Beau's Roofing's AI assistant. How can I help you today?";
-var REALTIME_INTRO_TRANSITION = "Absolutely. I'll run you through a few questions so the roofing team has everything they need.";
-var REALTIME_OPENING_QUESTION = "How can I help you today?";
-var REALTIME_ANYTHING_ELSE_QUESTION = "Is there anything else you'd like the roofing team to know?";
-function ensureSingleIntakeQuestion(text) {
-  const trimmed = text.trim();
-  if (!trimmed) {
-    return trimmed;
-  }
-  const questionIndexes = [];
-  for (let index = 0; index < trimmed.length; index += 1) {
-    if (trimmed[index] === "?") {
-      questionIndexes.push(index);
-    }
-  }
-  if (questionIndexes.length <= 1) {
-    return trimmed;
-  }
-  const firstQuestionEnd = questionIndexes[0] + 1;
-  return trimmed.slice(0, firstQuestionEnd).trim();
-}
-function buildStructuredSpokenSummary(fields) {
-  const { summary, issues } = buildValidatedSpokenSummary(fields);
-  if (issues.includes("invalid_name")) {
-    return "";
-  }
-  if (!summary) {
-    return "Let me make sure I have everything right.";
-  }
-  return summary.replace(/^Here's what I have\./, "Let me make sure I have everything right.");
-}
-function buildSummaryWithConfirmation(fields) {
-  return `${buildStructuredSpokenSummary(fields)} Does all of that sound correct?`;
-}
-function buildClosingMessage() {
-  return CLOSING_MESSAGE;
-}
-function isAnythingElseDeclined(speech) {
-  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
-  return /^(no|nope|nah|nothing|none|that's all|thats all|that is all|i'm good|im good|all set|nothing else)\b/.test(
-    normalized
-  ) || normalized.includes("nothing else");
-}
-function isSummaryConfirmed(speech) {
-  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
-  return /^(yes|yeah|yep|yup|correct|right|that's right|thats right|sounds good|all good|perfect)\b/.test(
-    normalized
-  );
-}
-function isSummaryRejected(speech) {
-  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
-  return /^(no|nope|nah|not quite|incorrect|wrong|change|fix|update)\b/.test(normalized);
-}
-
 // src/orchestrator/call-reason-handling.ts
 var CALL_REASON_CLARIFICATION_PROMPT = "I'm sorry, I didn't quite catch what you're calling about. Could you tell me again?";
 var CALL_REASON_NO_RESPONSE_PROMPT = "No problem\u2014what can the roofing team help you with?";
@@ -1863,6 +1872,32 @@ function getSharedMissingFields(fields) {
 }
 function isSharedIntakeComplete(fields) {
   return getSharedMissingFields(fields).length === 0;
+}
+function isRequiredIntakeComplete(fields) {
+  return getMissingRequiredFields(fields).length === 0 && isAdditionalNotesResolved(fields);
+}
+function hasValidMissingFieldLists(fields) {
+  const missing = getMissingRequiredFields(fields);
+  const sharedMissing = getSharedMissingFields(fields);
+  return Array.isArray(missing) && Array.isArray(sharedMissing);
+}
+function canPresentSummary(fields) {
+  if (!hasValidMissingFieldLists(fields)) {
+    return false;
+  }
+  return isRequiredIntakeComplete(fields) && isSharedIntakeComplete(fields);
+}
+function canCloseCall(fields, conversationState, confirmedSpeech) {
+  if (!canPresentSummary(fields)) {
+    return false;
+  }
+  if (conversationState !== "awaiting_summary_confirmation" && conversationState !== "handling_correction") {
+    return false;
+  }
+  return isSummaryConfirmed(confirmedSpeech);
+}
+function blocksPrematureCallClosing(conversationState) {
+  return conversationState === "listening_for_reason" || conversationState === "collecting_intake" || conversationState === "awaiting_callback_confirmation" || conversationState === "awaiting_address_confirmation" || conversationState === "awaiting_schedule_clarification" || conversationState === "awaiting_schedule_confirmation" || conversationState === "awaiting_additional_notes";
 }
 function getNextRequiredField(fields) {
   return collectMissingFieldsInPriorityOrder(fields)[0] ?? null;
@@ -2569,6 +2604,116 @@ var OpeningSilenceController = class {
     }
   }
 };
+
+// src/orchestrator/acknowledgment-policy.ts
+var CONTEXT_ACKNOWLEDGMENTS = {
+  callback_phone: ["Absolutely.", "Thank you."],
+  address: ["Thank you.", "All right."],
+  emergency_or_active_leak: ["I'm glad everyone is safe.", "Understood."],
+  insurance_claim_started: ["That helps.", "Okay."],
+  adjuster_contacted: ["That helps.", "Thanks for clarifying."],
+  appointment_preference: ["All right.", "Okay."],
+  default: ["Thank you.", "All right.", "That helps.", "Okay."]
+};
+var CLOSING_PHRASES = [
+  "sounds good",
+  "perfect",
+  "perfect, we're all set",
+  "perfect we're all set",
+  "you're all set",
+  "you are all set",
+  "that should be everything",
+  "that should be it",
+  "we have everything we need",
+  "we've got everything",
+  "we'll get that taken care of",
+  "someone will reach out",
+  "someone will contact you",
+  "someone from the team will reach out",
+  "roofing team will reach out",
+  "team will reach out",
+  "thanks for calling",
+  "have a great day",
+  "we're all set",
+  "all set",
+  "follow up with you",
+  "send this information"
+];
+var AcknowledgmentPolicy = class {
+  lastAcknowledgment = null;
+  turnsSinceAck = 0;
+  selectAcknowledgment(options) {
+    this.turnsSinceAck += 1;
+    if (options.isEmergency && !options.emergencyAlreadyAcknowledged) {
+      const ack = "I'm glad everyone is safe.";
+      this.recordUsed(ack);
+      return ack;
+    }
+    const answer = options.answer?.trim() ?? "";
+    const isSubstantiveAnswer = answer.length >= 12 && !/^(yes|no|yeah|nope|yep|yup|correct|right)\b/i.test(answer);
+    const shouldAcknowledge = options.forceAck === true || options.afterConfirmation === true || isSubstantiveAnswer && (options.filledCount ?? 0) > 0 && this.turnsSinceAck >= 2;
+    if (!shouldAcknowledge) {
+      return null;
+    }
+    const pool = CONTEXT_ACKNOWLEDGMENTS[options.nextField ?? "default"] ?? CONTEXT_ACKNOWLEDGMENTS.default;
+    const candidates = pool.filter((ack) => ack !== this.lastAcknowledgment);
+    if (candidates.length === 0) {
+      return null;
+    }
+    const selected = candidates[(answer.length + (options.nextField?.length ?? 0) + candidates.length) % candidates.length] ?? null;
+    this.recordUsed(selected);
+    return selected;
+  }
+  recordUsed(acknowledgment) {
+    this.lastAcknowledgment = acknowledgment;
+    this.turnsSinceAck = acknowledgment ? 0 : this.turnsSinceAck;
+  }
+  getLastAcknowledgment() {
+    return this.lastAcknowledgment;
+  }
+  resetTurnCounter() {
+    this.turnsSinceAck = 0;
+    this.lastAcknowledgment = null;
+  }
+};
+function containsClosingPhrase(text) {
+  const normalized = text.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  return CLOSING_PHRASES.some(
+    (phrase) => normalized.includes(phrase) || normalized === phrase
+  );
+}
+function sanitizeIntakeReply(text) {
+  if (!containsClosingPhrase(text)) {
+    return text;
+  }
+  let sanitized = text;
+  for (const phrase of CLOSING_PHRASES) {
+    sanitized = sanitized.replace(new RegExp(phrase, "gi"), "").trim();
+  }
+  return sanitized.replace(/\s+/g, " ").trim();
+}
+function blockClosingPhraseForConversationState(conversationState, text) {
+  if (!blocksPrematureCallClosing(conversationState) || !containsClosingPhrase(text)) {
+    return text;
+  }
+  return "";
+}
+function guardIntakeReply(reply, fallbackQuestion) {
+  const sanitized = sanitizeIntakeReply(reply).trim();
+  if (!sanitized || sanitized.length < 8) {
+    return fallbackQuestion;
+  }
+  if (containsClosingPhrase(sanitized)) {
+    return fallbackQuestion;
+  }
+  return sanitized;
+}
+function joinAcknowledgmentAndQuestion(acknowledgment, question) {
+  if (!acknowledgment) {
+    return question;
+  }
+  return `${acknowledgment} ${question.trim()}`.replace(/\s+/g, " ").trim();
+}
 
 // src/openai/realtime-session.ts
 import WebSocket from "ws";
@@ -4774,110 +4919,6 @@ async function completeCallSession(callSid, status = "completed") {
   return session;
 }
 
-// src/orchestrator/acknowledgment-policy.ts
-var CONTEXT_ACKNOWLEDGMENTS = {
-  callback_phone: ["Absolutely.", "Thank you."],
-  address: ["Thank you.", "All right."],
-  emergency_or_active_leak: ["I'm glad everyone is safe.", "Understood."],
-  insurance_claim_started: ["That helps.", "Okay."],
-  adjuster_contacted: ["That helps.", "Thanks for clarifying."],
-  appointment_preference: ["All right.", "Okay."],
-  default: ["Thank you.", "All right.", "That helps.", "Okay."]
-};
-var CLOSING_PHRASES = [
-  "sounds good",
-  "perfect",
-  "perfect, we're all set",
-  "perfect we're all set",
-  "you're all set",
-  "you are all set",
-  "that should be everything",
-  "that should be it",
-  "we have everything we need",
-  "we've got everything",
-  "we'll get that taken care of",
-  "someone will reach out",
-  "someone will contact you",
-  "someone from the team will reach out",
-  "roofing team will reach out",
-  "team will reach out",
-  "thanks for calling",
-  "have a great day",
-  "we're all set",
-  "all set",
-  "follow up with you",
-  "send this information"
-];
-var AcknowledgmentPolicy = class {
-  lastAcknowledgment = null;
-  turnsSinceAck = 0;
-  selectAcknowledgment(options) {
-    this.turnsSinceAck += 1;
-    if (options.isEmergency && !options.emergencyAlreadyAcknowledged) {
-      const ack = "I'm glad everyone is safe.";
-      this.recordUsed(ack);
-      return ack;
-    }
-    const answer = options.answer?.trim() ?? "";
-    const isSubstantiveAnswer = answer.length >= 12 && !/^(yes|no|yeah|nope|yep|yup|correct|right)\b/i.test(answer);
-    const shouldAcknowledge = options.forceAck === true || options.afterConfirmation === true || isSubstantiveAnswer && (options.filledCount ?? 0) > 0 && this.turnsSinceAck >= 2;
-    if (!shouldAcknowledge) {
-      return null;
-    }
-    const pool = CONTEXT_ACKNOWLEDGMENTS[options.nextField ?? "default"] ?? CONTEXT_ACKNOWLEDGMENTS.default;
-    const candidates = pool.filter((ack) => ack !== this.lastAcknowledgment);
-    if (candidates.length === 0) {
-      return null;
-    }
-    const selected = candidates[(answer.length + (options.nextField?.length ?? 0) + candidates.length) % candidates.length] ?? null;
-    this.recordUsed(selected);
-    return selected;
-  }
-  recordUsed(acknowledgment) {
-    this.lastAcknowledgment = acknowledgment;
-    this.turnsSinceAck = acknowledgment ? 0 : this.turnsSinceAck;
-  }
-  getLastAcknowledgment() {
-    return this.lastAcknowledgment;
-  }
-  resetTurnCounter() {
-    this.turnsSinceAck = 0;
-    this.lastAcknowledgment = null;
-  }
-};
-function containsClosingPhrase(text) {
-  const normalized = text.toLowerCase().replace(/[^\w\s']/g, " ").trim();
-  return CLOSING_PHRASES.some(
-    (phrase) => normalized.includes(phrase) || normalized === phrase
-  );
-}
-function sanitizeIntakeReply(text) {
-  if (!containsClosingPhrase(text)) {
-    return text;
-  }
-  let sanitized = text;
-  for (const phrase of CLOSING_PHRASES) {
-    sanitized = sanitized.replace(new RegExp(phrase, "gi"), "").trim();
-  }
-  return sanitized.replace(/\s+/g, " ").trim();
-}
-function guardIntakeReply(reply, fallbackQuestion) {
-  const sanitized = sanitizeIntakeReply(reply).trim();
-  if (!sanitized || sanitized.length < 8) {
-    return fallbackQuestion;
-  }
-  if (containsClosingPhrase(sanitized)) {
-    return fallbackQuestion;
-  }
-  return sanitized;
-}
-function joinAcknowledgmentAndQuestion(acknowledgment, question) {
-  if (!acknowledgment) {
-    return question;
-  }
-  return `${acknowledgment} ${question.trim()}`.replace(/\s+/g, " ").trim();
-}
-
 // ../../lib/call-name-capture.ts
 var MAX_NAME_CONFIRMATION_ATTEMPTS = 3;
 var NAME_PREFIX_PATTERN = /^(?:my name is|name is|this is|i am|i'm|it's|it is|call me)\s+/i;
@@ -5570,6 +5611,8 @@ function finishTurn(input, outcome) {
     structuredStateUpdated: true
   };
 }
+var SAFE_INTAKE_REPROMPT = "Thanks for your patience. Could you tell me what the roofing team can help you with?";
+var SAFE_ERROR_REPROMPT = "Thanks for your patience. Could you repeat that last answer for me?";
 function ensureNonEmptyReply(replyText, fallback) {
   const trimmed = replyText.trim();
   return trimmed || fallback;
@@ -6145,7 +6188,7 @@ async function processRealtimeCallerTurn(input) {
     if (!isAnythingElseDeclined(trimmedSpeech)) {
       updatedFields2 = appendAnythingElseNotes(updatedFields2, trimmedSpeech);
     }
-    if (!isSharedIntakeComplete(updatedFields2)) {
+    if (!isSharedIntakeComplete(updatedFields2) || !canPresentSummary(updatedFields2)) {
       const reply2 = ensureSingleIntakeQuestion(
         buildIntakeReply(acknowledgmentPolicy, updatedFields2, trimmedSpeech, callerPhone, 0)
       );
@@ -6183,10 +6226,22 @@ async function processRealtimeCallerTurn(input) {
         hangup: false,
         hangupAfterMark: false,
         session,
-        nextConversationState: "awaiting_summary_confirmation"
+        nextConversationState: canPresentSummary(fieldsBefore) ? "awaiting_summary_confirmation" : "collecting_intake"
       };
     }
-    if (isSummaryConfirmed(trimmedSpeech)) {
+    if (!canPresentSummary(fieldsBefore)) {
+      const reply = ensureSingleIntakeQuestion(
+        buildIntakeReply(acknowledgmentPolicy, fieldsBefore, trimmedSpeech, callerPhone, 0)
+      );
+      return finishTurn(input, {
+        replyText: reply,
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: "collecting_intake"
+      });
+    }
+    if (isSummaryConfirmed(trimmedSpeech) && canCloseCall(fieldsBefore, conversationState, trimmedSpeech)) {
       const confirmedFields = syncLegacyStringFields({
         ...fieldsBefore,
         summary_confirmed: true
@@ -6293,7 +6348,7 @@ async function processRealtimeCallerTurn(input) {
     return finishTurn(input, {
       replyText: ensureNonEmptyReply(
         post2.replyText,
-        "Thanks for your patience. Could you tell me what you're calling about?"
+        SAFE_INTAKE_REPROMPT
       ),
       hangup: false,
       hangupAfterMark: false,
@@ -6464,7 +6519,7 @@ async function processRealtimeCallerTurn(input) {
   return finishTurn(input, {
     replyText: ensureNonEmptyReply(
       post.replyText,
-      "Thanks for your patience. Could you repeat that last answer for me?"
+      SAFE_ERROR_REPROMPT
     ),
     hangup: false,
     hangupAfterMark: false,
@@ -6521,7 +6576,15 @@ var SessionOrchestrator = class {
   }
   onAssistantResponseDone() {
     if (this.conversationState === "presenting_summary") {
-      this.conversationState = "awaiting_summary_confirmation";
+      const fields = this.session?.collected_fields ?? {};
+      if (canPresentSummary(fields)) {
+        this.conversationState = "awaiting_summary_confirmation";
+      } else {
+        this.conversationState = "collecting_intake";
+        logWarn("summary_state_reverted_incomplete_intake", {
+          callSid: this.context.callSid
+        });
+      }
       logInfo("conversation_state_transition", {
         callSid: this.context.callSid,
         state: this.conversationState
@@ -6911,20 +6974,47 @@ var CallBridge = class {
     return sent === "sent";
   }
   enqueueOrSpeakSpeech(request, options = {}) {
+    const conversationState = this.orchestrator?.getConversationState() ?? "collecting_intake";
+    const sanitizedText = blockClosingPhraseForConversationState(
+      conversationState,
+      request.text
+    ).trim();
     const turnId = options.turnId ?? this.activeTurnId;
-    const sent = this.requestAssistantSpeech(request.text, request.reason, {
-      hangupAfterMark: request.hangupAfterMark,
-      turnId
-    });
+    if (!sanitizedText) {
+      if (request.reason === "closing_message") {
+        return false;
+      }
+      logWarn("closing_phrase_blocked_during_intake", {
+        callSid: this.callSid ?? void 0,
+        conversationState,
+        reason: request.reason
+      });
+      if (request.reason === "caller_turn_reply") {
+        return this.requestAssistantSpeech(
+          "Thanks for your patience. Could you tell me what the roofing team can help you with?",
+          request.reason,
+          { hangupAfterMark: request.hangupAfterMark, turnId }
+        );
+      }
+      return false;
+    }
+    const sent = this.requestAssistantSpeech(
+      sanitizedText,
+      request.reason,
+      {
+        hangupAfterMark: request.hangupAfterMark,
+        turnId
+      }
+    );
     if (sent) {
       if (request.hangup && !request.hangupAfterMark) {
         this.cleanup("call_completed");
       } else if (request.reason === "caller_turn_reply" && !this.openingSilence.isListeningForReason()) {
-        this.scheduleResponseWatchdog(turnId, request);
+        this.scheduleResponseWatchdog(turnId, { ...request, text: sanitizedText });
       }
       return true;
     }
-    this.pendingSpeech = request;
+    this.pendingSpeech = { ...request, text: sanitizedText };
     logWarn("caller_turn_reply_deferred", { callSid: this.callSid ?? void 0, turnId });
     return false;
   }

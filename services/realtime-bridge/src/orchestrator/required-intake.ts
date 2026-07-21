@@ -4,8 +4,10 @@ import { isAddressConfirmed } from "./address-confirmation.js";
 import {
   EARLY_CALLER_NAME_QUESTION,
   extractDamageOrCallReason,
+  extractExplicitCallerName,
   isCallerNameDeclinedSpeech,
   isCallerNameUnavailableSpeech,
+  isLikelyCallReasonSpeech,
   isPlausibleCallerName,
   isPlausibleServiceAddress,
   validateCallerNameCandidate,
@@ -313,6 +315,10 @@ export function applyDirectAnswerToMissingField(
         updated.caller_name_unavailable = true;
         updated.full_name = undefined;
         updated.name_needs_clarification = false;
+        break;
+      }
+
+      if (isLikelyCallReasonSpeech(trimmed) && !extractExplicitCallerName(trimmed)) {
         break;
       }
 

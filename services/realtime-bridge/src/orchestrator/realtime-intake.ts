@@ -55,6 +55,12 @@ import {
 import { preserveConfirmedFieldState } from "./safe-field-merge.js";
 import type { ConversationState } from "./conversation-state.js";
 import {
+  extractExplicitCallerName,
+  isLikelyCallReasonSpeech,
+  isOpeningReasonCaptureContext,
+  sanitizeInvalidStoredCallerName,
+} from "./field-validation.js";
+import {
   diffTrackedFields,
   isTurnDiagnosticsEnabled,
   logAnswerHandler,
@@ -94,17 +100,19 @@ export function mergeRealtimeCallerAnswer(
   options: {
     pendingQuestion?: PendingQuestionKey | null;
     conversationState?: ConversationState;
+    isFirstCallerTurn?: boolean;
   } = {},
 ): RealtimeFields {
   const conversationState = options.conversationState ?? "collecting_intake";
+  const sanitizedFields = sanitizeInvalidStoredCallerName(fields);
   const pendingQuestion = resolveActivePendingQuestion(
-    fields,
+    sanitizedFields,
     conversationState,
     options.pendingQuestion,
   );
 
-  const fieldsBeforeMerge = fields;
-  let updated = applyAnswerForPendingQuestion(fields, answer, callerPhone, pendingQuestion);
+  const fieldsBeforeMerge = sanitizedFields;
+  let updated = applyAnswerForPendingQuestion(sanitizedFields, answer, callerPhone, pendingQuestion);
   updated = {
     ...updated,
     pending_question: undefined,
@@ -118,7 +126,19 @@ export function mergeRealtimeCallerAnswer(
     updated = mergeExtractedFields(updated, extracted);
 
     const missingBeforeDirect = getMissingRequiredFields(updated);
-    if (missingBeforeDirect.length > 0 && pendingQuestion === null) {
+    const openingReasonTurn = isOpeningReasonCaptureContext(updated, {
+      isFirstCallerTurn: options.isFirstCallerTurn,
+    });
+    const skipDirectNameFromReasonSpeech =
+      openingReasonTurn &&
+      isLikelyCallReasonSpeech(answer) &&
+      !extractExplicitCallerName(answer);
+
+    if (
+      missingBeforeDirect.length > 0 &&
+      pendingQuestion === null &&
+      !skipDirectNameFromReasonSpeech
+    ) {
       updated = applyDirectAnswerToMissingField(updated, answer, callerPhone, null);
     }
   }
@@ -286,7 +306,7 @@ export function countNewlyFilledFields(
 }
 
 export function normalizeRealtimeFields(fields: RealtimeFields): RealtimeFields {
-  return {
+  return sanitizeInvalidStoredCallerName({
     ...fields,
     insurance_claim_started:
       fields.insurance_claim_started ??
@@ -295,7 +315,7 @@ export function normalizeRealtimeFields(fields: RealtimeFields): RealtimeFields 
     photos_available: normalizePhotosValue(fields.photos_available),
     emergency_or_active_leak:
       fields.emergency_or_active_leak ?? normalizeTriStateField(fields.active_leak),
-  };
+  });
 }
 
 export function toPersistedFields(fields: RealtimeFields): CollectedFields {

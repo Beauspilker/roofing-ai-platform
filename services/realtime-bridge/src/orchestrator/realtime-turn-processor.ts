@@ -66,6 +66,8 @@ import {
 import {
   buildNameClarificationPrompt,
   EARLY_CALLER_NAME_QUESTION,
+  isLikelyCallReasonSpeech,
+  isOpeningReasonCaptureContext,
   isPlausibleCallerName,
 } from "./field-validation.js";
 import {
@@ -186,6 +188,27 @@ function ensureNonEmptyReply(replyText: string, fallback: string): string {
   return trimmed || fallback;
 }
 
+function buildInvalidNameCaptureRepeatOutcome(input: {
+  fields: RealtimeFields;
+  speech: string;
+}): ReturnType<typeof processNameCaptureTurn> {
+  const attempts = (input.fields.name_clarification_attempts ?? 0) + 1;
+
+  return {
+    status: "repeat",
+    fields: {
+      ...input.fields,
+      name_pending_confirmation: undefined,
+      name_awaiting_repeat: true,
+      name_needs_clarification: true,
+      name_clarification_attempts: attempts,
+    },
+    replyText: buildNameClarificationPrompt(undefined, { askToSpell: attempts >= 2 }),
+    nameConfirmationRequested: false,
+    nameCorrected: false,
+  };
+}
+
 function processValidatedNameCaptureTurn(input: {
   fields: RealtimeFields;
   speech: string;
@@ -195,6 +218,16 @@ function processValidatedNameCaptureTurn(input: {
     speech: input.speech,
     confidence: null,
   });
+
+  if (outcome.status === "confirm") {
+    const pendingName = outcome.fields.name_pending_confirmation?.trim();
+
+    if (pendingName && !isPlausibleCallerName(pendingName)) {
+      return buildInvalidNameCaptureRepeatOutcome(input);
+    }
+
+    return outcome;
+  }
 
   if (outcome.status !== "accepted") {
     return outcome;
@@ -206,17 +239,7 @@ function processValidatedNameCaptureTurn(input: {
     return outcome;
   }
 
-  return {
-    status: "repeat",
-    fields: {
-      ...input.fields,
-      name_awaiting_repeat: true,
-      name_clarification_attempts: (input.fields.name_clarification_attempts ?? 0) + 1,
-    },
-    replyText: buildNameRepeatPrompt(),
-    nameConfirmationRequested: false,
-    nameCorrected: false,
-  };
+  return buildInvalidNameCaptureRepeatOutcome(input);
 }
 
 function buildCallbackConfirmationReply(fields: RealtimeFields): string {
@@ -395,6 +418,8 @@ function buildPostIntakeReply(
 function isNameCaptureTurn(
   fields: RealtimeFields,
   conversationState: ConversationState,
+  speech: string,
+  options: { isFirstCallerTurn?: boolean } = {},
 ): boolean {
   if (isAwaitingNameConfirmation(fields) || fields.name_awaiting_repeat === true) {
     return true;
@@ -404,7 +429,19 @@ function isNameCaptureTurn(
     return false;
   }
 
-  return getNextRequiredField(fields) === "full_name";
+  if (getNextRequiredField(fields) !== "full_name") {
+    return false;
+  }
+
+  if (isOpeningReasonCaptureContext(fields, options)) {
+    return false;
+  }
+
+  if (isLikelyCallReasonSpeech(speech)) {
+    return false;
+  }
+
+  return true;
 }
 
 export async function processRealtimeCallerTurn(
@@ -964,7 +1001,9 @@ export async function processRealtimeCallerTurn(
     };
   }
 
-  if (isNameCaptureTurn(fieldsBefore, conversationState)) {
+  if (isNameCaptureTurn(fieldsBefore, conversationState, trimmedSpeech, {
+    isFirstCallerTurn: input.isFirstCallerTurn,
+  })) {
     const nameOutcome = processValidatedNameCaptureTurn({
       fields: fieldsBefore,
       speech: trimmedSpeech,
@@ -1026,6 +1065,7 @@ export async function processRealtimeCallerTurn(
 
   let updatedFields = mergeRealtimeCallerAnswer(fieldsBefore, trimmedSpeech, callerPhone, {
     conversationState,
+    isFirstCallerTurn: input.isFirstCallerTurn,
   });
 
   if (isTurnDiagnosticsEnabled()) {

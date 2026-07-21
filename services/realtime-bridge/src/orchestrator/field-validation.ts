@@ -1,10 +1,45 @@
 const DAMAGE_AND_INTAKE_TERMS =
-  /\b(hail|storm|roof|roofing|leak|leaking|shingles?|damage|damaged|insurance|claim|adjuster|pictures?|photos?|tomorrow|morning|afternoon|evening|urgent|emergency|water|tree|wind|repair|replace|inspection|callback|address|property|number|yes|no|yeah|nope)\b/i;
+  /\b(hail(?:\s+damage)?|storm(?:\s+damage)?|roof(?:ing)?(?:\s+leak)?|roof\s+leak|leak(?:ing)?|missing\s+shingles?|shingles?|damage|damaged|insurance|claim|adjuster|estimate|inspection|replacement|pictures?|photos?|appointment|today|tomorrow|morning|afternoon|evening|urgent|emergency|water|tree(?:\s+damage)?|wind|gutter|repair|replace|callback|address|property|number|yes|no|yeah|nope|yep|nah|correct|right)\b/i;
 
 const PHONE_PATTERN = /(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/;
 
+const DATE_OR_TIME_PATTERN =
+  /\b(today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{1,2}(:\d{2})?\s*(am|pm)|\d{1,2}\/\d{1,2})\b/i;
+
+const EXPLICIT_NAME_INTRO_PATTERN =
+  /\b(?:my name is|name is|this is|i am|i'm|i am|call me)\s+[A-Za-z]/i;
+
 export function containsRoofingDamageLanguage(text: string): boolean {
   return DAMAGE_AND_INTAKE_TERMS.test(text.trim());
+}
+
+export function isLikelyCallReasonSpeech(speech: string): boolean {
+  const trimmed = speech.trim();
+
+  if (!trimmed) {
+    return false;
+  }
+
+  if (isPlausibleDamageDescription(trimmed)) {
+    return true;
+  }
+
+  return containsRoofingDamageLanguage(trimmed) && !EXPLICIT_NAME_INTRO_PATTERN.test(trimmed);
+}
+
+export function isOpeningReasonCaptureContext(
+  fields: { problem_description?: string; pending_question?: string },
+  options: { isFirstCallerTurn?: boolean } = {},
+): boolean {
+  if (options.isFirstCallerTurn === true) {
+    return true;
+  }
+
+  if (!fields.problem_description?.trim()) {
+    return true;
+  }
+
+  return fields.pending_question?.trim() === "call_reason";
 }
 
 export function isPlausibleCallerName(name: string): boolean {
@@ -27,6 +62,10 @@ export function isPlausibleCallerName(name: string): boolean {
   }
 
   if (containsRoofingDamageLanguage(trimmed)) {
+    return false;
+  }
+
+  if (DATE_OR_TIME_PATTERN.test(trimmed)) {
     return false;
   }
 
@@ -57,7 +96,7 @@ export function extractExplicitCallerName(speech: string): string | null {
 
 export function validateCallerNameCandidate(
   speech: string,
-  options: { isDirectNameAnswer?: boolean } = {},
+  options: { isDirectNameAnswer?: boolean; allowDirectNameWithoutIntro?: boolean } = {},
 ): { value: string | null; needsClarification: boolean } {
   const explicit = extractExplicitCallerName(speech);
 
@@ -67,15 +106,58 @@ export function validateCallerNameCandidate(
 
   const trimmed = speech.trim();
 
-  if (options.isDirectNameAnswer && isPlausibleCallerName(trimmed)) {
+  if (!trimmed) {
+    return { value: null, needsClarification: false };
+  }
+
+  if (
+    !options.isDirectNameAnswer &&
+    !options.allowDirectNameWithoutIntro &&
+    !EXPLICIT_NAME_INTRO_PATTERN.test(trimmed)
+  ) {
+    return { value: null, needsClarification: false };
+  }
+
+  if (isLikelyCallReasonSpeech(trimmed) || !isPlausibleCallerName(trimmed)) {
+    if (options.isDirectNameAnswer && trimmed.length > 0) {
+      return { value: null, needsClarification: true };
+    }
+
+    return { value: null, needsClarification: false };
+  }
+
+  if (options.isDirectNameAnswer || options.allowDirectNameWithoutIntro) {
     return { value: trimmed, needsClarification: false };
   }
 
-  if (options.isDirectNameAnswer && trimmed.length > 0) {
-    return { value: null, needsClarification: true };
+  return { value: null, needsClarification: false };
+}
+
+export function sanitizeInvalidStoredCallerName<
+  T extends {
+    full_name?: string;
+    problem_description?: string;
+    name_pending_confirmation?: string;
+    name_needs_clarification?: boolean;
+  },
+>(fields: T): T {
+  const storedName = fields.full_name?.trim();
+
+  if (!storedName || isPlausibleCallerName(storedName)) {
+    return fields;
   }
 
-  return { value: null, needsClarification: false };
+  const existingReason = fields.problem_description?.trim();
+  const restoredReason =
+    existingReason || extractDamageOrCallReason(storedName) || storedName;
+
+  return {
+    ...fields,
+    full_name: undefined,
+    name_pending_confirmation: undefined,
+    name_needs_clarification: false,
+    problem_description: restoredReason,
+  };
 }
 
 export function isPlausibleServiceAddress(address: string): boolean {
@@ -132,7 +214,7 @@ export function buildNameClarificationPrompt(
     return `I'm sorry, I heard "${currentGuess}," but I want to make sure I have your name right. Could you say or spell it one more time?`;
   }
 
-  return "I'm sorry, I didn't catch your name clearly. Could you say it one more time?";
+  return "I'm sorry, I didn't catch your name. Could you say it one more time?";
 }
 
 export function isCallerNameDeclinedSpeech(speech: string): boolean {

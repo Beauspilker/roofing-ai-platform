@@ -62,6 +62,7 @@ export type CollectedFields = {
   name_raw_speech?: string;
   name_awaiting_repeat?: boolean;
   name_confirmation_attempts?: number;
+  name_needs_clarification?: boolean;
 };
 
 type IntakeFieldKey = Exclude<

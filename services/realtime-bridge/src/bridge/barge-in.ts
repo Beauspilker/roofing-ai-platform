@@ -11,6 +11,8 @@ export type BargeInControllerOptions = {
   getActiveResponseId: () => string | null;
   getActiveItemId: () => string | null;
   onAssistantSpeakingChange: (speaking: boolean) => void;
+  onBargeIn?: () => void;
+  onTruncation?: () => void;
 };
 
 export class BargeInController {
@@ -50,6 +52,7 @@ export class BargeInController {
     });
 
     this.bargeInCount += 1;
+    this.options.onBargeIn?.();
 
     if (responseId) {
       this.options.sendOpenAiEvent({
@@ -67,6 +70,7 @@ export class BargeInController {
         content_index: 0,
         audio_end_ms: this.options.getPlayedDurationMs(),
       });
+      this.options.onTruncation?.();
     }
 
     if (streamSid) {

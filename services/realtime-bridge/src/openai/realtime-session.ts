@@ -139,6 +139,7 @@ export class OpenAiRealtimeSession {
         this.sessionReadyResolve = null;
         const reason = reasonBuffer.toString() || String(code);
         logWarn("openai_disconnected", { code, reason });
+        logWarn("audio_diag_openai_socket_closed", { code, reason });
         this.onDisconnect(reason);
       });
     });

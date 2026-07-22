@@ -1,6 +1,7 @@
 import type WebSocket from "ws";
 import type { BridgeConfig } from "../config.js";
 import { verifyStreamAuthToken } from "../auth/stream-token.js";
+import { CallAudioDiagnostics } from "../bridge/audio-diagnostics.js";
 import { BargeInController } from "../bridge/barge-in.js";
 import { CallTimingTracker } from "../bridge/call-timing.js";
 import { TurnTimingTracker } from "../bridge/turn-timing.js";
@@ -86,22 +87,26 @@ export class CallBridge {
   private responseCreateCount = 0;
   private openingResponseCreateCount = 0;
   private postOpeningResponseCreateCount = 0;
+  private readonly audioDiagnostics = new CallAudioDiagnostics();
 
   constructor(private readonly params: CallBridgeParams) {}
 
   start(): void {
     logInfo("twilio_stream_connected");
+    this.audioDiagnostics.recordTwilioStreamConnected();
 
     this.params.twilioSocket.on("message", (data) => {
       this.handleTwilioMessage(data.toString());
     });
 
     this.params.twilioSocket.on("close", () => {
+      this.audioDiagnostics.setTwilioSocketState("closed", "twilio_socket_closed");
       this.cleanup("twilio_socket_closed");
     });
 
     this.params.twilioSocket.on("error", (error) => {
       logError("twilio_socket_error", {}, error);
+      this.audioDiagnostics.setTwilioSocketState("error", "twilio_socket_error");
       this.cleanup("twilio_socket_error");
     });
   }
@@ -125,6 +130,12 @@ export class CallBridge {
         void this.handleStreamStart(event.start);
         break;
       case "media":
+        this.audioDiagnostics.recordTwilioInboundMedia({
+          sequenceNumber: event.sequenceNumber,
+          timestamp: event.media.timestamp,
+          payloadBytes: event.media.payload.length,
+          track: event.media.track,
+        });
         this.handleStreamMedia(event.media.payload);
         break;
       case "mark":
@@ -143,6 +154,11 @@ export class CallBridge {
     streamSid: string;
     callSid: string;
     customParameters?: Record<string, string>;
+    mediaFormat?: {
+      encoding?: string;
+      sampleRate?: number;
+      channels?: number;
+    };
   }): Promise<void> {
     this.streamSid = start.streamSid;
     this.callSid = start.callSid;
@@ -172,6 +188,14 @@ export class CallBridge {
       voice: this.params.config.openAiRealtimeVoice,
     });
 
+    this.audioDiagnostics.beginCall(start.callSid);
+    this.audioDiagnostics.recordTwilioStreamConnected({
+      streamSid: start.streamSid,
+      encoding: start.mediaFormat?.encoding,
+      sampleRate: start.mediaFormat?.sampleRate,
+      channels: start.mediaFormat?.channels,
+    });
+
     this.orchestrator = new SessionOrchestrator({
       callSid: start.callSid,
       callerPhone: this.callerPhone,
@@ -193,6 +217,12 @@ export class CallBridge {
       getActiveResponseId: () => this.openAi?.getActiveResponseId() ?? null,
       getActiveItemId: () => this.openAi?.getActiveItemId() ?? null,
       onAssistantSpeakingChange: () => {},
+      onBargeIn: () => {
+        this.audioDiagnostics.recordBargeIn(this.activeTurnId);
+      },
+      onTruncation: () => {
+        this.audioDiagnostics.recordTruncation(this.activeTurnId);
+      },
     });
 
     this.callTimeout = setTimeout(() => {
@@ -204,6 +234,7 @@ export class CallBridge {
       this.scheduleOpeningFallback();
       const connectPromise = this.openAi.connect().then(() => {
         this.callTiming.record("openai_connected", this.callSid ?? undefined);
+        this.audioDiagnostics.setOpenAiSocketState("open");
       });
       const initPromise = this.orchestrator.initialize();
       const sessionReadyPromise = connectPromise.then(() =>
@@ -357,6 +388,9 @@ export class CallBridge {
 
         this.turnTiming.record("response_create_sent", this.callSid ?? undefined, { turnId });
         logResponseCreateSent();
+        if (this.callSid) {
+          this.audioDiagnostics.recordResponseCreate(turnId, triggerReason);
+        }
       },
     );
 
@@ -509,6 +543,10 @@ export class CallBridge {
             activeTurnId: this.activeTurnId,
             responseTurnId: this.responseGuard.getResponseTurnId(),
           });
+          this.audioDiagnostics.recordDiscardedOpenAiDelta(
+            this.activeTurnId,
+            "stale_response_turn",
+          );
           break;
         }
 
@@ -518,6 +556,10 @@ export class CallBridge {
         });
         logFirstAssistantAudioReceived();
         this.responseGuard.onAssistantAudioDelta();
+        this.audioDiagnostics.recordOpenAiAudioDelta(
+          this.activeTurnId,
+          Buffer.from(delta, "base64").length,
+        );
         this.forwardAssistantAudio(delta);
         break;
       }
@@ -537,6 +579,7 @@ export class CallBridge {
       case "response.done":
         this.bargeIn?.handleResponseCompleted();
         this.responseGuard.onResponseDone();
+        this.audioDiagnostics.recordOpenAiResponseEvent("response.done", this.activeTurnId);
 
         if (this.responseGuard.wasLastResponseOpeningGreeting()) {
           this.sendOpeningNameQuestion();
@@ -567,6 +610,7 @@ export class CallBridge {
         break;
       case "response.failed":
         logWarn("openai_response_failed", { callSid: this.callSid ?? undefined });
+        this.audioDiagnostics.recordOpenAiResponseEvent("response.failed", this.activeTurnId);
         this.bargeIn?.handleResponseCancelled();
         this.responseGuard.onResponseFailed();
         this.pendingClientResponse = false;
@@ -577,6 +621,7 @@ export class CallBridge {
         break;
       case "response.cancelled":
       case "response.canceled":
+        this.audioDiagnostics.recordOpenAiResponseEvent(event.type, this.activeTurnId);
         this.bargeIn?.handleResponseCancelled();
         this.responseGuard.onResponseCancelled();
         this.pendingClientResponse = false;
@@ -831,6 +876,7 @@ export class CallBridge {
 
     const payloadBuffer = Buffer.from(base64Audio, "base64");
     this.playbackTracker.recordOutboundBytes(payloadBuffer.length);
+    this.audioDiagnostics.recordTwilioOutboundMedia(payloadBuffer.length);
 
     this.sendTwilioJson(
       buildTwilioMediaMessage(this.streamSid, base64Audio) as unknown as Record<
@@ -868,6 +914,9 @@ export class CallBridge {
 
   private sendTwilioJson(payload: Record<string, unknown>): void {
     if (this.closed || this.params.twilioSocket.readyState !== this.params.twilioSocket.OPEN) {
+      if (payload.event === "media") {
+        this.audioDiagnostics.recordTwilioSendBlocked("socket_not_open");
+      }
       return;
     }
 
@@ -875,6 +924,7 @@ export class CallBridge {
       this.params.twilioSocket.send(JSON.stringify(payload));
     } catch (error) {
       logError("twilio_send_failed", {}, error);
+      this.audioDiagnostics.recordTwilioSendBlocked("send_error");
     }
   }
 
@@ -901,6 +951,9 @@ export class CallBridge {
     });
 
     logInfo("call_bridge_cleanup", { reason, callSid: this.callSid ?? undefined });
+
+    this.audioDiagnostics.setOpenAiSocketState("closed", { reason });
+    this.audioDiagnostics.endCall(reason);
 
     if (this.callTimeout) {
       clearTimeout(this.callTimeout);

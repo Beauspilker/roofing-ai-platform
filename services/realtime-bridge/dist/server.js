@@ -130,6 +130,271 @@ function logError(event, fields = {}, error) {
   );
 }
 
+// src/bridge/audio-diagnostics.ts
+var RESPONSE_CREATE_TO_FIRST_DELTA_WARN_MS = 2e3;
+var AUDIO_DELTA_GAP_WARN_MS = 750;
+var EVENT_LOOP_LAG_WARN_MS = 100;
+function baseFields(context) {
+  return {
+    callId: context.callId,
+    ...context.turnId !== void 0 ? { turnId: context.turnId } : {}
+  };
+}
+function parseTwilioSequenceNumber(value) {
+  if (!value) {
+    return null;
+  }
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+function detectTwilioSequenceGap(previous, current) {
+  if (previous === null || current === null) {
+    return null;
+  }
+  const gap = current - previous;
+  return gap > 1 ? gap : null;
+}
+var CallAudioDiagnostics = class {
+  callId = "unknown";
+  activeTurnId = null;
+  twilioInboundSequence = null;
+  lastTwilioInboundAt = null;
+  lastTwilioOutboundAt = null;
+  twilioInboundFrames = 0;
+  twilioOutboundFrames = 0;
+  openAiSocketState = "unknown";
+  twilioSocketState = "unknown";
+  lastOpenAiDeltaAt = null;
+  openAiDeltaCountThisTurn = 0;
+  responseCreateAt = null;
+  responseCreateTurnId = null;
+  discardedDeltaCount = 0;
+  bargeInCount = 0;
+  truncationCount = 0;
+  outboundBlockedNotOpenCount = 0;
+  twilioSendErrorCount = 0;
+  eventLoopProbeTimer = null;
+  eventLoopProbeExpectedAt = null;
+  maxEventLoopLagMs = 0;
+  beginCall(callId) {
+    this.callId = callId;
+    this.twilioSocketState = "open";
+    logInfo("audio_diag_call_started", baseFields({ callId }));
+    this.startEventLoopProbe();
+  }
+  endCall(reason) {
+    logInfo("audio_diag_call_ended", {
+      ...baseFields({ callId: this.callId }),
+      reason,
+      twilioInboundFrames: this.twilioInboundFrames,
+      twilioOutboundFrames: this.twilioOutboundFrames,
+      discardedDeltaCount: this.discardedDeltaCount,
+      bargeInCount: this.bargeInCount,
+      truncationCount: this.truncationCount,
+      outboundBlockedNotOpenCount: this.outboundBlockedNotOpenCount,
+      twilioSendErrorCount: this.twilioSendErrorCount,
+      maxEventLoopLagMs: this.maxEventLoopLagMs,
+      openAiSocketState: this.openAiSocketState,
+      twilioSocketState: this.twilioSocketState
+    });
+    this.stopEventLoopProbe();
+  }
+  setTwilioSocketState(state, reason) {
+    this.twilioSocketState = state;
+    logInfo("audio_diag_twilio_socket_state", {
+      ...baseFields({ callId: this.callId }),
+      state,
+      ...reason ? { reason } : {}
+    });
+  }
+  setOpenAiSocketState(state, details = {}) {
+    this.openAiSocketState = state;
+    logInfo("audio_diag_openai_socket_state", {
+      ...baseFields({ callId: this.callId }),
+      state,
+      ...details
+    });
+  }
+  recordTwilioStreamConnected(details = {}) {
+    logInfo("audio_diag_twilio_media_stream_connected", {
+      ...baseFields({ callId: this.callId }),
+      ...details
+    });
+  }
+  recordTwilioInboundMedia(input) {
+    const now = Date.now();
+    const sequence = parseTwilioSequenceNumber(input.sequenceNumber);
+    const gap = detectTwilioSequenceGap(this.twilioInboundSequence, sequence);
+    if (gap !== null) {
+      logWarn("audio_diag_twilio_media_sequence_gap", {
+        ...baseFields({ callId: this.callId }),
+        previousSequence: this.twilioInboundSequence ?? void 0,
+        currentSequence: sequence ?? void 0,
+        skippedFrames: gap - 1
+      });
+    }
+    const interArrivalMs = this.lastTwilioInboundAt === null ? void 0 : now - this.lastTwilioInboundAt;
+    this.twilioInboundSequence = sequence ?? this.twilioInboundSequence;
+    this.lastTwilioInboundAt = now;
+    this.twilioInboundFrames += 1;
+    if (this.twilioInboundFrames === 1 || this.twilioInboundFrames % 250 === 0) {
+      logInfo("audio_diag_twilio_inbound_media", {
+        ...baseFields({ callId: this.callId }),
+        sequenceNumber: sequence ?? void 0,
+        payloadBytes: input.payloadBytes,
+        track: input.track,
+        interArrivalMs,
+        frameCount: this.twilioInboundFrames
+      });
+    }
+  }
+  recordTwilioOutboundMedia(payloadBytes) {
+    const now = Date.now();
+    const interArrivalMs = this.lastTwilioOutboundAt === null ? void 0 : now - this.lastTwilioOutboundAt;
+    this.lastTwilioOutboundAt = now;
+    this.twilioOutboundFrames += 1;
+    if (this.twilioOutboundFrames === 1 || this.twilioOutboundFrames % 100 === 0) {
+      logInfo("audio_diag_twilio_outbound_media", {
+        ...baseFields({ callId: this.callId, turnId: this.activeTurnId ?? void 0 }),
+        payloadBytes,
+        interArrivalMs,
+        frameCount: this.twilioOutboundFrames
+      });
+    }
+  }
+  recordTwilioSendBlocked(reason) {
+    if (reason === "socket_not_open") {
+      this.outboundBlockedNotOpenCount += 1;
+      logWarn("audio_diag_twilio_send_blocked_socket_not_open", {
+        ...baseFields({ callId: this.callId, turnId: this.activeTurnId ?? void 0 }),
+        twilioSocketState: this.twilioSocketState,
+        blockedCount: this.outboundBlockedNotOpenCount
+      });
+      return;
+    }
+    this.twilioSendErrorCount += 1;
+    logWarn("audio_diag_twilio_send_error", {
+      ...baseFields({ callId: this.callId, turnId: this.activeTurnId ?? void 0 }),
+      errorCount: this.twilioSendErrorCount
+    });
+  }
+  recordResponseCreate(turnId, reason) {
+    this.activeTurnId = turnId;
+    this.responseCreateTurnId = turnId;
+    this.responseCreateAt = Date.now();
+    this.openAiDeltaCountThisTurn = 0;
+    this.lastOpenAiDeltaAt = null;
+    logInfo("audio_diag_response_create", {
+      ...baseFields({ callId: this.callId, turnId }),
+      reason,
+      openAiSocketState: this.openAiSocketState
+    });
+  }
+  recordOpenAiAudioDelta(turnId, deltaBytes) {
+    const now = Date.now();
+    if (this.responseCreateAt !== null && this.openAiDeltaCountThisTurn === 0) {
+      const firstDeltaMs = now - this.responseCreateAt;
+      logInfo("audio_diag_first_audio_delta", {
+        ...baseFields({ callId: this.callId, turnId }),
+        elapsedMs: firstDeltaMs,
+        deltaBytes
+      });
+      if (firstDeltaMs > RESPONSE_CREATE_TO_FIRST_DELTA_WARN_MS) {
+        logWarn("audio_diag_first_audio_delta_slow", {
+          ...baseFields({ callId: this.callId, turnId }),
+          elapsedMs: firstDeltaMs,
+          thresholdMs: RESPONSE_CREATE_TO_FIRST_DELTA_WARN_MS
+        });
+      }
+    }
+    if (this.lastOpenAiDeltaAt !== null) {
+      const gapMs = now - this.lastOpenAiDeltaAt;
+      if (gapMs > AUDIO_DELTA_GAP_WARN_MS) {
+        logWarn("audio_diag_openai_audio_delta_gap", {
+          ...baseFields({ callId: this.callId, turnId }),
+          gapMs,
+          thresholdMs: AUDIO_DELTA_GAP_WARN_MS
+        });
+      }
+    }
+    this.lastOpenAiDeltaAt = now;
+    this.openAiDeltaCountThisTurn += 1;
+    this.activeTurnId = turnId;
+  }
+  recordDiscardedOpenAiDelta(turnId, reason) {
+    this.discardedDeltaCount += 1;
+    logWarn("audio_diag_openai_audio_delta_discarded", {
+      ...baseFields({ callId: this.callId, turnId }),
+      reason,
+      discardedCount: this.discardedDeltaCount
+    });
+  }
+  recordOpenAiResponseEvent(type, turnId) {
+    logInfo("audio_diag_openai_response_event", {
+      ...baseFields({ callId: this.callId, turnId: turnId ?? this.activeTurnId ?? void 0 }),
+      eventType: type,
+      openAiSocketState: this.openAiSocketState
+    });
+  }
+  recordBargeIn(turnId) {
+    this.bargeInCount += 1;
+    logInfo("audio_diag_barge_in", {
+      ...baseFields({ callId: this.callId, turnId: turnId ?? this.activeTurnId ?? void 0 }),
+      count: this.bargeInCount
+    });
+  }
+  recordTruncation(turnId) {
+    this.truncationCount += 1;
+    logInfo("audio_diag_truncation", {
+      ...baseFields({ callId: this.callId, turnId: turnId ?? this.activeTurnId ?? void 0 }),
+      count: this.truncationCount
+    });
+  }
+  recordOpenAiSendSkipped(payloadType, socketState) {
+    logWarn("audio_diag_openai_send_skipped", {
+      ...baseFields({ callId: this.callId, turnId: this.activeTurnId ?? void 0 }),
+      payloadType,
+      socketState
+    });
+  }
+  getSnapshotForTests() {
+    return {
+      twilioInboundFrames: this.twilioInboundFrames,
+      twilioOutboundFrames: this.twilioOutboundFrames,
+      discardedDeltaCount: this.discardedDeltaCount,
+      bargeInCount: this.bargeInCount
+    };
+  }
+  startEventLoopProbe() {
+    this.stopEventLoopProbe();
+    this.eventLoopProbeExpectedAt = Date.now() + 1e3;
+    this.eventLoopProbeTimer = setInterval(() => {
+      const expectedAt = this.eventLoopProbeExpectedAt;
+      const now = Date.now();
+      if (expectedAt !== null) {
+        const lagMs = now - expectedAt;
+        if (lagMs > EVENT_LOOP_LAG_WARN_MS) {
+          this.maxEventLoopLagMs = Math.max(this.maxEventLoopLagMs, lagMs);
+          logWarn("audio_diag_event_loop_lag", {
+            ...baseFields({ callId: this.callId, turnId: this.activeTurnId ?? void 0 }),
+            lagMs,
+            thresholdMs: EVENT_LOOP_LAG_WARN_MS
+          });
+        }
+      }
+      this.eventLoopProbeExpectedAt = now + 1e3;
+    }, 1e3);
+    this.eventLoopProbeTimer.unref?.();
+  }
+  stopEventLoopProbe() {
+    if (this.eventLoopProbeTimer) {
+      clearInterval(this.eventLoopProbeTimer);
+      this.eventLoopProbeTimer = null;
+    }
+    this.eventLoopProbeExpectedAt = null;
+  }
+};
+
 // src/twilio/messages.ts
 function parseTwilioStreamEvent(raw) {
   try {
@@ -195,6 +460,7 @@ var BargeInController = class {
       bargeInCount: this.bargeInCount + 1
     });
     this.bargeInCount += 1;
+    this.options.onBargeIn?.();
     if (responseId) {
       this.options.sendOpenAiEvent({
         type: "response.cancel",
@@ -210,6 +476,7 @@ var BargeInController = class {
         content_index: 0,
         audio_end_ms: this.options.getPlayedDurationMs()
       });
+      this.options.onTruncation?.();
     }
     if (streamSid) {
       this.options.sendTwilioMessage(
@@ -1477,6 +1744,7 @@ var SPOKEN_HOUR_WORDS = {
   eleven: 11,
   twelve: 12
 };
+var HOUR_TOKEN = "(\\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)";
 function parseHourToken(token) {
   const numeric = Number.parseInt(token, 10);
   if (Number.isFinite(numeric) && numeric >= 1 && numeric <= 12) {
@@ -1506,8 +1774,86 @@ function applyDaypartMeridiem(hour, daypart) {
   }
   return hour;
 }
+function applyMeridiemToHour(hour, meridiem, daypart) {
+  let resolved = hour;
+  if (meridiem === "pm" && resolved < 12) {
+    resolved += 12;
+  }
+  if (meridiem === "am" && resolved === 12) {
+    resolved = 0;
+  }
+  if (!meridiem && daypart) {
+    resolved = applyDaypartMeridiem(resolved, daypart);
+  }
+  return resolved;
+}
+function parseColloquialTimeFromSpeech(normalized, daypart) {
+  const quarterTo = normalized.match(
+    new RegExp(`\\bquarter to ${HOUR_TOKEN}\\b`, "i")
+  );
+  if (quarterTo) {
+    const targetHour = parseHourToken(quarterTo[1] ?? "");
+    if (targetHour === null) {
+      return null;
+    }
+    const hourToken = targetHour === 1 ? 12 : targetHour - 1;
+    const hour = applyMeridiemToHour(hourToken, void 0, daypart);
+    return { hour, minute: 45 };
+  }
+  const quarterAfter = normalized.match(
+    new RegExp(`\\bquarter (?:after|past) ${HOUR_TOKEN}\\b`, "i")
+  );
+  if (quarterAfter) {
+    const parsedHour = parseHourToken(quarterAfter[1] ?? "");
+    if (parsedHour === null) {
+      return null;
+    }
+    const hour = applyMeridiemToHour(parsedHour, void 0, daypart);
+    return { hour, minute: 15 };
+  }
+  const halfPast = normalized.match(new RegExp(`\\bhalf past ${HOUR_TOKEN}\\b`, "i"));
+  if (halfPast) {
+    const parsedHour = parseHourToken(halfPast[1] ?? "");
+    if (parsedHour === null) {
+      return null;
+    }
+    const hour = applyMeridiemToHour(parsedHour, void 0, daypart);
+    return { hour, minute: 30 };
+  }
+  const sharpTime = normalized.match(new RegExp(`\\b${HOUR_TOKEN}\\s+sharp\\b`, "i"));
+  if (sharpTime) {
+    const parsedHour = parseHourToken(sharpTime[1] ?? "");
+    if (parsedHour === null) {
+      return null;
+    }
+    const hour = applyMeridiemToHour(parsedHour, void 0, daypart);
+    return { hour, minute: 0 };
+  }
+  const oClockTime = normalized.match(
+    new RegExp(`\\b(?:at\\s+)?${HOUR_TOKEN}(?::(\\d{2}))?\\s+o\\s+clock\\b`, "i")
+  );
+  if (oClockTime) {
+    const parsedHour = parseHourToken(oClockTime[1] ?? "");
+    if (parsedHour === null) {
+      return null;
+    }
+    if (!daypart) {
+      return null;
+    }
+    const minute = Number.parseInt(oClockTime[2] ?? "0", 10);
+    const hour = applyMeridiemToHour(parsedHour, void 0, daypart);
+    return { hour, minute };
+  }
+  return null;
+}
 function parseTimeFromSpeech(normalized, daypart) {
-  const atTime = normalized.match(/\bat\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(am|pm)?/i);
+  const colloquial = parseColloquialTimeFromSpeech(normalized, daypart);
+  if (colloquial) {
+    return colloquial;
+  }
+  const atTime = normalized.match(
+    new RegExp(`\\bat\\s+${HOUR_TOKEN}(?::(\\d{2}))?\\s*(am|pm)?\\b`, "i")
+  );
   if (atTime) {
     const parsedHour = parseHourToken(atTime[1] ?? "");
     if (parsedHour === null) {
@@ -1654,9 +2000,9 @@ function weekdayIndex(name) {
   };
   return map[name.toLowerCase()] ?? null;
 }
-function parseScheduleSpeech(speech, now = /* @__PURE__ */ new Date(), timeZone = COMPANY_TIMEZONE) {
+function parseScheduleSpeech(speech, now = /* @__PURE__ */ new Date(), timeZone = COMPANY_TIMEZONE, options = {}) {
   try {
-    return parseScheduleSpeechInternal(speech, now, timeZone);
+    return parseScheduleSpeechInternal(speech, now, timeZone, options);
   } catch (error) {
     logScheduleParseError(error, speech);
     return {
@@ -1669,7 +2015,7 @@ function parseScheduleSpeech(speech, now = /* @__PURE__ */ new Date(), timeZone 
 function logScheduleParseError(error, speech) {
   logError("schedule_parse_failed", { speechLength: speech.trim().length }, error);
 }
-function parseScheduleSpeechInternal(speech, now = /* @__PURE__ */ new Date(), timeZone = COMPANY_TIMEZONE) {
+function parseScheduleSpeechInternal(speech, now = /* @__PURE__ */ new Date(), timeZone = COMPANY_TIMEZONE, options = {}) {
   const raw = speech.trim();
   const normalized = raw.toLowerCase().replace(/[^\w\s:]/g, " ").replace(/\s+/g, " ").trim();
   if (!normalized) {
@@ -1699,7 +2045,7 @@ function parseScheduleSpeechInternal(speech, now = /* @__PURE__ */ new Date(), t
       }
     }
   }
-  const daypart = extractDaypartFromSpeech(normalized);
+  const daypart = extractDaypartFromSpeech(normalized) ?? options.knownDaypart;
   const time = parseTimeFromSpeech(normalized, daypart);
   const hasMorning = daypart === "morning" || /\bmorning\b/.test(normalized);
   const hasAfternoon = daypart === "afternoon" || /\bafternoon\b/.test(normalized);
@@ -1829,12 +2175,28 @@ function parseScheduleSpeechInternal(speech, now = /* @__PURE__ */ new Date(), t
     };
   }
   const bareMeridiemPrompt = normalized.match(
-    /^(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*$/i
+    new RegExp(`^${HOUR_TOKEN}(?::(\\d{2}))?\\s*$`, "i")
   );
   if (bareMeridiemPrompt) {
     const parsedHour = parseHourToken(bareMeridiemPrompt[1] ?? "");
     if (parsedHour !== null) {
       const minute = Number.parseInt(bareMeridiemPrompt[2] ?? "0", 10);
+      const amHour = parsedHour === 12 ? 0 : parsedHour;
+      const pmHour = parsedHour < 12 ? parsedHour + 12 : parsedHour;
+      return {
+        status: "needs_time_clarification",
+        prompt: `Do you mean ${formatSpokenTime(amHour, minute)} or ${formatSpokenTime(pmHour, minute)}?`,
+        raw
+      };
+    }
+  }
+  const bareOClockPrompt = normalized.match(
+    new RegExp(`^${HOUR_TOKEN}(?::(\\d{2}))?\\s+o\\s+clock\\s*$`, "i")
+  );
+  if (bareOClockPrompt && !daypart) {
+    const parsedHour = parseHourToken(bareOClockPrompt[1] ?? "");
+    if (parsedHour !== null) {
+      const minute = Number.parseInt(bareOClockPrompt[2] ?? "0", 10);
       const amHour = parsedHour === 12 ? 0 : parsedHour;
       const pmHour = parsedHour < 12 ? parsedHour + 12 : parsedHour;
       return {
@@ -1896,7 +2258,9 @@ function isScheduleComplete(fields) {
 function processScheduleCapture(fields, speech, now = /* @__PURE__ */ new Date()) {
   try {
     const combined = `${fields.appointment_preference_raw ?? ""} ${speech}`.trim();
-    const parsed = parseScheduleSpeech(combined, now);
+    const parsed = parseScheduleSpeech(combined, now, COMPANY_TIMEZONE, {
+      knownDaypart: fields.schedule_daypart
+    });
     let updated = applyScheduleParseResult(
       {
         ...fields,
@@ -3367,6 +3731,7 @@ var OpenAiRealtimeSession = class {
         this.sessionReadyResolve = null;
         const reason = reasonBuffer.toString() || String(code);
         logWarn("openai_disconnected", { code, reason });
+        logWarn("audio_diag_openai_socket_closed", { code, reason });
         this.onDisconnect(reason);
       });
     });
@@ -7407,16 +7772,20 @@ var CallBridge = class {
   responseCreateCount = 0;
   openingResponseCreateCount = 0;
   postOpeningResponseCreateCount = 0;
+  audioDiagnostics = new CallAudioDiagnostics();
   start() {
     logInfo("twilio_stream_connected");
+    this.audioDiagnostics.recordTwilioStreamConnected();
     this.params.twilioSocket.on("message", (data) => {
       this.handleTwilioMessage(data.toString());
     });
     this.params.twilioSocket.on("close", () => {
+      this.audioDiagnostics.setTwilioSocketState("closed", "twilio_socket_closed");
       this.cleanup("twilio_socket_closed");
     });
     this.params.twilioSocket.on("error", (error) => {
       logError("twilio_socket_error", {}, error);
+      this.audioDiagnostics.setTwilioSocketState("error", "twilio_socket_error");
       this.cleanup("twilio_socket_error");
     });
   }
@@ -7437,6 +7806,12 @@ var CallBridge = class {
         void this.handleStreamStart(event.start);
         break;
       case "media":
+        this.audioDiagnostics.recordTwilioInboundMedia({
+          sequenceNumber: event.sequenceNumber,
+          timestamp: event.media.timestamp,
+          payloadBytes: event.media.payload.length,
+          track: event.media.track
+        });
         this.handleStreamMedia(event.media.payload);
         break;
       case "mark":
@@ -7472,6 +7847,13 @@ var CallBridge = class {
       streamSid: start.streamSid,
       voice: this.params.config.openAiRealtimeVoice
     });
+    this.audioDiagnostics.beginCall(start.callSid);
+    this.audioDiagnostics.recordTwilioStreamConnected({
+      streamSid: start.streamSid,
+      encoding: start.mediaFormat?.encoding,
+      sampleRate: start.mediaFormat?.sampleRate,
+      channels: start.mediaFormat?.channels
+    });
     this.orchestrator = new SessionOrchestrator({
       callSid: start.callSid,
       callerPhone: this.callerPhone,
@@ -7491,6 +7873,12 @@ var CallBridge = class {
       getActiveResponseId: () => this.openAi?.getActiveResponseId() ?? null,
       getActiveItemId: () => this.openAi?.getActiveItemId() ?? null,
       onAssistantSpeakingChange: () => {
+      },
+      onBargeIn: () => {
+        this.audioDiagnostics.recordBargeIn(this.activeTurnId);
+      },
+      onTruncation: () => {
+        this.audioDiagnostics.recordTruncation(this.activeTurnId);
       }
     });
     this.callTimeout = setTimeout(() => {
@@ -7501,6 +7889,7 @@ var CallBridge = class {
       this.scheduleOpeningFallback();
       const connectPromise = this.openAi.connect().then(() => {
         this.callTiming.record("openai_connected", this.callSid ?? void 0);
+        this.audioDiagnostics.setOpenAiSocketState("open");
       });
       const initPromise = this.orchestrator.initialize();
       const sessionReadyPromise = connectPromise.then(
@@ -7619,6 +8008,9 @@ var CallBridge = class {
         }
         this.turnTiming.record("response_create_sent", this.callSid ?? void 0, { turnId });
         logResponseCreateSent();
+        if (this.callSid) {
+          this.audioDiagnostics.recordResponseCreate(turnId, triggerReason);
+        }
       }
     );
     if (sent === "sent") {
@@ -7743,6 +8135,10 @@ var CallBridge = class {
             activeTurnId: this.activeTurnId,
             responseTurnId: this.responseGuard.getResponseTurnId()
           });
+          this.audioDiagnostics.recordDiscardedOpenAiDelta(
+            this.activeTurnId,
+            "stale_response_turn"
+          );
           break;
         }
         this.clearResponseWatchdog();
@@ -7751,6 +8147,10 @@ var CallBridge = class {
         });
         logFirstAssistantAudioReceived();
         this.responseGuard.onAssistantAudioDelta();
+        this.audioDiagnostics.recordOpenAiAudioDelta(
+          this.activeTurnId,
+          Buffer.from(delta, "base64").length
+        );
         this.forwardAssistantAudio(delta);
         break;
       }
@@ -7767,6 +8167,7 @@ var CallBridge = class {
       case "response.done":
         this.bargeIn?.handleResponseCompleted();
         this.responseGuard.onResponseDone();
+        this.audioDiagnostics.recordOpenAiResponseEvent("response.done", this.activeTurnId);
         if (this.responseGuard.wasLastResponseOpeningGreeting()) {
           this.sendOpeningNameQuestion();
           this.orchestrator?.onAssistantResponseDone();
@@ -7791,6 +8192,7 @@ var CallBridge = class {
         break;
       case "response.failed":
         logWarn("openai_response_failed", { callSid: this.callSid ?? void 0 });
+        this.audioDiagnostics.recordOpenAiResponseEvent("response.failed", this.activeTurnId);
         this.bargeIn?.handleResponseCancelled();
         this.responseGuard.onResponseFailed();
         this.pendingClientResponse = false;
@@ -7801,6 +8203,7 @@ var CallBridge = class {
         break;
       case "response.cancelled":
       case "response.canceled":
+        this.audioDiagnostics.recordOpenAiResponseEvent(event.type, this.activeTurnId);
         this.bargeIn?.handleResponseCancelled();
         this.responseGuard.onResponseCancelled();
         this.pendingClientResponse = false;
@@ -8000,6 +8403,7 @@ var CallBridge = class {
     }
     const payloadBuffer = Buffer.from(base64Audio, "base64");
     this.playbackTracker.recordOutboundBytes(payloadBuffer.length);
+    this.audioDiagnostics.recordTwilioOutboundMedia(payloadBuffer.length);
     this.sendTwilioJson(
       buildTwilioMediaMessage(this.streamSid, base64Audio)
     );
@@ -8028,12 +8432,16 @@ var CallBridge = class {
   }
   sendTwilioJson(payload) {
     if (this.closed || this.params.twilioSocket.readyState !== this.params.twilioSocket.OPEN) {
+      if (payload.event === "media") {
+        this.audioDiagnostics.recordTwilioSendBlocked("socket_not_open");
+      }
       return;
     }
     try {
       this.params.twilioSocket.send(JSON.stringify(payload));
     } catch (error) {
       logError("twilio_send_failed", {}, error);
+      this.audioDiagnostics.recordTwilioSendBlocked("send_error");
     }
   }
   sendTwilioClose() {
@@ -8055,6 +8463,8 @@ var CallBridge = class {
       leadPreserved: true
     });
     logInfo("call_bridge_cleanup", { reason, callSid: this.callSid ?? void 0 });
+    this.audioDiagnostics.setOpenAiSocketState("closed", { reason });
+    this.audioDiagnostics.endCall(reason);
     if (this.callTimeout) {
       clearTimeout(this.callTimeout);
       this.callTimeout = null;

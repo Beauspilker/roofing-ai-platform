@@ -146,6 +146,72 @@ test("opening name completion asks one reason question", async () => {
   );
 });
 
+test("tomorrow afternoon plus 2 o'clock resolves to 2 PM", () => {
+  const initial = processScheduleCapture({}, "Tomorrow afternoon", JULY_20_2026);
+  const resolved = processScheduleCapture(initial.fields, "2 o'clock", JULY_20_2026);
+  assert.match(resolved.confirmationPrompt ?? "", /2:00 PM/i);
+});
+
+test("known afternoon plus at 2 resolves to 2 PM", () => {
+  const initial = processScheduleCapture({}, "Tomorrow afternoon", JULY_20_2026);
+  const resolved = processScheduleCapture(initial.fields, "at 2", JULY_20_2026);
+  assert.match(resolved.confirmationPrompt ?? "", /2:00 PM/i);
+});
+
+test("known morning plus 9 o'clock resolves to 9 AM", () => {
+  const resolved = processScheduleCapture(
+    {
+      appointment_preference_raw: "tomorrow morning",
+      schedule_pending_clarification: true,
+      schedule_daypart: "morning",
+    },
+    "9 o'clock",
+    JULY_20_2026,
+  );
+  assert.match(resolved.confirmationPrompt ?? "", /9:00 AM/i);
+});
+
+test("known evening plus 7 o'clock resolves to 7 PM", () => {
+  const resolved = processScheduleCapture(
+    {
+      appointment_preference_raw: "tomorrow evening",
+      schedule_pending_clarification: true,
+      schedule_daypart: "evening",
+    },
+    "7 o'clock",
+    JULY_20_2026,
+  );
+  assert.match(resolved.confirmationPrompt ?? "", /7:00 PM/i);
+});
+
+test("known afternoon plus half past 2 resolves to 2:30 PM", () => {
+  const initial = processScheduleCapture({}, "Tomorrow afternoon", JULY_20_2026);
+  const resolved = processScheduleCapture(initial.fields, "half past 2", JULY_20_2026);
+  assert.match(resolved.confirmationPrompt ?? "", /2:30 PM/i);
+});
+
+test("no daypart plus 2 o'clock asks AM or PM", () => {
+  const parsed = parseScheduleSpeech("2 o'clock", JULY_20_2026);
+  assert.equal(parsed.status, "needs_time_clarification");
+  if (parsed.status === "needs_time_clarification") {
+    assert.match(parsed.prompt, /AM or 2:00 PM/i);
+  }
+});
+
+test("valid 2 o'clock answer does not repeat specific-time question", () => {
+  const initial = processScheduleCapture({}, "Tomorrow afternoon", JULY_20_2026);
+  const resolved = processScheduleCapture(initial.fields, "2 o'clock", JULY_20_2026);
+  assert.equal(resolved.fields.schedule_pending_clarification, false);
+  assert.doesNotMatch(resolved.clarificationPrompt ?? "", /What time/i);
+  assert.match(resolved.confirmationPrompt ?? "", /2:00 PM/i);
+});
+
+test("2 o'clock confirmation is asked once", () => {
+  const initial = processScheduleCapture({}, "Tomorrow afternoon", JULY_20_2026);
+  const resolved = processScheduleCapture(initial.fields, "2 o'clock", JULY_20_2026);
+  assert.match(resolved.confirmationPrompt ?? "", /Is that correct/i);
+});
+
 test("tomorrow afternoon plus 2 resolves to 2 PM", () => {
   const initial = processScheduleCapture(
     {},

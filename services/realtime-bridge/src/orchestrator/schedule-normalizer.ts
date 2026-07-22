@@ -168,6 +168,15 @@ const SPOKEN_HOUR_WORDS: Record<string, number> = {
   twelve: 12,
 };
 
+const HOUR_TOKEN =
+  "(\\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)";
+
+type ScheduleDaypart = "morning" | "afternoon" | "evening";
+
+export type ScheduleParseOptions = {
+  knownDaypart?: ScheduleDaypart;
+};
+
 function parseHourToken(token: string): number | null {
   const numeric = Number.parseInt(token, 10);
 
@@ -213,11 +222,112 @@ function applyDaypartMeridiem(
   return hour;
 }
 
+function applyMeridiemToHour(
+  hour: number,
+  meridiem: string | undefined,
+  daypart: ScheduleDaypart | undefined,
+): number {
+  let resolved = hour;
+
+  if (meridiem === "pm" && resolved < 12) {
+    resolved += 12;
+  }
+  if (meridiem === "am" && resolved === 12) {
+    resolved = 0;
+  }
+  if (!meridiem && daypart) {
+    resolved = applyDaypartMeridiem(resolved, daypart);
+  }
+
+  return resolved;
+}
+
+function parseColloquialTimeFromSpeech(
+  normalized: string,
+  daypart?: ScheduleDaypart,
+): { hour: number; minute: number; endHour?: number; endMinute?: number } | null {
+  const quarterTo = normalized.match(
+    new RegExp(`\\bquarter to ${HOUR_TOKEN}\\b`, "i"),
+  );
+  if (quarterTo) {
+    const targetHour = parseHourToken(quarterTo[1] ?? "");
+    if (targetHour === null) {
+      return null;
+    }
+
+    const hourToken = targetHour === 1 ? 12 : targetHour - 1;
+    const hour = applyMeridiemToHour(hourToken, undefined, daypart);
+    return { hour, minute: 45 };
+  }
+
+  const quarterAfter = normalized.match(
+    new RegExp(`\\bquarter (?:after|past) ${HOUR_TOKEN}\\b`, "i"),
+  );
+  if (quarterAfter) {
+    const parsedHour = parseHourToken(quarterAfter[1] ?? "");
+    if (parsedHour === null) {
+      return null;
+    }
+
+    const hour = applyMeridiemToHour(parsedHour, undefined, daypart);
+    return { hour, minute: 15 };
+  }
+
+  const halfPast = normalized.match(new RegExp(`\\bhalf past ${HOUR_TOKEN}\\b`, "i"));
+  if (halfPast) {
+    const parsedHour = parseHourToken(halfPast[1] ?? "");
+    if (parsedHour === null) {
+      return null;
+    }
+
+    const hour = applyMeridiemToHour(parsedHour, undefined, daypart);
+    return { hour, minute: 30 };
+  }
+
+  const sharpTime = normalized.match(new RegExp(`\\b${HOUR_TOKEN}\\s+sharp\\b`, "i"));
+  if (sharpTime) {
+    const parsedHour = parseHourToken(sharpTime[1] ?? "");
+    if (parsedHour === null) {
+      return null;
+    }
+
+    const hour = applyMeridiemToHour(parsedHour, undefined, daypart);
+    return { hour, minute: 0 };
+  }
+
+  const oClockTime = normalized.match(
+    new RegExp(`\\b(?:at\\s+)?${HOUR_TOKEN}(?::(\\d{2}))?\\s+o\\s+clock\\b`, "i"),
+  );
+  if (oClockTime) {
+    const parsedHour = parseHourToken(oClockTime[1] ?? "");
+    if (parsedHour === null) {
+      return null;
+    }
+
+    if (!daypart) {
+      return null;
+    }
+
+    const minute = Number.parseInt(oClockTime[2] ?? "0", 10);
+    const hour = applyMeridiemToHour(parsedHour, undefined, daypart);
+    return { hour, minute };
+  }
+
+  return null;
+}
+
 function parseTimeFromSpeech(
   normalized: string,
-  daypart?: "morning" | "afternoon" | "evening",
+  daypart?: ScheduleDaypart,
 ): { hour: number; minute: number; endHour?: number; endMinute?: number } | null {
-  const atTime = normalized.match(/\bat\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(am|pm)?/i);
+  const colloquial = parseColloquialTimeFromSpeech(normalized, daypart);
+  if (colloquial) {
+    return colloquial;
+  }
+
+  const atTime = normalized.match(
+    new RegExp(`\\bat\\s+${HOUR_TOKEN}(?::(\\d{2}))?\\s*(am|pm)?\\b`, "i"),
+  );
   if (atTime) {
     const parsedHour = parseHourToken(atTime[1] ?? "");
     if (parsedHour === null) {
@@ -390,9 +500,10 @@ export function parseScheduleSpeech(
   speech: string,
   now: Date = new Date(),
   timeZone: string = COMPANY_TIMEZONE,
+  options: ScheduleParseOptions = {},
 ): ScheduleParseResult {
   try {
-    return parseScheduleSpeechInternal(speech, now, timeZone);
+    return parseScheduleSpeechInternal(speech, now, timeZone, options);
   } catch (error) {
     logScheduleParseError(error, speech);
     return {
@@ -411,6 +522,7 @@ function parseScheduleSpeechInternal(
   speech: string,
   now: Date = new Date(),
   timeZone: string = COMPANY_TIMEZONE,
+  options: ScheduleParseOptions = {},
 ): ScheduleParseResult {
   const raw = speech.trim();
   const normalized = raw.toLowerCase().replace(/[^\w\s:]/g, " ").replace(/\s+/g, " ").trim();
@@ -446,7 +558,8 @@ function parseScheduleSpeechInternal(
     }
   }
 
-  const daypart = extractDaypartFromSpeech(normalized);
+  const daypart =
+    extractDaypartFromSpeech(normalized) ?? options.knownDaypart;
   const time = parseTimeFromSpeech(normalized, daypart);
   const hasMorning = daypart === "morning" || /\bmorning\b/.test(normalized);
   const hasAfternoon = daypart === "afternoon" || /\bafternoon\b/.test(normalized);
@@ -593,12 +706,29 @@ function parseScheduleSpeechInternal(
   }
 
   const bareMeridiemPrompt = normalized.match(
-    /^(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*$/i,
+    new RegExp(`^${HOUR_TOKEN}(?::(\\d{2}))?\\s*$`, "i"),
   );
   if (bareMeridiemPrompt) {
     const parsedHour = parseHourToken(bareMeridiemPrompt[1] ?? "");
     if (parsedHour !== null) {
       const minute = Number.parseInt(bareMeridiemPrompt[2] ?? "0", 10);
+      const amHour = parsedHour === 12 ? 0 : parsedHour;
+      const pmHour = parsedHour < 12 ? parsedHour + 12 : parsedHour;
+      return {
+        status: "needs_time_clarification",
+        prompt: `Do you mean ${formatSpokenTime(amHour, minute)} or ${formatSpokenTime(pmHour, minute)}?`,
+        raw,
+      };
+    }
+  }
+
+  const bareOClockPrompt = normalized.match(
+    new RegExp(`^${HOUR_TOKEN}(?::(\\d{2}))?\\s+o\\s+clock\\s*$`, "i"),
+  );
+  if (bareOClockPrompt && !daypart) {
+    const parsedHour = parseHourToken(bareOClockPrompt[1] ?? "");
+    if (parsedHour !== null) {
+      const minute = Number.parseInt(bareOClockPrompt[2] ?? "0", 10);
       const amHour = parsedHour === 12 ? 0 : parsedHour;
       const pmHour = parsedHour < 12 ? parsedHour + 12 : parsedHour;
       return {
@@ -699,7 +829,9 @@ export function processScheduleCapture(
 } {
   try {
     const combined = `${fields.appointment_preference_raw ?? ""} ${speech}`.trim();
-    const parsed = parseScheduleSpeech(combined, now);
+    const parsed = parseScheduleSpeech(combined, now, COMPANY_TIMEZONE, {
+      knownDaypart: fields.schedule_daypart,
+    });
     let updated = applyScheduleParseResult(
       {
         ...fields,

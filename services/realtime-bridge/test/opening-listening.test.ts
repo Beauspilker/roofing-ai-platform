@@ -81,37 +81,42 @@ test("caller says hail damage captures reason and selects caller_name next", asy
   const fields = outcome.session?.collected_fields as RealtimeFields;
   assert.match(fields.problem_description ?? "", /hail damage/i);
   assert.equal(getNextRequiredField(fields), "full_name");
-  assert.match(outcome.replyText, /Could I start with your name/i);
+  assert.match(outcome.replyText, /first and last name/i);
 });
 
-test("caller says My name is Beau and I have hail damage skips caller_name question", async () => {
+test("caller says My name is Beau and I have hail damage asks for last name", async () => {
   const policy = new AcknowledgmentPolicy();
   const outcome = await processRealtimeCallerTurn({
     session: mockSession,
     callSid: "CA123",
     callerPhone: "+15551234567",
     speechResult: "My name is Beau and I have hail damage.",
-    conversationState: "collecting_intake",
+    conversationState: "awaiting_opening_name",
     acknowledgmentPolicy: policy,
     isFirstCallerTurn: true,
     hasReceivedMeaningfulCallerTranscript: true,
   });
 
   const fields = outcome.session?.collected_fields as RealtimeFields;
-  assert.equal(fields.full_name, "Beau");
-  assert.match(fields.problem_description ?? "", /hail damage/i);
-  assert.doesNotMatch(outcome.replyText, /Could I start with your name/i);
+  assert.equal(fields.caller_first_name, "Beau");
+  assert.match(outcome.replyText, /last name/i);
 });
 
-test("response.done after greeting enters listening mode and blocks caller reply without transcript", () => {
+test("response.done after greeting waits for name question before listening", () => {
   const guard = new ResponseStateGuard();
 
   guard.recordTrigger("opening_greeting");
   guard.onResponseDone();
 
-  assert.equal(guard.isListeningForOpeningReason(), true);
+  assert.equal(guard.isListeningForOpeningReason(), false);
   assert.equal(guard.canTriggerResponse("caller_turn_reply"), false);
   assert.equal(guard.wasLastResponseOpeningGreeting(), true);
+
+  guard.recordTrigger("opening_name_question");
+  guard.onResponseDone();
+
+  assert.equal(guard.isListeningForOpeningReason(), true);
+  assert.equal(guard.canTriggerResponse("caller_turn_reply"), false);
 });
 
 test("recovery caller reply remains blocked during opening silence listen", () => {
@@ -145,7 +150,7 @@ test("meaningful caller answer can advance opening after reason is captured", ()
   );
 });
 
-test("pendingQuestion remains call_reason until caller responds meaningfully", async () => {
+test("pendingQuestion remains caller_name until caller responds meaningfully", async () => {
   const orchestrator = new SessionOrchestrator({
     callSid: "CA123",
     callerPhone: "+15551234567",
@@ -156,13 +161,14 @@ test("pendingQuestion remains call_reason until caller responds meaningfully", a
     ...mockSession,
   };
 
-  orchestrator.onOpeningGreetingComplete();
+  orchestrator.markOpeningDelivered();
+  orchestrator.onOpeningNameQuestionComplete();
 
   const session = orchestrator.getSession();
   const fields = (session?.collected_fields ?? {}) as RealtimeFields;
-  assert.equal(orchestrator.getConversationState(), "listening_for_reason");
-  assert.equal(fields.pending_question, "reason_for_call");
-  assert.equal(resolvePendingQuestion(fields, "listening_for_reason"), "reason_for_call");
+  assert.equal(orchestrator.getConversationState(), "awaiting_opening_name");
+  assert.equal(fields.pending_question, "caller_name");
+  assert.equal(resolvePendingQuestion(fields, "awaiting_opening_name"), "caller_name");
 
   const ignored = await orchestrator.handleCallerTranscript("hello");
   assert.equal(ignored, null);

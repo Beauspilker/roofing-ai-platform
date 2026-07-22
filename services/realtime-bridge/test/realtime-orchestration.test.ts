@@ -33,6 +33,7 @@ import {
 } from "../src/orchestrator/realtime-intake.js";
 import {
   getMissingRequiredFields as getMissingFromGate,
+  isCallerNameResolved,
   isRequiredIntakeComplete as gateComplete,
 } from "../src/orchestrator/required-intake.js";
 import {
@@ -68,7 +69,9 @@ import {
 
 const completeIntakeFields: RealtimeFields = {
   problem_description: "leak",
-  full_name: "Beau",
+  full_name: "Beau Spilker",
+  caller_first_name: "Beau",
+  caller_last_name: "Spilker",
   callback_phone: "+15551234567",
   callback_phone_confirmed: true,
   address: "123 Main Street",
@@ -275,20 +278,21 @@ test("required intake completion is determined by code not model judgment", () =
 
 test("multiple fields in one caller response are all stored", () => {
   const speech =
-    "I'm John, the address is 123 Main Street, and a tree hit the roof yesterday.";
+    "I'm John Smith, the address is 123 Main Street, and a tree hit the roof yesterday.";
   const extracted = extractAllFieldsFromTranscript(speech, "+15551234567");
   const merged = mergeExtractedFields({}, extracted);
 
-  assert.equal(merged.full_name, "John");
+  assert.equal(merged.full_name, "John Smith");
   assert.match(merged.address ?? "", /123 Main Street/i);
   assert.match(merged.problem_description ?? "", /tree hit the roof/i);
+  assert.ok(isCallerNameResolved(merged));
   assert.equal(countNewlyFilledFields({}, merged), 2);
 });
 
 test("already answered fields are not asked again after multi-field capture", () => {
   const fields = mergeRealtimeCallerAnswer(
     {},
-    "I'm John, the address is 123 Main Street, and a tree hit the roof yesterday.",
+    "I'm John Smith, the address is 123 Main Street, and a tree hit the roof yesterday.",
     "+15551234567",
   );
 
@@ -417,7 +421,10 @@ test("summary confirmation does not include closing in the same response", async
   const policy = new AcknowledgmentPolicy();
   const fields: RealtimeFields = {
     problem_description: "a leak",
-    full_name: "Beau",
+    caller_first_name: "Beau",
+    caller_last_name: "Spilker",
+    full_name: "Beau Spilker",
+    opening_name_complete: true,
     callback_phone: "+15551234567",
     callback_phone_confirmed: true,
     address: "123 Main Street, Beatrice, Nebraska",
@@ -582,15 +589,18 @@ test("company phone remains separate from customer callback", () => {
 test("opening greeting contains no intake fields", () => {
   assert.equal(
     REALTIME_OPENING_GREETING,
-    "Thank you for calling Beau's Roofing. I'm Beau's Roofing's AI assistant. How can I help you today?",
+    "Thank you for calling Beau's Roofing. I'm Beau's Roofing's AI assistant.",
   );
+  assert.doesNotMatch(REALTIME_OPENING_GREETING, /How can I help you today/i);
 });
 
 test("summary confirmation sets summary_confirmed for lead creation", async () => {
   const policy = new AcknowledgmentPolicy();
   const fields: RealtimeFields = {
     problem_description: "leak",
-    full_name: "Beau",
+    full_name: "Beau Spilker",
+    caller_first_name: "Beau",
+    caller_last_name: "Spilker",
     callback_phone: "+15551234567",
     callback_phone_confirmed: true,
     address: "123 Main Street",
@@ -642,7 +652,9 @@ test("address is read back and confirmed", async () => {
   const policy = new AcknowledgmentPolicy();
   let fields: RealtimeFields = {
     problem_description: "leak",
-    full_name: "John",
+    full_name: "John Smith",
+    caller_first_name: "John",
+    caller_last_name: "Smith",
     callback_phone: "+14025551234",
     callback_phone_confirmed: true,
   };
@@ -810,7 +822,12 @@ test("intake reply can include brief acknowledgment before next question", () =>
     callback_phone_confirmed: true,
   };
 
-  const reply = buildIntakeReply(policy, fields, "yes", "+14025551234", 1);
+  const reply = buildIntakeReply(policy, {
+    ...fields,
+    full_name: "John Smith",
+    caller_first_name: "John",
+    caller_last_name: "Smith",
+  }, "yes", "+14025551234", 1);
   assert.match(reply, /property address/i);
 });
 

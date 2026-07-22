@@ -15,6 +15,7 @@ import {
   validateCallerNameCandidate,
 } from "./field-validation.js";
 import { normalizeCallReasonFromSpeech } from "./call-reason-handling.js";
+import { hasCompleteCallerName, processCallerNameTurn } from "./caller-name-intake.js";
 import { isScheduleComplete } from "./schedule-normalizer.js";
 import { needsCallbackConfirmation, mapRequiredFieldToPending } from "./pending-question.js";
 import {
@@ -72,7 +73,7 @@ export function isCallerNameResolved(fields: RealtimeFields): boolean {
     return true;
   }
 
-  return hasValue(fields.full_name) && isPlausibleCallerName(fields.full_name ?? "");
+  return hasCompleteCallerName(fields);
 }
 
 function isAdditionalNotesResolved(fields: RealtimeFields): boolean {
@@ -156,16 +157,16 @@ export function needsImmediateSafetyClarification(fields: RealtimeFields): boole
 function collectMissingFieldsInPriorityOrder(fields: RealtimeFields): RequiredFieldKey[] {
   const missing: RequiredFieldKey[] = [];
 
-  if (!hasValue(fields.problem_description)) {
-    missing.push("problem_description");
-  }
-
   if (needsImmediateSafetyClarification(fields)) {
     missing.push("emergency_or_active_leak");
   }
 
   if (!isCallerNameResolved(fields)) {
     missing.push("full_name");
+  }
+
+  if (!hasValue(fields.problem_description)) {
+    missing.push("problem_description");
   }
 
   if (!isCallbackComplete(fields)) {
@@ -262,6 +263,7 @@ export function canCloseCall(
 
 export function blocksPrematureCallClosing(conversationState: ConversationState): boolean {
   return (
+    conversationState === "awaiting_opening_name" ||
     conversationState === "listening_for_reason" ||
     conversationState === "collecting_intake" ||
     conversationState === "awaiting_callback_confirmation" ||
@@ -277,7 +279,7 @@ export function getNextRequiredField(fields: RealtimeFields): RequiredFieldKey |
 }
 
 const FIELD_QUESTIONS: Record<RequiredFieldKey, string> = {
-  problem_description: "What's going on with the roof?",
+  problem_description: "What can the roofing team help you with today?",
   full_name: EARLY_CALLER_NAME_QUESTION,
   callback_phone: "What's the best callback number?",
   address: "What's the property address?",
@@ -308,6 +310,7 @@ export function getRequiredFieldQuestion(
 
 const CONTEXTUAL_TRANSITIONS: Partial<Record<RequiredFieldKey, string>> = {
   full_name: EARLY_CALLER_NAME_QUESTION,
+  problem_description: "What can the roofing team help you with today?",
   address: "What's the property address?",
   emergency_or_active_leak: "Is there an active leak or water getting inside right now?",
   urgency: "How urgent is this?",
@@ -374,17 +377,7 @@ export function applyDirectAnswerToMissingField(
       }
 
       if (!isCallerNameResolved(updated)) {
-        const validated = validateCallerNameCandidate(trimmed, { isDirectNameAnswer: true });
-        if (validated.value) {
-          updated.full_name = validated.value.slice(0, 100);
-          updated.name_needs_clarification = false;
-          updated.caller_name_declined = false;
-          updated.caller_name_unavailable = false;
-        } else if (validated.needsClarification) {
-          updated.name_needs_clarification = true;
-          updated.name_clarification_attempts =
-            (updated.name_clarification_attempts ?? 0) + 1;
-        }
+        updated = processCallerNameTurn(updated, trimmed).fields;
       }
       break;
     }

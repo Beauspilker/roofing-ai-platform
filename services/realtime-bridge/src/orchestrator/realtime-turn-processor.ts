@@ -70,6 +70,12 @@ import {
   type OpeningSilencePrompt,
 } from "../bridge/opening-listening.js";
 import {
+  buildCallReasonQuestionAfterName,
+  hasCompleteCallerName,
+  OPENING_CALLER_NAME_QUESTION,
+  processCallerNameTurn,
+} from "./caller-name-intake.js";
+import {
   applyCallReasonCapture,
   blocksGenericReadbackConfirmation,
   buildCallReasonResolvedReply,
@@ -236,6 +242,10 @@ function shouldHandlePendingCallReason(
   fields: RealtimeFields,
   conversationState: ConversationState,
 ): boolean {
+  if (conversationState === "awaiting_opening_name") {
+    return false;
+  }
+
   const pending = resolvePendingQuestion(fields, conversationState);
   return (
     isListeningForCallReason(conversationState, pending) &&
@@ -373,28 +383,14 @@ function buildPostIntakeReply(
   const nextRequired = getNextRequiredField(updatedFields);
 
   if (
-    options.isFirstCallerTurn === true &&
-    canAdvanceAfterOpening(updatedFields, {
-      hasReceivedMeaningfulCallerTranscript: options.hasReceivedMeaningfulCallerTranscript,
-    }) &&
-    updatedFields.intake_intro_delivered !== true &&
-    updatedFields.problem_description?.trim() &&
-    (nextRequired === "full_name" || nextRequired === "emergency_or_active_leak")
+    isCallerNameResolved(updatedFields) &&
+    !updatedFields.problem_description?.trim() &&
+    nextRequired === "problem_description"
   ) {
-    const question =
-      nextRequired === "full_name"
-        ? EARLY_CALLER_NAME_QUESTION
-        : getNaturalTransitionQuestion(nextRequired, updatedFields, callerPhone);
-
     return packagePostIntakeResult(
-      {
-        ...updatedFields,
-        intake_intro_delivered: true,
-      },
-      ensureSingleIntakeQuestion(
-        `${REALTIME_INTRO_TRANSITION} ${question}`.replace(/\s+/g, " ").trim(),
-      ),
-      "collecting_intake",
+      attachPendingQuestion(updatedFields, "reason_for_call"),
+      ensureSingleIntakeQuestion(buildCallReasonQuestionAfterName(updatedFields)),
+      "listening_for_reason",
       options,
     );
   }
@@ -479,7 +475,7 @@ function isNameCaptureTurn(
   speech: string,
   options: { isFirstCallerTurn?: boolean } = {},
 ): boolean {
-  if (conversationState === "listening_for_reason") {
+  if (conversationState === "awaiting_opening_name" || conversationState === "listening_for_reason") {
     return false;
   }
 
@@ -1087,6 +1083,70 @@ export async function processRealtimeCallerTurn(
       session,
       nextConversationState: "awaiting_summary_confirmation",
     };
+  }
+
+  if (conversationState === "awaiting_opening_name") {
+    const nameOutcome = processCallerNameTurn(fieldsBefore, trimmedSpeech);
+    let updatedFields = nameOutcome.fields;
+
+    if (!nameOutcome.complete) {
+      updatedFields = attachPendingQuestion(updatedFields, "caller_name");
+
+      session = applyLocalSessionUpdate(session, {
+        collectedFields: updatedFields,
+        currentQuestion: nameOutcome.replyText ?? OPENING_CALLER_NAME_QUESTION,
+      });
+
+      persistTurnAsync(callSid, {
+        collectedFields: updatedFields,
+        currentQuestion: nameOutcome.replyText ?? OPENING_CALLER_NAME_QUESTION,
+        callerSpeech: trimmedSpeech,
+        assistantReply: nameOutcome.replyText ?? OPENING_CALLER_NAME_QUESTION,
+      });
+
+      return finishTurn(input, {
+        replyText: ensureSingleIntakeQuestion(
+          nameOutcome.replyText ?? OPENING_CALLER_NAME_QUESTION,
+        ),
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: "awaiting_opening_name",
+      });
+    }
+
+    updatedFields = attachPendingQuestion(
+      {
+        ...updatedFields,
+        opening_name_complete: true,
+        intake_intro_delivered: true,
+      },
+      "reason_for_call",
+    );
+
+    const reasonQuestion = nameOutcome.replyText
+      ? `${nameOutcome.replyText} What can the roofing team help you with today?`
+      : buildCallReasonQuestionAfterName(updatedFields);
+
+    session = applyLocalSessionUpdate(session, {
+      collectedFields: updatedFields,
+      currentQuestion: reasonQuestion,
+    });
+
+    persistTurnAsync(callSid, {
+      collectedFields: updatedFields,
+      currentQuestion: reasonQuestion,
+      callerSpeech: trimmedSpeech,
+      assistantReply: reasonQuestion,
+    });
+
+    return finishTurn(input, {
+      replyText: ensureSingleIntakeQuestion(reasonQuestion),
+      hangup: false,
+      hangupAfterMark: false,
+      session,
+      nextConversationState: "listening_for_reason",
+    });
   }
 
   if (shouldHandlePendingCallReason(fieldsBefore, conversationState)) {

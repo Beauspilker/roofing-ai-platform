@@ -59,7 +59,7 @@ test("opening response Hail damage captures reason and selects caller_name next"
   assert.equal(fields.full_name, undefined);
   assert.equal(getNextRequiredField(fields), "full_name");
   assert.equal(resolvePendingQuestion(fields, "collecting_intake"), "caller_name");
-  assert.match(outcome.replyText, /Could I start with your name/i);
+  assert.match(outcome.replyText, /first and last name/i);
 });
 
 test("opening response My roof is leaking captures reason and selects caller_name next", async () => {
@@ -87,17 +87,18 @@ test("opening response with volunteered name does not ask again", async () => {
     session: mockSession,
     callSid: "CA123",
     callerPhone: "+15551234567",
-    speechResult: "My name is Beau and we have hail damage.",
-    conversationState: "collecting_intake",
+    speechResult: "My name is Beau Spilker and we have hail damage.",
+    conversationState: "awaiting_opening_name",
     acknowledgmentPolicy: policy,
     isFirstCallerTurn: true,
     hasReceivedMeaningfulCallerTranscript: true,
   });
 
   const fields = outcome.session?.collected_fields as RealtimeFields;
-  assert.equal(fields.full_name, "Beau");
-  assert.match(fields.problem_description ?? "", /hail damage/i);
-  assert.doesNotMatch(outcome.replyText, /Could I start with your name/i);
+  assert.equal(fields.caller_first_name, "Beau");
+  assert.equal(fields.caller_last_name, "Spilker");
+  assert.doesNotMatch(outcome.replyText, /first and last name/i);
+  assert.match(outcome.replyText, /What can the roofing team help you with today/i);
 });
 
 test("opening response This is Beau with tree damage stores both fields", async () => {
@@ -106,16 +107,17 @@ test("opening response This is Beau with tree damage stores both fields", async 
     session: mockSession,
     callSid: "CA123",
     callerPhone: "+15551234567",
-    speechResult: "This is Beau. A tree fell on my roof.",
-    conversationState: "collecting_intake",
+    speechResult: "This is Beau Spilker. A tree fell on my roof.",
+    conversationState: "awaiting_opening_name",
     acknowledgmentPolicy: policy,
     isFirstCallerTurn: true,
     hasReceivedMeaningfulCallerTranscript: true,
   });
 
   const fields = outcome.session?.collected_fields as RealtimeFields;
-  assert.equal(fields.full_name, "Beau");
-  assert.match(fields.problem_description ?? "", /tree damage/i);
+  assert.equal(fields.caller_first_name, "Beau");
+  assert.equal(fields.caller_last_name, "Spilker");
+  assert.match(outcome.replyText, /What can the roofing team help you with today/i);
 });
 
 test("hail damage and roof leak cannot pass caller-name validation", () => {

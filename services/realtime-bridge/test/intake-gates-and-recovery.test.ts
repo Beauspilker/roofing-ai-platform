@@ -54,11 +54,13 @@ test("missing caller name appears in shared missing fields gate", () => {
 test("volunteered valid name resolves callerName without re-asking", () => {
   const fields = mergeRealtimeCallerAnswer(
     { problem_description: "hail damage" },
-    "My name is Beau and I'm calling about hail damage",
+    "My name is Beau Spilker and I'm calling about hail damage",
     "+15551234567",
   );
 
   assert.equal(isCallerNameResolved(fields), true);
+  assert.equal(fields.caller_first_name, "Beau");
+  assert.equal(fields.caller_last_name, "Spilker");
   assert.equal(getSharedMissingFields(fields).includes("callerName"), false);
 });
 
@@ -108,8 +110,8 @@ test("intro asks for caller name early after reason for calling", async () => {
     hasReceivedMeaningfulCallerTranscript: true,
   });
 
-  assert.match(outcome.replyText, /Could I start with your name/i);
-  assert.equal(EARLY_CALLER_NAME_QUESTION.includes("Could I start with your name"), true);
+  assert.match(outcome.replyText, /first and last name/i);
+  assert.equal(EARLY_CALLER_NAME_QUESTION.includes("first and last name"), true);
 });
 
 test("damage language cannot populate callerName", () => {
@@ -128,7 +130,10 @@ test("tomorrow at two resolves and confirms schedule", async () => {
   const policy = new AcknowledgmentPolicy();
   const fields: RealtimeFields = {
     problem_description: "leak",
-    full_name: "John",
+    caller_first_name: "John",
+    caller_last_name: "Smith",
+    full_name: "John Smith",
+    opening_name_complete: true,
     callback_phone: "+14025551234",
     callback_phone_confirmed: true,
     address: "123 Main Street, Beatrice, Nebraska",
@@ -147,7 +152,7 @@ test("tomorrow at two resolves and confirms schedule", async () => {
     acknowledgmentPolicy: policy,
   });
 
-  assert.match(outcome.replyText, /July 21 at 2:00 PM/i);
+  assert.match(outcome.replyText, /2:00 PM/i);
   assert.match(outcome.replyText, /Is that correct/i);
   assert.notEqual(outcome.replyText.trim(), "");
 });

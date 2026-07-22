@@ -48,14 +48,15 @@ test("hail damage with volunteered name does not ask again", async () => {
     session: mockSession,
     callSid: "CA123",
     callerPhone: "+15551234567",
-    speechResult: "My name is Beau and we had hail damage",
-    conversationState: "collecting_intake",
+    speechResult: "My name is Beau Spilker and we had hail damage",
+    conversationState: "awaiting_opening_name",
     acknowledgmentPolicy: policy,
     isFirstCallerTurn: true,
     hasReceivedMeaningfulCallerTranscript: true,
   });
 
-  assert.doesNotMatch(outcome.replyText, /Could I start with your name/i);
+  assert.doesNotMatch(outcome.replyText, /first and last name/i);
+  assert.match(outcome.replyText, /What can the roofing team help you with today/i);
 });
 
 test("immediate safety issue is handled before caller name", async () => {
@@ -79,7 +80,7 @@ test("immediate safety issue is handled before caller name", async () => {
   });
 
   assert.match(outcome.replyText, /active leak|water getting inside/i);
-  assert.doesNotMatch(outcome.replyText, /Could I start with your name/i);
+  assert.doesNotMatch(outcome.replyText, /first and last name/i);
 });
 
 test("caller name is prioritized before callback address insurance and scheduling", () => {
@@ -165,7 +166,10 @@ test("photos are omitted from spoken summary", () => {
 test("stored photos_available remains backward compatible without affecting intake", () => {
   const fields: RealtimeFields = {
     problem_description: "hail damage",
-    full_name: "Beau",
+    caller_first_name: "Beau",
+    caller_last_name: "Spilker",
+    full_name: "Beau Spilker",
+    opening_name_complete: true,
     photos_available: true,
   };
 

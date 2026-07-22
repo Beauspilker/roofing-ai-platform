@@ -23,7 +23,7 @@ const POSITIVE_NAME_INTRO_PATTERNS: RegExp[] = [
 ];
 
 const INVALID_CALLER_NAME_EXACT =
-  /^(?:calling|call|calling about|calling for|having|needing|looking|wondering|trying|reporting|asking|roof|roofing|damage|hail|storm|leak|shingles|insurance|claim|pictures|photos|appointment|today|tomorrow|yes|no|yeah|nope|yep|nah|correct|right|and|with|from|who|about|for|the|this|that|it|its|i|i'm|im|am|are|we|our|my|your|have|has|had)$/i;
+  /^(?:calling|call|calling about|calling for|having|needing|looking|wondering|trying|reporting|asking|roof|roofing|damage|hail|storm|leak|shingles|insurance|claim|pictures|photos|appointment|today|tomorrow|yes|no|yeah|nope|yep|nah|correct|right|and|with|from|who|about|for|the|this|that|it|its|i|i'm|im|am|are|we|our|my|your|have|has|had|uh|um|hmm)$/i;
 
 const INVALID_CALLER_NAME_VERB =
   /^(?:am|is|are|was|were|be|been|being|have|has|had|do|does|did|will|would|can|could|should|may|might|must|need|want|got|get|getting|going|looking|wondering|trying|reporting|asking|calling|having|needing)$/i;
@@ -372,4 +372,5 @@ export function isCallerNameUnavailableSpeech(speech: string): boolean {
   );
 }
 
-export const EARLY_CALLER_NAME_QUESTION = "Could I start with your name?";
+export const EARLY_CALLER_NAME_QUESTION =
+  "Could I start with your first and last name?";

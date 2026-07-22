@@ -52,7 +52,7 @@ test("We had hail damage captures reason and selects caller_name next", async ()
     hasReceivedMeaningfulCallerTranscript: true,
   });
 
-  assert.match(outcome.replyText, /Could I start with your name/i);
+  assert.match(outcome.replyText, /first and last name/i);
   assert.equal(
     getNextRequiredField(outcome.session?.collected_fields as RealtimeFields),
     "full_name",
@@ -65,17 +65,18 @@ test("volunteered name on first turn is stored and not asked again", async () =>
     session: mockSession,
     callSid: "CA123",
     callerPhone: "+15551234567",
-    speechResult: "My name is Beau and we had hail damage",
-    conversationState: "collecting_intake",
+    speechResult: "My name is Beau Spilker and we had hail damage",
+    conversationState: "awaiting_opening_name",
     acknowledgmentPolicy: policy,
     isFirstCallerTurn: true,
     hasReceivedMeaningfulCallerTranscript: true,
   });
 
   const fields = outcome.session?.collected_fields as RealtimeFields;
-  assert.equal(fields.full_name, "Beau");
-  assert.match(fields.problem_description ?? "", /hail damage/i);
-  assert.doesNotMatch(outcome.replyText, /Could I start with your name/i);
+  assert.equal(fields.caller_first_name, "Beau");
+  assert.equal(fields.caller_last_name, "Spilker");
+  assert.doesNotMatch(outcome.replyText, /first and last name/i);
+  assert.match(outcome.replyText, /What can the roofing team help you with today/i);
 });
 
 test("caller_name is selected before callback phone when both are missing", () => {

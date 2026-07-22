@@ -55,7 +55,7 @@ test("first caller response I'm calling about hail damage resolves reason and bl
   assert.equal(canPresentSummary(fields), false);
   assert.equal(outcome.hangup, false);
   assert.equal(outcome.hangupAfterMark, false);
-  assert.match(outcome.replyText, /Could I start with your name/i);
+  assert.match(outcome.replyText, /first and last name/i);
 });
 
 test("first caller response Roof damage does not close and selects caller_name", async () => {
@@ -73,7 +73,7 @@ test("first caller response Roof damage does not close and selects caller_name",
 
   assert.doesNotMatch(outcome.replyText, /Thanks for calling/i);
   assert.equal(outcome.nextConversationState, "collecting_intake");
-  assert.match(outcome.replyText, /Could I start with your name/i);
+  assert.match(outcome.replyText, /first and last name/i);
 });
 
 test("listening_for_reason cannot transition to delivering_closing on first answer", async () => {

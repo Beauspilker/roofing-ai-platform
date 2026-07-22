@@ -178,7 +178,45 @@ function parseHourToken(token: string): number | null {
   return SPOKEN_HOUR_WORDS[token.toLowerCase()] ?? null;
 }
 
-function parseTimeFromSpeech(normalized: string): { hour: number; minute: number } | null {
+export function extractDaypartFromSpeech(
+  speech: string,
+): "morning" | "afternoon" | "evening" | undefined {
+  const normalized = speech.toLowerCase();
+
+  if (/\bmorning\b/.test(normalized)) {
+    return "morning";
+  }
+
+  if (/\bafternoon\b/.test(normalized)) {
+    return "afternoon";
+  }
+
+  if (/\bevening\b/.test(normalized)) {
+    return "evening";
+  }
+
+  return undefined;
+}
+
+function applyDaypartMeridiem(
+  hour: number,
+  daypart: "morning" | "afternoon" | "evening",
+): number {
+  if (daypart === "morning") {
+    return hour === 12 ? 0 : hour;
+  }
+
+  if (hour >= 1 && hour <= 11) {
+    return hour + 12;
+  }
+
+  return hour;
+}
+
+function parseTimeFromSpeech(
+  normalized: string,
+  daypart?: "morning" | "afternoon" | "evening",
+): { hour: number; minute: number; endHour?: number; endMinute?: number } | null {
   const atTime = normalized.match(/\bat\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(am|pm)?/i);
   if (atTime) {
     const parsedHour = parseHourToken(atTime[1] ?? "");
@@ -196,8 +234,11 @@ function parseTimeFromSpeech(normalized: string): { hour: number; minute: number
     if (meridiem === "am" && hour === 12) {
       hour = 0;
     }
-    if (!meridiem && hour <= 7) {
+    if (!meridiem && hour <= 7 && !daypart) {
       hour += 12;
+    }
+    if (!meridiem && daypart) {
+      hour = applyDaypartMeridiem(hour, daypart);
     }
 
     return { hour, minute };
@@ -214,7 +255,9 @@ function parseTimeFromSpeech(normalized: string): { hour: number; minute: number
 
     let hour = parsedHour;
     const minute = Number.parseInt(aboutTime[2] ?? "0", 10);
-    if (hour <= 7) {
+    if (daypart) {
+      hour = applyDaypartMeridiem(hour, daypart);
+    } else if (hour <= 7) {
       hour += 12;
     }
     return { hour, minute };
@@ -231,7 +274,9 @@ function parseTimeFromSpeech(normalized: string): { hour: number; minute: number
 
     let hour = parsedHour;
     const minute = Number.parseInt(aroundTime[2] ?? "0", 10);
-    if (hour <= 7) {
+    if (daypart) {
+      hour = applyDaypartMeridiem(hour, daypart);
+    } else if (hour <= 7) {
       hour += 12;
     }
     return { hour, minute };
@@ -250,6 +295,8 @@ function parseTimeFromSpeech(normalized: string): { hour: number; minute: number
     let hour = startHour;
     const minute = Number.parseInt(betweenTimes[2] ?? "0", 10);
     const meridiem = betweenTimes[5]?.toLowerCase();
+    let endHour24 = endHour;
+    const endMinute = Number.parseInt(betweenTimes[4] ?? "0", 10);
 
     if (meridiem === "pm" && hour < 12) {
       hour += 12;
@@ -257,11 +304,69 @@ function parseTimeFromSpeech(normalized: string): { hour: number; minute: number
     if (meridiem === "am" && hour === 12) {
       hour = 0;
     }
-    if (!meridiem && hour <= 7) {
+    if (!meridiem && daypart) {
+      hour = applyDaypartMeridiem(hour, daypart);
+      endHour24 = applyDaypartMeridiem(endHour, daypart);
+    } else if (!meridiem && hour <= 7) {
       hour += 12;
+      endHour24 += 12;
+    }
+
+    return { hour, minute, endHour: endHour24, endMinute };
+  }
+
+  const bareTime = normalized.match(
+    /^(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(am|pm)?$/i,
+  );
+  if (bareTime) {
+    const parsedHour = parseHourToken(bareTime[1] ?? "");
+    if (parsedHour === null) {
+      return null;
+    }
+
+    let hour = parsedHour;
+    const minute = Number.parseInt(bareTime[2] ?? "0", 10);
+    const meridiem = bareTime[3]?.toLowerCase();
+
+    if (meridiem === "pm" && hour < 12) {
+      hour += 12;
+    }
+    if (meridiem === "am" && hour === 12) {
+      hour = 0;
+    }
+    if (!meridiem && daypart) {
+      hour = applyDaypartMeridiem(hour, daypart);
+      return { hour, minute };
+    }
+    if (!meridiem) {
+      return null;
     }
 
     return { hour, minute };
+  }
+
+  if (daypart) {
+    const trailingTime = normalized.match(
+      /\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(am|pm)?\s*$/i,
+    );
+    if (trailingTime) {
+      const parsedHour = parseHourToken(trailingTime[1] ?? "");
+      if (parsedHour !== null) {
+        const minute = Number.parseInt(trailingTime[2] ?? "0", 10);
+        const meridiem = trailingTime[3]?.toLowerCase();
+        let hour = parsedHour;
+
+        if (meridiem === "pm" && hour < 12) {
+          hour += 12;
+        } else if (meridiem === "am" && hour === 12) {
+          hour = 0;
+        } else if (!meridiem) {
+          hour = applyDaypartMeridiem(hour, daypart);
+        }
+
+        return { hour, minute };
+      }
+    }
   }
 
   return null;
@@ -341,10 +446,11 @@ function parseScheduleSpeechInternal(
     }
   }
 
-  const time = parseTimeFromSpeech(normalized);
-  const hasMorning = /\bmorning\b/.test(normalized);
-  const hasAfternoon = /\bafternoon\b/.test(normalized);
-  const hasEvening = /\bevening\b/.test(normalized);
+  const daypart = extractDaypartFromSpeech(normalized);
+  const time = parseTimeFromSpeech(normalized, daypart);
+  const hasMorning = daypart === "morning" || /\bmorning\b/.test(normalized);
+  const hasAfternoon = daypart === "afternoon" || /\bafternoon\b/.test(normalized);
+  const hasEvening = daypart === "evening" || /\bevening\b/.test(normalized);
 
   if ((hasMorning || hasAfternoon || hasEvening) && !time) {
     const dateLabel = formatSpokenDate(targetDate);
@@ -387,6 +493,35 @@ function parseScheduleSpeechInternal(
   }
 
   if (time) {
+    const dateLabel = formatSpokenDate(targetDate);
+
+    if (time.endHour !== undefined && time.endMinute !== undefined) {
+      const startLabel = formatSpokenTime(time.hour, time.minute);
+      const endLabel = formatSpokenTime(time.endHour, time.endMinute);
+
+      return {
+        status: "needs_confirmation",
+        spoken: `${dateLabel} between ${startLabel.replace(/ AM| PM/, "")} and ${endLabel}`,
+        isoStart: makeUtcDate(
+          targetDate.year,
+          targetDate.month,
+          targetDate.day,
+          time.hour,
+          time.minute,
+          timeZone,
+        ).toISOString(),
+        isoEnd: makeUtcDate(
+          targetDate.year,
+          targetDate.month,
+          targetDate.day,
+          time.endHour,
+          time.endMinute,
+          timeZone,
+        ).toISOString(),
+        raw,
+      };
+    }
+
     const betweenTimes = normalized.match(
       /\bbetween\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(?:am|pm)?\s+and\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(am|pm)?/i,
     );
@@ -412,7 +547,6 @@ function parseScheduleSpeechInternal(
           startHour24 += 12;
         }
 
-        const dateLabel = formatSpokenDate(targetDate);
         const startLabel = formatSpokenTime(startHour24, Number.parseInt(betweenTimes[2] ?? "0", 10));
         const endLabel = formatSpokenTime(endHour24, Number.parseInt(betweenTimes[4] ?? "0", 10));
 
@@ -440,7 +574,6 @@ function parseScheduleSpeechInternal(
       }
     }
 
-    const dateLabel = formatSpokenDate(targetDate);
     const spokenTime = formatSpokenTime(time.hour, time.minute);
     const isoStart = makeUtcDate(
       targetDate.year,
@@ -457,6 +590,23 @@ function parseScheduleSpeechInternal(
       isoStart,
       raw,
     };
+  }
+
+  const bareMeridiemPrompt = normalized.match(
+    /^(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*$/i,
+  );
+  if (bareMeridiemPrompt) {
+    const parsedHour = parseHourToken(bareMeridiemPrompt[1] ?? "");
+    if (parsedHour !== null) {
+      const minute = Number.parseInt(bareMeridiemPrompt[2] ?? "0", 10);
+      const amHour = parsedHour === 12 ? 0 : parsedHour;
+      const pmHour = parsedHour < 12 ? parsedHour + 12 : parsedHour;
+      return {
+        status: "needs_time_clarification",
+        prompt: `Do you mean ${formatSpokenTime(amHour, minute)} or ${formatSpokenTime(pmHour, minute)}?`,
+        raw,
+      };
+    }
   }
 
   return { status: "nothing_schedulable", raw };
@@ -496,6 +646,7 @@ export function applyScheduleParseResult(
     ...fields,
     appointment_preference_raw: result.raw,
     schedule_confirmed: false,
+    schedule_daypart: extractDaypartFromSpeech(result.raw) ?? fields.schedule_daypart,
     appointment_schedule_iso: result.status === "needs_confirmation" ? result.isoStart : undefined,
     appointment_schedule_iso_end:
       result.status === "needs_confirmation" ? result.isoEnd : undefined,
@@ -562,6 +713,10 @@ export function processScheduleCapture(
         ...updated,
         schedule_pending_clarification: true,
         schedule_clarification_prompt: parsed.prompt,
+        schedule_daypart:
+          extractDaypartFromSpeech(parsed.raw) ??
+          fields.schedule_daypart ??
+          extractDaypartFromSpeech(fields.appointment_preference_raw ?? ""),
       };
       return { fields: updated, clarificationPrompt: parsed.prompt };
     }

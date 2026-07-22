@@ -17,6 +17,7 @@ import {
   extractExplicitCallerName,
   isCallerNameDeclinedSpeech,
   isCallerNameUnavailableSpeech,
+  isLikelyCallReasonSpeech,
   isPlausibleCallerName,
   isPlausibleServiceAddress,
   validateCallerNameCandidate,
@@ -27,6 +28,7 @@ import {
   normalizeCallReasonFromSpeech,
 } from "./call-reason-handling.js";
 import { isCallerNameResolved } from "./required-intake.js";
+import { processCallerNameTurn } from "./caller-name-intake.js";
 import { preserveConfirmedFieldState } from "./safe-field-merge.js";
 import type { PendingQuestionKey } from "./pending-question.js";
 import {
@@ -300,18 +302,16 @@ export function applyAnswerForPendingQuestion(
         break;
       }
 
-      if (!isCallerNameResolved(updated)) {
-        const validated = validateCallerNameCandidate(trimmed, { isDirectNameAnswer: true });
-        if (validated.value) {
-          updated.full_name = validated.value.slice(0, 100);
-          updated.name_needs_clarification = false;
-          updated.caller_name_declined = false;
-          updated.caller_name_unavailable = false;
-        } else if (validated.needsClarification) {
-          updated.name_needs_clarification = true;
-          updated.name_clarification_attempts =
-            (updated.name_clarification_attempts ?? 0) + 1;
+      if (isLikelyCallReasonSpeech(trimmed) && !extractExplicitCallerName(trimmed)) {
+        const reason = normalizeCallReasonFromSpeech(trimmed);
+        if (reason && !hasValue(updated.problem_description)) {
+          updated.problem_description = reason;
         }
+        break;
+      }
+
+      if (!isCallerNameResolved(updated)) {
+        updated = processCallerNameTurn(updated, trimmed).fields;
       }
       break;
     }

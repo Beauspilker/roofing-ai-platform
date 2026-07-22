@@ -12,13 +12,15 @@ import {
 import type { ConversationState } from "./conversation-state.js";
 import { AcknowledgmentPolicy } from "./acknowledgment-policy.js";
 import { isMeaningfulOpeningCallerTranscript } from "../bridge/opening-listening.js";
+import { hasCompleteCallerName } from "./caller-name-intake.js";
 import { processRealtimeCallerTurn } from "./realtime-turn-processor.js";
 import {
   ensureSingleIntakeQuestion,
   REALTIME_OPENING_GREETING,
-  REALTIME_OPENING_QUESTION,
+  REALTIME_OPENING_NAME_QUESTION,
   type RealtimeFields,
 } from "./realtime-prompts.js";
+import { attachPendingQuestion } from "./pending-question.js";
 
 export type OrchestratorContext = {
   callSid: string;
@@ -57,7 +59,7 @@ export class SessionOrchestrator {
       if (this.session) {
         await updateCallSession({
           callSid: this.context.callSid,
-          currentQuestion: REALTIME_OPENING_QUESTION,
+          currentQuestion: REALTIME_OPENING_NAME_QUESTION,
           transcriptEntry: createTranscriptEntry("assistant", REALTIME_OPENING_GREETING),
         });
       }
@@ -135,11 +137,11 @@ export class SessionOrchestrator {
     this.awaitingFirstCallerTurn = true;
   }
 
-  onOpeningGreetingComplete(): void {
+  onOpeningNameQuestionComplete(): void {
     this.openingGreetingPlaybackComplete = true;
     this.listeningForReason = true;
-    this.conversationState = "listening_for_reason";
-    this.attachPendingCallReason();
+    this.conversationState = "awaiting_opening_name";
+    this.attachPendingOpeningName();
     logInfo("conversation_state_transition", {
       callSid: this.context.callSid,
       state: this.conversationState,
@@ -157,6 +159,19 @@ export class SessionOrchestrator {
   onMeaningfulCallerTranscriptProcessed(): void {
     this.hasReceivedMeaningfulCallerTranscript = true;
     this.listeningForReason = false;
+  }
+
+  private attachPendingOpeningName(): void {
+    if (!this.session) {
+      return;
+    }
+
+    const fields = (this.session.collected_fields ?? {}) as RealtimeFields;
+
+    this.session = {
+      ...this.session,
+      collected_fields: attachPendingQuestion(fields, "caller_name"),
+    };
   }
 
   private attachPendingCallReason(): void {
@@ -182,7 +197,10 @@ export class SessionOrchestrator {
       return null;
     }
 
-    if (this.listeningForReason && !isMeaningfulOpeningCallerTranscript(trimmed)) {
+    if (
+      this.listeningForReason &&
+      !isMeaningfulOpeningCallerTranscript(trimmed, { awaitingName: true })
+    ) {
       logInfo("opening_transcript_ignored", {
         callSid: this.context.callSid,
         transcriptLength: trimmed.length,
@@ -216,13 +234,18 @@ export class SessionOrchestrator {
         isFirstCallerTurn: this.awaitingFirstCallerTurn,
         hasReceivedMeaningfulCallerTranscript:
           this.hasReceivedMeaningfulCallerTranscript ||
-          isMeaningfulOpeningCallerTranscript(trimmed),
+          isMeaningfulOpeningCallerTranscript(trimmed, {
+            awaitingName: this.conversationState === "awaiting_opening_name",
+          }),
         turnId,
       });
 
+      const fields = (outcome.session?.collected_fields ?? {}) as RealtimeFields;
       if (
-        isMeaningfulOpeningCallerTranscript(trimmed) &&
-        outcome.session?.collected_fields?.problem_description
+        isMeaningfulOpeningCallerTranscript(trimmed, {
+          awaitingName: this.conversationState === "awaiting_opening_name",
+        }) &&
+        (fields.problem_description || hasCompleteCallerName(fields))
       ) {
         this.onMeaningfulCallerTranscriptProcessed();
       }

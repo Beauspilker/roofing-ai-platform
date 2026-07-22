@@ -618,7 +618,7 @@ var POSITIVE_NAME_INTRO_PATTERNS = [
   /\b(?:i am|i'm)\s+([A-Za-z][A-Za-z'\-]+)\s+and\b/i,
   /\b(?:call me)\s+([A-Za-z][A-Za-z'\-]+(?:\s+[A-Za-z][A-Za-z'\-]+){0,2})(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i
 ];
-var INVALID_CALLER_NAME_EXACT = /^(?:calling|call|calling about|calling for|having|needing|looking|wondering|trying|reporting|asking|roof|roofing|damage|hail|storm|leak|shingles|insurance|claim|pictures|photos|appointment|today|tomorrow|yes|no|yeah|nope|yep|nah|correct|right|and|with|from|who|about|for|the|this|that|it|its|i|i'm|im|am|are|we|our|my|your|have|has|had)$/i;
+var INVALID_CALLER_NAME_EXACT = /^(?:calling|call|calling about|calling for|having|needing|looking|wondering|trying|reporting|asking|roof|roofing|damage|hail|storm|leak|shingles|insurance|claim|pictures|photos|appointment|today|tomorrow|yes|no|yeah|nope|yep|nah|correct|right|and|with|from|who|about|for|the|this|that|it|its|i|i'm|im|am|are|we|our|my|your|have|has|had|uh|um|hmm)$/i;
 var INVALID_CALLER_NAME_VERB = /^(?:am|is|are|was|were|be|been|being|have|has|had|do|does|did|will|would|can|could|should|may|might|must|need|want|got|get|getting|going|looking|wondering|trying|reporting|asking|calling|having|needing)$/i;
 function containsRoofingDamageLanguage(text) {
   return DAMAGE_AND_INTAKE_TERMS.test(text.trim());
@@ -848,7 +848,7 @@ function isCallerNameUnavailableSpeech(speech) {
     normalized
   );
 }
-var EARLY_CALLER_NAME_QUESTION = "Could I start with your name?";
+var EARLY_CALLER_NAME_QUESTION = "Could I start with your first and last name?";
 
 // src/orchestrator/summary-builder.ts
 function buildSummaryDataObject(fields) {
@@ -936,9 +936,9 @@ function buildValidatedSpokenSummary(fields) {
 }
 
 // src/orchestrator/realtime-prompts.ts
-var REALTIME_OPENING_GREETING = "Thank you for calling Beau's Roofing. I'm Beau's Roofing's AI assistant. How can I help you today?";
-var REALTIME_INTRO_TRANSITION = "Absolutely. I'll run you through a few questions so the roofing team has everything they need.";
-var REALTIME_OPENING_QUESTION = "How can I help you today?";
+var REALTIME_OPENING_GREETING = "Thank you for calling Beau's Roofing. I'm Beau's Roofing's AI assistant.";
+var REALTIME_OPENING_NAME_QUESTION = "Could I start with your first and last name?";
+var REALTIME_OPENING_QUESTION = REALTIME_OPENING_NAME_QUESTION;
 var REALTIME_ANYTHING_ELSE_QUESTION = "Is there anything else you'd like the roofing team to know?";
 function ensureSingleIntakeQuestion(text) {
   const trimmed = text.trim();
@@ -1055,6 +1055,323 @@ function confirmAddress(fields) {
   });
 }
 
+// src/orchestrator/caller-name-intake.ts
+var OPENING_CALLER_NAME_QUESTION = "Could I start with your first and last name?";
+var CALL_REASON_AFTER_NAME_QUESTION = "What can the roofing team help you with today?";
+var REJECTION_PREFIX = /^(?:no|nope|nah|not quite|incorrect|wrong|that's wrong|thats wrong|that is wrong|not right|no[, ]+actually|actually|i meant|not[, ]+it'?s|not[, ]+it is)\b[, ]*/i;
+function normalizeNamePart(value) {
+  return value.trim().split(/\s+/).map(
+    (part) => part.split("-").map((segment) => {
+      if (!segment) {
+        return segment;
+      }
+      return segment.charAt(0).toUpperCase() + segment.slice(1).toLowerCase();
+    }).join("-")
+  ).join(" ");
+}
+function stripRejectionPrefix(speech) {
+  let remaining = speech.trim();
+  while (remaining) {
+    const next = remaining.replace(REJECTION_PREFIX, "").trim();
+    if (next === remaining) {
+      break;
+    }
+    remaining = next;
+  }
+  return remaining.replace(/^[, ]+/, "").trim();
+}
+function parseLetterSequence(token) {
+  const letters = token.match(/\b([A-Za-z])\b/g);
+  if (!letters || letters.length < 2) {
+    return null;
+  }
+  return normalizeNamePart(letters.join(""));
+}
+function parseSpelledNameSpeech(speech) {
+  const stripped = stripRejectionPrefix(speech);
+  const segments = stripped.split(/\s*,\s*|\s+and\s+/i).map((segment) => segment.trim()).filter(Boolean);
+  const parsedSegments = segments.map((segment) => {
+    if (/^[A-Za-z](?:[-.\s]+[A-Za-z])+$/i.test(segment)) {
+      const letters = segment.replace(/[-.\s]+/g, "");
+      return letters.length >= 2 ? normalizeNamePart(letters) : null;
+    }
+    return parseLetterSequence(segment.replace(/[-.\s]+/g, " "));
+  }).filter((value) => Boolean(value));
+  if (parsedSegments.length >= 2) {
+    return {
+      firstName: parsedSegments[0] ?? null,
+      lastName: parsedSegments.slice(1).join(" ") || null
+    };
+  }
+  if (parsedSegments.length === 1) {
+    return { firstName: null, lastName: parsedSegments[0] ?? null };
+  }
+  return { firstName: null, lastName: null };
+}
+function isSpelledNameSpeech(speech) {
+  const trimmed = speech.trim();
+  if (/\b[A-Za-z](?:-[A-Za-z]){2,}\b/.test(trimmed)) {
+    return true;
+  }
+  if (/\b[A-Za-z]\b(?:\s+\b[A-Za-z]\b){2,}/.test(trimmed)) {
+    return true;
+  }
+  return false;
+}
+function parseCallerNameParts(speech) {
+  const stripped = stripRejectionPrefix(speech);
+  if (isSpelledNameSpeech(stripped)) {
+    return parseSpelledNameSpeech(stripped);
+  }
+  const explicit = extractExplicitCallerName(stripped);
+  if (explicit) {
+    const words = explicit.split(/\s+/).filter(Boolean);
+    if (words.length >= 2) {
+      return {
+        firstName: normalizeNamePart(words[0] ?? ""),
+        lastName: normalizeNamePart(words.slice(1).join(" "))
+      };
+    }
+    return { firstName: normalizeNamePart(explicit), lastName: null };
+  }
+  const validated = validateCallerNameCandidate(stripped, {
+    isDirectNameAnswer: true,
+    allowDirectNameWithoutIntro: true
+  });
+  if (validated.value) {
+    const words = validated.value.split(/\s+/).filter(Boolean);
+    if (words.length >= 2) {
+      return {
+        firstName: normalizeNamePart(words[0] ?? ""),
+        lastName: normalizeNamePart(words.slice(1).join(" "))
+      };
+    }
+    return { firstName: normalizeNamePart(validated.value), lastName: null };
+  }
+  return { firstName: null, lastName: null };
+}
+function syncFullNameFromParts(fields) {
+  const first = fields.caller_first_name?.trim();
+  const last = fields.caller_last_name?.trim();
+  if (first && last) {
+    return {
+      ...fields,
+      full_name: `${first} ${last}`.slice(0, 100)
+    };
+  }
+  if (first && !last) {
+    return {
+      ...fields,
+      full_name: void 0
+    };
+  }
+  const full = fields.full_name?.trim();
+  if (full) {
+    const words = full.split(/\s+/).filter(Boolean);
+    if (words.length >= 2) {
+      return {
+        ...fields,
+        caller_first_name: normalizeNamePart(words[0] ?? ""),
+        caller_last_name: normalizeNamePart(words.slice(1).join(" ")),
+        full_name: normalizeNamePart(full).slice(0, 100)
+      };
+    }
+    if (words.length === 1) {
+      return {
+        ...fields,
+        caller_first_name: normalizeNamePart(words[0] ?? ""),
+        full_name: void 0
+      };
+    }
+  }
+  return fields;
+}
+function hasCompleteCallerName(fields) {
+  const synced = syncFullNameFromParts(fields);
+  const first = synced.caller_first_name?.trim();
+  const last = synced.caller_last_name?.trim();
+  return Boolean(
+    first && last && isPlausibleCallerName(first) && isPlausibleCallerName(last) && isPlausibleCallerName(`${first} ${last}`)
+  );
+}
+function getCallerFirstName(fields) {
+  return syncFullNameFromParts(fields).caller_first_name?.trim();
+}
+function buildLastNameFollowUp(firstName) {
+  return `Thanks, ${firstName}. Could I also get your last name?`;
+}
+function buildLastNameSpellingPrompt() {
+  return "Could you spell your last name for me so I make sure the roofing team has it correctly?";
+}
+function buildFirstNameSpellingPrompt() {
+  return "Could you spell your first name as well?";
+}
+function buildNameCompleteAcknowledgment(fields) {
+  const synced = syncFullNameFromParts(fields);
+  const full = synced.full_name?.trim() ?? "";
+  if (full) {
+    return `Thank you. I have ${full}.`;
+  }
+  return "Thank you.";
+}
+function buildCallReasonQuestionAfterName(fields) {
+  const firstName = getCallerFirstName(fields);
+  if (firstName) {
+    return `Thank you, ${firstName}. ${CALL_REASON_AFTER_NAME_QUESTION}`;
+  }
+  return CALL_REASON_AFTER_NAME_QUESTION;
+}
+function processCallerNameTurn(fields, speech) {
+  let updated = { ...fields };
+  const trimmed = speech.trim();
+  if (updated.name_awaiting_first_name_spelling) {
+    const spelled = parseSpelledNameSpeech(trimmed);
+    if (spelled.firstName && isPlausibleCallerName(spelled.firstName)) {
+      updated = syncFullNameFromParts({
+        ...updated,
+        caller_first_name: spelled.firstName,
+        name_awaiting_first_name_spelling: false,
+        name_needs_clarification: false
+      });
+      if (hasCompleteCallerName(updated)) {
+        return {
+          fields: updated,
+          replyText: null,
+          complete: true,
+          needsReasonQuestion: true
+        };
+      }
+    }
+    return {
+      fields: updated,
+      replyText: buildFirstNameSpellingPrompt(),
+      complete: false,
+      needsReasonQuestion: false
+    };
+  }
+  if (updated.name_awaiting_last_name_spelling) {
+    const spelled = parseSpelledNameSpeech(trimmed);
+    const lastName = spelled.lastName ?? spelled.firstName;
+    if (lastName && isPlausibleCallerName(lastName)) {
+      updated = syncFullNameFromParts({
+        ...updated,
+        caller_last_name: lastName,
+        name_awaiting_last_name_spelling: false,
+        name_needs_clarification: false,
+        name_spelling_verified: true
+      });
+      if (hasCompleteCallerName(updated)) {
+        const ack = updated.name_spelling_verified === true ? buildNameCompleteAcknowledgment(updated) : null;
+        return {
+          fields: updated,
+          replyText: ack,
+          complete: true,
+          needsReasonQuestion: true
+        };
+      }
+    }
+    return {
+      fields: updated,
+      replyText: buildLastNameSpellingPrompt(),
+      complete: false,
+      needsReasonQuestion: false
+    };
+  }
+  if (updated.name_awaiting_last_name) {
+    const parts2 = parseCallerNameParts(trimmed);
+    const lastName = parts2.lastName ?? (parts2.firstName && !parts2.lastName ? parts2.firstName : null);
+    if (lastName && isPlausibleCallerName(lastName)) {
+      updated = syncFullNameFromParts({
+        ...updated,
+        caller_last_name: lastName,
+        name_awaiting_last_name: false
+      });
+      if (updated.name_needs_clarification === true) {
+        updated.name_awaiting_last_name_spelling = true;
+        updated.name_spelling_verified = false;
+        return {
+          fields: updated,
+          replyText: buildLastNameSpellingPrompt(),
+          complete: false,
+          needsReasonQuestion: false
+        };
+      }
+      return {
+        fields: updated,
+        replyText: null,
+        complete: true,
+        needsReasonQuestion: true
+      };
+    }
+    return {
+      fields: updated,
+      replyText: buildLastNameFollowUp(updated.caller_first_name ?? "there"),
+      complete: false,
+      needsReasonQuestion: false
+    };
+  }
+  const parts = parseCallerNameParts(trimmed);
+  if (parts.firstName && parts.lastName) {
+    const needsSpelling = fields.name_needs_clarification === true;
+    updated = syncFullNameFromParts({
+      ...updated,
+      caller_first_name: parts.firstName,
+      caller_last_name: parts.lastName,
+      name_awaiting_last_name: false,
+      name_needs_clarification: false
+    });
+    if (needsSpelling) {
+      updated.name_awaiting_last_name_spelling = true;
+      updated.name_spelling_verified = false;
+      return {
+        fields: updated,
+        replyText: buildLastNameSpellingPrompt(),
+        complete: false,
+        needsReasonQuestion: false
+      };
+    }
+    return {
+      fields: updated,
+      replyText: null,
+      complete: true,
+      needsReasonQuestion: true
+    };
+  }
+  if (parts.firstName) {
+    updated = syncFullNameFromParts({
+      ...updated,
+      caller_first_name: parts.firstName,
+      name_awaiting_last_name: true,
+      name_needs_clarification: false
+    });
+    return {
+      fields: updated,
+      replyText: buildLastNameFollowUp(parts.firstName),
+      complete: false,
+      needsReasonQuestion: false
+    };
+  }
+  if (isLikelyCallReasonSpeech(trimmed) && !extractExplicitCallerName(trimmed)) {
+    return {
+      fields: updated,
+      replyText: OPENING_CALLER_NAME_QUESTION,
+      complete: false,
+      needsReasonQuestion: false
+    };
+  }
+  updated = {
+    ...updated,
+    name_needs_clarification: true,
+    name_clarification_attempts: (updated.name_clarification_attempts ?? 0) + 1
+  };
+  return {
+    fields: updated,
+    replyText: OPENING_CALLER_NAME_QUESTION,
+    complete: false,
+    needsReasonQuestion: false
+  };
+}
+
 // src/orchestrator/schedule-normalizer.ts
 var COMPANY_TIMEZONE = process.env.COMPANY_TIMEZONE?.trim() || "America/Chicago";
 var SCHEDULE_PARSE_FALLBACK_PROMPT = "I'm sorry, I had trouble understanding the timing. What specific day and time would work best for you?";
@@ -1167,7 +1484,29 @@ function parseHourToken(token) {
   }
   return SPOKEN_HOUR_WORDS[token.toLowerCase()] ?? null;
 }
-function parseTimeFromSpeech(normalized) {
+function extractDaypartFromSpeech(speech) {
+  const normalized = speech.toLowerCase();
+  if (/\bmorning\b/.test(normalized)) {
+    return "morning";
+  }
+  if (/\bafternoon\b/.test(normalized)) {
+    return "afternoon";
+  }
+  if (/\bevening\b/.test(normalized)) {
+    return "evening";
+  }
+  return void 0;
+}
+function applyDaypartMeridiem(hour, daypart) {
+  if (daypart === "morning") {
+    return hour === 12 ? 0 : hour;
+  }
+  if (hour >= 1 && hour <= 11) {
+    return hour + 12;
+  }
+  return hour;
+}
+function parseTimeFromSpeech(normalized, daypart) {
   const atTime = normalized.match(/\bat\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(am|pm)?/i);
   if (atTime) {
     const parsedHour = parseHourToken(atTime[1] ?? "");
@@ -1183,8 +1522,11 @@ function parseTimeFromSpeech(normalized) {
     if (meridiem === "am" && hour === 12) {
       hour = 0;
     }
-    if (!meridiem && hour <= 7) {
+    if (!meridiem && hour <= 7 && !daypart) {
       hour += 12;
+    }
+    if (!meridiem && daypart) {
+      hour = applyDaypartMeridiem(hour, daypart);
     }
     return { hour, minute };
   }
@@ -1198,7 +1540,9 @@ function parseTimeFromSpeech(normalized) {
     }
     let hour = parsedHour;
     const minute = Number.parseInt(aboutTime[2] ?? "0", 10);
-    if (hour <= 7) {
+    if (daypart) {
+      hour = applyDaypartMeridiem(hour, daypart);
+    } else if (hour <= 7) {
       hour += 12;
     }
     return { hour, minute };
@@ -1213,7 +1557,9 @@ function parseTimeFromSpeech(normalized) {
     }
     let hour = parsedHour;
     const minute = Number.parseInt(aroundTime[2] ?? "0", 10);
-    if (hour <= 7) {
+    if (daypart) {
+      hour = applyDaypartMeridiem(hour, daypart);
+    } else if (hour <= 7) {
       hour += 12;
     }
     return { hour, minute };
@@ -1230,16 +1576,69 @@ function parseTimeFromSpeech(normalized) {
     let hour = startHour;
     const minute = Number.parseInt(betweenTimes[2] ?? "0", 10);
     const meridiem = betweenTimes[5]?.toLowerCase();
+    let endHour24 = endHour;
+    const endMinute = Number.parseInt(betweenTimes[4] ?? "0", 10);
     if (meridiem === "pm" && hour < 12) {
       hour += 12;
     }
     if (meridiem === "am" && hour === 12) {
       hour = 0;
     }
-    if (!meridiem && hour <= 7) {
+    if (!meridiem && daypart) {
+      hour = applyDaypartMeridiem(hour, daypart);
+      endHour24 = applyDaypartMeridiem(endHour, daypart);
+    } else if (!meridiem && hour <= 7) {
+      hour += 12;
+      endHour24 += 12;
+    }
+    return { hour, minute, endHour: endHour24, endMinute };
+  }
+  const bareTime = normalized.match(
+    /^(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(am|pm)?$/i
+  );
+  if (bareTime) {
+    const parsedHour = parseHourToken(bareTime[1] ?? "");
+    if (parsedHour === null) {
+      return null;
+    }
+    let hour = parsedHour;
+    const minute = Number.parseInt(bareTime[2] ?? "0", 10);
+    const meridiem = bareTime[3]?.toLowerCase();
+    if (meridiem === "pm" && hour < 12) {
       hour += 12;
     }
+    if (meridiem === "am" && hour === 12) {
+      hour = 0;
+    }
+    if (!meridiem && daypart) {
+      hour = applyDaypartMeridiem(hour, daypart);
+      return { hour, minute };
+    }
+    if (!meridiem) {
+      return null;
+    }
     return { hour, minute };
+  }
+  if (daypart) {
+    const trailingTime = normalized.match(
+      /\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(am|pm)?\s*$/i
+    );
+    if (trailingTime) {
+      const parsedHour = parseHourToken(trailingTime[1] ?? "");
+      if (parsedHour !== null) {
+        const minute = Number.parseInt(trailingTime[2] ?? "0", 10);
+        const meridiem = trailingTime[3]?.toLowerCase();
+        let hour = parsedHour;
+        if (meridiem === "pm" && hour < 12) {
+          hour += 12;
+        } else if (meridiem === "am" && hour === 12) {
+          hour = 0;
+        } else if (!meridiem) {
+          hour = applyDaypartMeridiem(hour, daypart);
+        }
+        return { hour, minute };
+      }
+    }
   }
   return null;
 }
@@ -1300,10 +1699,11 @@ function parseScheduleSpeechInternal(speech, now = /* @__PURE__ */ new Date(), t
       }
     }
   }
-  const time = parseTimeFromSpeech(normalized);
-  const hasMorning = /\bmorning\b/.test(normalized);
-  const hasAfternoon = /\bafternoon\b/.test(normalized);
-  const hasEvening = /\bevening\b/.test(normalized);
+  const daypart = extractDaypartFromSpeech(normalized);
+  const time = parseTimeFromSpeech(normalized, daypart);
+  const hasMorning = daypart === "morning" || /\bmorning\b/.test(normalized);
+  const hasAfternoon = daypart === "afternoon" || /\bafternoon\b/.test(normalized);
+  const hasEvening = daypart === "evening" || /\bevening\b/.test(normalized);
   if ((hasMorning || hasAfternoon || hasEvening) && !time) {
     const dateLabel = formatSpokenDate(targetDate);
     if (hasMorning) {
@@ -1339,6 +1739,32 @@ function parseScheduleSpeechInternal(speech, now = /* @__PURE__ */ new Date(), t
     };
   }
   if (time) {
+    const dateLabel = formatSpokenDate(targetDate);
+    if (time.endHour !== void 0 && time.endMinute !== void 0) {
+      const startLabel = formatSpokenTime(time.hour, time.minute);
+      const endLabel = formatSpokenTime(time.endHour, time.endMinute);
+      return {
+        status: "needs_confirmation",
+        spoken: `${dateLabel} between ${startLabel.replace(/ AM| PM/, "")} and ${endLabel}`,
+        isoStart: makeUtcDate(
+          targetDate.year,
+          targetDate.month,
+          targetDate.day,
+          time.hour,
+          time.minute,
+          timeZone
+        ).toISOString(),
+        isoEnd: makeUtcDate(
+          targetDate.year,
+          targetDate.month,
+          targetDate.day,
+          time.endHour,
+          time.endMinute,
+          timeZone
+        ).toISOString(),
+        raw
+      };
+    }
     const betweenTimes = normalized.match(
       /\bbetween\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(?:am|pm)?\s+and\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(am|pm)?/i
     );
@@ -1361,12 +1787,11 @@ function parseScheduleSpeechInternal(speech, now = /* @__PURE__ */ new Date(), t
         if (!meridiem && startHour24 <= 7) {
           startHour24 += 12;
         }
-        const dateLabel2 = formatSpokenDate(targetDate);
         const startLabel = formatSpokenTime(startHour24, Number.parseInt(betweenTimes[2] ?? "0", 10));
         const endLabel = formatSpokenTime(endHour24, Number.parseInt(betweenTimes[4] ?? "0", 10));
         return {
           status: "needs_confirmation",
-          spoken: `${dateLabel2} between ${startLabel.replace(/ AM| PM/, "")} and ${endLabel}`,
+          spoken: `${dateLabel} between ${startLabel.replace(/ AM| PM/, "")} and ${endLabel}`,
           isoStart: makeUtcDate(
             targetDate.year,
             targetDate.month,
@@ -1387,7 +1812,6 @@ function parseScheduleSpeechInternal(speech, now = /* @__PURE__ */ new Date(), t
         };
       }
     }
-    const dateLabel = formatSpokenDate(targetDate);
     const spokenTime = formatSpokenTime(time.hour, time.minute);
     const isoStart = makeUtcDate(
       targetDate.year,
@@ -1403,6 +1827,22 @@ function parseScheduleSpeechInternal(speech, now = /* @__PURE__ */ new Date(), t
       isoStart,
       raw
     };
+  }
+  const bareMeridiemPrompt = normalized.match(
+    /^(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*$/i
+  );
+  if (bareMeridiemPrompt) {
+    const parsedHour = parseHourToken(bareMeridiemPrompt[1] ?? "");
+    if (parsedHour !== null) {
+      const minute = Number.parseInt(bareMeridiemPrompt[2] ?? "0", 10);
+      const amHour = parsedHour === 12 ? 0 : parsedHour;
+      const pmHour = parsedHour < 12 ? parsedHour + 12 : parsedHour;
+      return {
+        status: "needs_time_clarification",
+        prompt: `Do you mean ${formatSpokenTime(amHour, minute)} or ${formatSpokenTime(pmHour, minute)}?`,
+        raw
+      };
+    }
   }
   return { status: "nothing_schedulable", raw };
 }
@@ -1430,6 +1870,7 @@ function applyScheduleParseResult(fields, result) {
     ...fields,
     appointment_preference_raw: result.raw,
     schedule_confirmed: false,
+    schedule_daypart: extractDaypartFromSpeech(result.raw) ?? fields.schedule_daypart,
     appointment_schedule_iso: result.status === "needs_confirmation" ? result.isoStart : void 0,
     appointment_schedule_iso_end: result.status === "needs_confirmation" ? result.isoEnd : void 0,
     appointment_preference: result.status === "needs_confirmation" ? result.spoken : fields.appointment_preference
@@ -1467,7 +1908,8 @@ function processScheduleCapture(fields, speech, now = /* @__PURE__ */ new Date()
       updated = {
         ...updated,
         schedule_pending_clarification: true,
-        schedule_clarification_prompt: parsed.prompt
+        schedule_clarification_prompt: parsed.prompt,
+        schedule_daypart: extractDaypartFromSpeech(parsed.raw) ?? fields.schedule_daypart ?? extractDaypartFromSpeech(fields.appointment_preference_raw ?? "")
       };
       return { fields: updated, clarificationPrompt: parsed.prompt };
     }
@@ -1574,6 +2016,9 @@ function resolvePendingQuestion(fields, conversationState) {
   if (stored && isPendingQuestionKey(stored) && isStoredPendingQuestionStillValid(fields, stored)) {
     return stored;
   }
+  if (conversationState === "awaiting_opening_name") {
+    return "caller_name";
+  }
   if (conversationState === "awaiting_callback_confirmation") {
     return "callback_confirmation";
   }
@@ -1606,6 +2051,8 @@ function resolvePendingQuestion(fields, conversationState) {
 }
 function pendingQuestionForConversationState(conversationState) {
   switch (conversationState) {
+    case "awaiting_opening_name":
+      return "caller_name";
     case "awaiting_callback_confirmation":
       return "callback_confirmation";
     case "awaiting_address_confirmation":
@@ -1793,22 +2240,26 @@ function buildCallReasonResolvedReply(fields, callerPhone) {
       withIntro
     );
     return {
-      replyText: ensureSingleIntakeQuestion(
-        `${REALTIME_INTRO_TRANSITION} ${question2}`.replace(/\s+/g, " ").trim()
-      ),
+      replyText: ensureSingleIntakeQuestion(question2),
       fields: attachPendingQuestion(withIntro, "active_leak"),
       nextState: "collecting_intake"
     };
   }
-  const targetField = nextRequired ?? "full_name";
+  if (!isCallerNameResolved(withIntro)) {
+    const question2 = EARLY_CALLER_NAME_QUESTION;
+    return {
+      replyText: ensureSingleIntakeQuestion(question2),
+      fields: attachPendingQuestion(withIntro, "caller_name"),
+      nextState: "collecting_intake"
+    };
+  }
+  const targetField = nextRequired ?? "callback_phone";
   const pendingQuestion = mapRequiredFieldToPending(targetField);
-  const question = targetField === "full_name" && !isCallerNameResolved(withIntro) ? EARLY_CALLER_NAME_QUESTION : getNaturalTransitionQuestion(targetField, withIntro, callerPhone);
+  const question = targetField === "problem_description" ? buildCallReasonQuestionAfterName(withIntro) : getNaturalTransitionQuestion(targetField, withIntro, callerPhone);
   return {
-    replyText: ensureSingleIntakeQuestion(
-      `${REALTIME_INTRO_TRANSITION} ${question}`.replace(/\s+/g, " ").trim()
-    ),
+    replyText: ensureSingleIntakeQuestion(question),
     fields: attachPendingQuestion(withIntro, pendingQuestion),
-    nextState: "collecting_intake"
+    nextState: targetField === "problem_description" ? "listening_for_reason" : "collecting_intake"
   };
 }
 function resolveCallReasonClarificationReply(fields, speech) {
@@ -1844,7 +2295,7 @@ function isCallerNameResolved(fields) {
   if (fields.caller_name_declined === true || fields.caller_name_unavailable === true) {
     return true;
   }
-  return hasValue4(fields.full_name) && isPlausibleCallerName(fields.full_name ?? "");
+  return hasCompleteCallerName(fields);
 }
 function isAdditionalNotesResolved(fields) {
   return fields.additional_notes_responded === true;
@@ -1916,14 +2367,14 @@ function needsImmediateSafetyClarification(fields) {
 }
 function collectMissingFieldsInPriorityOrder(fields) {
   const missing = [];
-  if (!hasValue4(fields.problem_description)) {
-    missing.push("problem_description");
-  }
   if (needsImmediateSafetyClarification(fields)) {
     missing.push("emergency_or_active_leak");
   }
   if (!isCallerNameResolved(fields)) {
     missing.push("full_name");
+  }
+  if (!hasValue4(fields.problem_description)) {
+    missing.push("problem_description");
   }
   if (!isCallbackComplete(fields)) {
     missing.push("callback_phone");
@@ -1984,13 +2435,13 @@ function canCloseCall(fields, conversationState, confirmedSpeech) {
   return isSummaryConfirmed(confirmedSpeech);
 }
 function blocksPrematureCallClosing(conversationState) {
-  return conversationState === "listening_for_reason" || conversationState === "collecting_intake" || conversationState === "awaiting_callback_confirmation" || conversationState === "awaiting_address_confirmation" || conversationState === "awaiting_schedule_clarification" || conversationState === "awaiting_schedule_confirmation" || conversationState === "awaiting_additional_notes";
+  return conversationState === "awaiting_opening_name" || conversationState === "listening_for_reason" || conversationState === "collecting_intake" || conversationState === "awaiting_callback_confirmation" || conversationState === "awaiting_address_confirmation" || conversationState === "awaiting_schedule_clarification" || conversationState === "awaiting_schedule_confirmation" || conversationState === "awaiting_additional_notes";
 }
 function getNextRequiredField(fields) {
   return collectMissingFieldsInPriorityOrder(fields)[0] ?? null;
 }
 var FIELD_QUESTIONS = {
-  problem_description: "What's going on with the roof?",
+  problem_description: "What can the roofing team help you with today?",
   full_name: EARLY_CALLER_NAME_QUESTION,
   callback_phone: "What's the best callback number?",
   address: "What's the property address?",
@@ -2012,6 +2463,7 @@ function getRequiredFieldQuestion(field, fields, callerPhone) {
 }
 var CONTEXTUAL_TRANSITIONS = {
   full_name: EARLY_CALLER_NAME_QUESTION,
+  problem_description: "What can the roofing team help you with today?",
   address: "What's the property address?",
   emergency_or_active_leak: "Is there an active leak or water getting inside right now?",
   urgency: "How urgent is this?",
@@ -2056,16 +2508,7 @@ function applyDirectAnswerToMissingField(fields, answer, callerPhone, pendingQue
         break;
       }
       if (!isCallerNameResolved(updated)) {
-        const validated = validateCallerNameCandidate(trimmed, { isDirectNameAnswer: true });
-        if (validated.value) {
-          updated.full_name = validated.value.slice(0, 100);
-          updated.name_needs_clarification = false;
-          updated.caller_name_declined = false;
-          updated.caller_name_unavailable = false;
-        } else if (validated.needsClarification) {
-          updated.name_needs_clarification = true;
-          updated.name_clarification_attempts = (updated.name_clarification_attempts ?? 0) + 1;
-        }
+        updated = processCallerNameTurn(updated, trimmed).fields;
       }
       break;
     }
@@ -2397,7 +2840,7 @@ var ResponseStateGuard = class {
       this.logBlocked(reason, "awaiting_closing_mark");
       return false;
     }
-    if (reason !== "opening_greeting" && reason !== "opening_silence_reprompt" && this.waitingForCaller && !this.callerTurnReady) {
+    if (reason !== "opening_greeting" && reason !== "opening_name_question" && reason !== "opening_silence_reprompt" && this.waitingForCaller && !this.callerTurnReady) {
       this.logBlocked(reason, "waiting_for_caller");
       return false;
     }
@@ -2407,10 +2850,14 @@ var ResponseStateGuard = class {
     }
     return true;
   }
-  beginOpeningReasonListen() {
+  beginOpeningNameListen() {
     this.listeningForOpeningReason = true;
     this.waitingForCaller = true;
     this.callerTurnReady = false;
+  }
+  /** @deprecated use beginOpeningNameListen */
+  beginOpeningReasonListen() {
+    this.beginOpeningNameListen();
   }
   completeOpeningReasonListen() {
     this.listeningForOpeningReason = false;
@@ -2424,6 +2871,9 @@ var ResponseStateGuard = class {
   }
   wasLastResponseOpeningGreeting() {
     return this.lastTriggerReason === "opening_greeting";
+  }
+  wasLastResponseOpeningNameQuestion() {
+    return this.lastTriggerReason === "opening_name_question";
   }
   beginCallerTurn(turnId) {
     this.activeTurnId = turnId;
@@ -2453,7 +2903,7 @@ var ResponseStateGuard = class {
     this.clientInitiatedResponse = true;
     this.callerTurnReady = false;
     this.lastTriggerReason = reason;
-    if (reason === "opening_greeting" || reason === "opening_silence_reprompt") {
+    if (reason === "opening_greeting" || reason === "opening_name_question" || reason === "opening_silence_reprompt") {
       this.waitingForCaller = reason === "opening_silence_reprompt";
     } else {
       this.waitingForCaller = false;
@@ -2487,7 +2937,10 @@ var ResponseStateGuard = class {
     this.assistantAudioPending = false;
     this.responseTurnId = null;
     if (this.lastTriggerReason === "opening_greeting") {
-      this.beginOpeningReasonListen();
+      return;
+    }
+    if (this.lastTriggerReason === "opening_name_question") {
+      this.beginOpeningNameListen();
     }
   }
   onResponseCancelled() {
@@ -2574,19 +3027,19 @@ var OPENING_SILENCE_FIRST_REPROMPT_MS = 6e3;
 var OPENING_SILENCE_SECOND_REPROMPT_MS = 6e3;
 var OPENING_SILENCE_HANGUP_MS = 8e3;
 var OPENING_STILL_THERE_PROMPT = "Are you still there?";
-var OPENING_READY_REPROMPT = "I'm here whenever you're ready. How can I help you today?";
+var OPENING_READY_REPROMPT = "I'm here whenever you're ready. Could I start with your first and last name?";
 var OPENING_SILENCE_GOODBYE = "It sounds like we may have lost the connection. Thanks for calling Beau's Roofing. Have a great day.";
 var OPENING_ECHO_PATTERN = /\b(thank you for calling|beau'?s roofing|ai assistant|how can i help you today|how can we help you today)\b/i;
 var OPENING_FILLER_PATTERN = /^(hi|hello|hey|yes|yeah|yep|ok|okay|thanks|thank you|uh|um|hmm)\.?$/i;
-function hasValue5(value) {
-  return typeof value === "string" && value.trim().length > 0;
-}
 function isAssistantOpeningEchoTranscript(speech) {
   const normalized = speech.trim().toLowerCase();
   if (!normalized) {
     return true;
   }
   if (normalized === REALTIME_OPENING_QUESTION.trim().toLowerCase()) {
+    return true;
+  }
+  if (normalized === REALTIME_OPENING_NAME_QUESTION.trim().toLowerCase()) {
     return true;
   }
   if (OPENING_ECHO_PATTERN.test(normalized)) {
@@ -2598,9 +3051,9 @@ function isAssistantOpeningEchoTranscript(speech) {
   }
   return false;
 }
-function isMeaningfulOpeningCallerTranscript(speech) {
+function isMeaningfulOpeningCallerTranscript(speech, options = {}) {
   const trimmed = speech.trim();
-  if (trimmed.length < 3) {
+  if (trimmed.length < 2) {
     return false;
   }
   if (isAssistantOpeningEchoTranscript(trimmed)) {
@@ -2609,22 +3062,29 @@ function isMeaningfulOpeningCallerTranscript(speech) {
   if (OPENING_FILLER_PATTERN.test(trimmed)) {
     return false;
   }
+  if (isSpelledNameSpeech(trimmed)) {
+    return true;
+  }
   if (extractExplicitCallerName(trimmed)) {
     return true;
   }
-  if (extractDamageOrCallReason(trimmed)) {
+  const validated = validateCallerNameCandidate(trimmed, {
+    isDirectNameAnswer: true,
+    allowDirectNameWithoutIntro: true
+  });
+  if (validated.value && isPlausibleCallerName(validated.value)) {
     return true;
   }
-  if (isLikelyCallReasonSpeech(trimmed)) {
-    return true;
+  if (options.awaitingName !== true) {
+    if (extractDamageOrCallReason(trimmed)) {
+      return true;
+    }
+    if (isLikelyCallReasonSpeech(trimmed)) {
+      return true;
+    }
+    return trimmed.split(/\s+/).length >= 4;
   }
-  return trimmed.split(/\s+/).length >= 4;
-}
-function canAdvanceAfterOpening(fields, options = {}) {
-  if (options.hasReceivedMeaningfulCallerTranscript !== true) {
-    return false;
-  }
-  return hasValue5(fields.problem_description);
+  return trimmed.length >= 2;
 }
 var OpeningSilenceController = class {
   listeningForReason = false;
@@ -5278,7 +5738,7 @@ function preserveConfirmedFieldState(before, after) {
 }
 
 // src/orchestrator/multi-field-extraction.ts
-function hasValue6(value) {
+function hasValue5(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 function isShortPendingStyleAnswer(speech) {
@@ -5401,17 +5861,17 @@ function extractAllFieldsFromTranscript(speech, callerPhone, pendingQuestion = n
 }
 function mergeExtractedFields(fields, extracted) {
   let updated = { ...fields };
-  if (hasValue6(extracted.full_name) && isPlausibleCallerName(extracted.full_name) && !hasValue6(updated.full_name)) {
+  if (hasValue5(extracted.full_name) && isPlausibleCallerName(extracted.full_name) && !hasValue5(updated.full_name)) {
     updated.full_name = extracted.full_name.trim().slice(0, 100);
   }
-  if (hasValue6(extracted.problem_description) && !hasValue6(updated.problem_description)) {
+  if (hasValue5(extracted.problem_description) && !hasValue5(updated.problem_description)) {
     updated.problem_description = extracted.problem_description.trim().slice(0, 500);
   }
-  if (hasValue6(extracted.address) && isPlausibleServiceAddress(extracted.address) && !hasValue6(updated.address)) {
+  if (hasValue5(extracted.address) && isPlausibleServiceAddress(extracted.address) && !hasValue5(updated.address)) {
     updated.address = extracted.address.trim().slice(0, 500);
     updated.address_confirmed = false;
   }
-  if (hasValue6(extracted.callback_phone)) {
+  if (hasValue5(extracted.callback_phone)) {
     const normalized = normalizeCallbackPhoneE164(extracted.callback_phone);
     if (!isCompanyPhoneNumber(normalized)) {
       const sameNumber = updated.callback_phone === normalized;
@@ -5455,23 +5915,21 @@ function applyAnswerForPendingQuestion(fields, answer, callerPhone, pendingQuest
         updated.name_needs_clarification = false;
         break;
       }
-      if (!isCallerNameResolved(updated)) {
-        const validated = validateCallerNameCandidate(trimmed, { isDirectNameAnswer: true });
-        if (validated.value) {
-          updated.full_name = validated.value.slice(0, 100);
-          updated.name_needs_clarification = false;
-          updated.caller_name_declined = false;
-          updated.caller_name_unavailable = false;
-        } else if (validated.needsClarification) {
-          updated.name_needs_clarification = true;
-          updated.name_clarification_attempts = (updated.name_clarification_attempts ?? 0) + 1;
+      if (isLikelyCallReasonSpeech(trimmed) && !extractExplicitCallerName(trimmed)) {
+        const reason = normalizeCallReasonFromSpeech(trimmed);
+        if (reason && !hasValue5(updated.problem_description)) {
+          updated.problem_description = reason;
         }
+        break;
+      }
+      if (!isCallerNameResolved(updated)) {
+        updated = processCallerNameTurn(updated, trimmed).fields;
       }
       break;
     }
     case "reason_for_call":
     case "call_reason":
-      if (!hasValue6(updated.problem_description)) {
+      if (!hasValue5(updated.problem_description)) {
         if (isShortYesNoReasonAnswer(trimmed)) {
           updated.call_reason_awaiting_clarification = true;
           updated.call_reason_clarification_attempts = (updated.call_reason_clarification_attempts ?? 0) + 1;
@@ -5484,7 +5942,7 @@ function applyAnswerForPendingQuestion(fields, answer, callerPhone, pendingQuest
           updated.name_pending_confirmation = void 0;
           updated.name_awaiting_repeat = void 0;
           const volunteeredName = extractExplicitCallerName(trimmed);
-          if (volunteeredName && !hasValue6(updated.full_name)) {
+          if (volunteeredName && !hasValue5(updated.full_name)) {
             updated.full_name = volunteeredName;
           }
         } else if (trimmed.length > 0) {
@@ -5532,7 +5990,7 @@ function applyAnswerForPendingQuestion(fields, answer, callerPhone, pendingQuest
       }
       break;
     case "service_address":
-      if (!hasValue6(updated.address)) {
+      if (!hasValue5(updated.address)) {
         if (isPlausibleServiceAddress(trimmed)) {
           updated.address = trimmed.slice(0, 500);
           updated.address_confirmed = false;
@@ -5554,7 +6012,7 @@ function applyAnswerForPendingQuestion(fields, answer, callerPhone, pendingQuest
       break;
     }
     case "urgency":
-      if (!hasValue6(updated.urgency)) {
+      if (!hasValue5(updated.urgency)) {
         updated.urgency = trimmed.slice(0, 200);
       }
       break;
@@ -5570,7 +6028,7 @@ function applyAnswerForPendingQuestion(fields, answer, callerPhone, pendingQuest
 }
 
 // src/orchestrator/realtime-intake.ts
-function hasValue7(value) {
+function hasValue6(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 function mergeRealtimeCallerAnswer(fields, answer, callerPhone, options = {}) {
@@ -5604,7 +6062,7 @@ function mergeRealtimeCallerAnswer(fields, answer, callerPhone, options = {}) {
       updated = applyDirectAnswerToMissingField(updated, answer, callerPhone, null);
     }
   }
-  if (hasValue7(updated.appointment_preference_raw) && updated.schedule_confirmed !== true) {
+  if (hasValue6(updated.appointment_preference_raw) && updated.schedule_confirmed !== true) {
     updated = processScheduleCapture(updated, answer).fields;
   }
   const merged = preserveConfirmedFieldState(fields, updated);
@@ -5763,6 +6221,9 @@ function clearErroneousNameCaptureForReason(fields) {
   return cleaned;
 }
 function shouldHandlePendingCallReason(fields, conversationState) {
+  if (conversationState === "awaiting_opening_name") {
+    return false;
+  }
   const pending = resolvePendingQuestion(fields, conversationState);
   return isListeningForCallReason(conversationState, pending) && !fields.problem_description?.trim();
 }
@@ -5849,19 +6310,11 @@ function packagePostIntakeResult(fields, replyText, nextState, options = {}) {
 }
 function buildPostIntakeReply(policy, fieldsBefore, updatedFields, trimmedSpeech, callerPhone, filledCount, options = {}) {
   const nextRequired = getNextRequiredField(updatedFields);
-  if (options.isFirstCallerTurn === true && canAdvanceAfterOpening(updatedFields, {
-    hasReceivedMeaningfulCallerTranscript: options.hasReceivedMeaningfulCallerTranscript
-  }) && updatedFields.intake_intro_delivered !== true && updatedFields.problem_description?.trim() && (nextRequired === "full_name" || nextRequired === "emergency_or_active_leak")) {
-    const question = nextRequired === "full_name" ? EARLY_CALLER_NAME_QUESTION : getNaturalTransitionQuestion(nextRequired, updatedFields, callerPhone);
+  if (isCallerNameResolved(updatedFields) && !updatedFields.problem_description?.trim() && nextRequired === "problem_description") {
     return packagePostIntakeResult(
-      {
-        ...updatedFields,
-        intake_intro_delivered: true
-      },
-      ensureSingleIntakeQuestion(
-        `${REALTIME_INTRO_TRANSITION} ${question}`.replace(/\s+/g, " ").trim()
-      ),
-      "collecting_intake",
+      attachPendingQuestion(updatedFields, "reason_for_call"),
+      ensureSingleIntakeQuestion(buildCallReasonQuestionAfterName(updatedFields)),
+      "listening_for_reason",
       options
     );
   }
@@ -5919,7 +6372,7 @@ function buildPostIntakeReply(policy, fieldsBefore, updatedFields, trimmedSpeech
   return packagePostIntakeResult(updatedFields, combinedReply, "collecting_intake", options);
 }
 function isNameCaptureTurn(fields, conversationState, speech, options = {}) {
-  if (conversationState === "listening_for_reason") {
+  if (conversationState === "awaiting_opening_name" || conversationState === "listening_for_reason") {
     return false;
   }
   if (blocksGenericReadbackConfirmation(fields, conversationState)) {
@@ -6429,6 +6882,58 @@ async function processRealtimeCallerTurn(input) {
       nextConversationState: "awaiting_summary_confirmation"
     };
   }
+  if (conversationState === "awaiting_opening_name") {
+    const nameOutcome = processCallerNameTurn(fieldsBefore, trimmedSpeech);
+    let updatedFields2 = nameOutcome.fields;
+    if (!nameOutcome.complete) {
+      updatedFields2 = attachPendingQuestion(updatedFields2, "caller_name");
+      session = applyLocalSessionUpdate(session, {
+        collectedFields: updatedFields2,
+        currentQuestion: nameOutcome.replyText ?? OPENING_CALLER_NAME_QUESTION
+      });
+      persistTurnAsync(callSid, {
+        collectedFields: updatedFields2,
+        currentQuestion: nameOutcome.replyText ?? OPENING_CALLER_NAME_QUESTION,
+        callerSpeech: trimmedSpeech,
+        assistantReply: nameOutcome.replyText ?? OPENING_CALLER_NAME_QUESTION
+      });
+      return finishTurn(input, {
+        replyText: ensureSingleIntakeQuestion(
+          nameOutcome.replyText ?? OPENING_CALLER_NAME_QUESTION
+        ),
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: "awaiting_opening_name"
+      });
+    }
+    updatedFields2 = attachPendingQuestion(
+      {
+        ...updatedFields2,
+        opening_name_complete: true,
+        intake_intro_delivered: true
+      },
+      "reason_for_call"
+    );
+    const reasonQuestion = nameOutcome.replyText ? `${nameOutcome.replyText} What can the roofing team help you with today?` : buildCallReasonQuestionAfterName(updatedFields2);
+    session = applyLocalSessionUpdate(session, {
+      collectedFields: updatedFields2,
+      currentQuestion: reasonQuestion
+    });
+    persistTurnAsync(callSid, {
+      collectedFields: updatedFields2,
+      currentQuestion: reasonQuestion,
+      callerSpeech: trimmedSpeech,
+      assistantReply: reasonQuestion
+    });
+    return finishTurn(input, {
+      replyText: ensureSingleIntakeQuestion(reasonQuestion),
+      hangup: false,
+      hangupAfterMark: false,
+      session,
+      nextConversationState: "listening_for_reason"
+    });
+  }
   if (shouldHandlePendingCallReason(fieldsBefore, conversationState)) {
     const capture = applyCallReasonCapture(fieldsBefore, trimmedSpeech);
     if (!capture.resolved) {
@@ -6682,7 +7187,7 @@ var SessionOrchestrator = class {
       if (this.session) {
         await updateCallSession({
           callSid: this.context.callSid,
-          currentQuestion: REALTIME_OPENING_QUESTION,
+          currentQuestion: REALTIME_OPENING_NAME_QUESTION,
           transcriptEntry: createTranscriptEntry("assistant", REALTIME_OPENING_GREETING)
         });
       }
@@ -6746,11 +7251,11 @@ var SessionOrchestrator = class {
   markOpeningDelivered() {
     this.awaitingFirstCallerTurn = true;
   }
-  onOpeningGreetingComplete() {
+  onOpeningNameQuestionComplete() {
     this.openingGreetingPlaybackComplete = true;
     this.listeningForReason = true;
-    this.conversationState = "listening_for_reason";
-    this.attachPendingCallReason();
+    this.conversationState = "awaiting_opening_name";
+    this.attachPendingOpeningName();
     logInfo("conversation_state_transition", {
       callSid: this.context.callSid,
       state: this.conversationState
@@ -6765,6 +7270,16 @@ var SessionOrchestrator = class {
   onMeaningfulCallerTranscriptProcessed() {
     this.hasReceivedMeaningfulCallerTranscript = true;
     this.listeningForReason = false;
+  }
+  attachPendingOpeningName() {
+    if (!this.session) {
+      return;
+    }
+    const fields = this.session.collected_fields ?? {};
+    this.session = {
+      ...this.session,
+      collected_fields: attachPendingQuestion(fields, "caller_name")
+    };
   }
   attachPendingCallReason() {
     if (!this.session) {
@@ -6784,7 +7299,7 @@ var SessionOrchestrator = class {
     if (!trimmed) {
       return null;
     }
-    if (this.listeningForReason && !isMeaningfulOpeningCallerTranscript(trimmed)) {
+    if (this.listeningForReason && !isMeaningfulOpeningCallerTranscript(trimmed, { awaitingName: true })) {
       logInfo("opening_transcript_ignored", {
         callSid: this.context.callSid,
         transcriptLength: trimmed.length
@@ -6812,10 +7327,15 @@ var SessionOrchestrator = class {
         conversationState: this.conversationState,
         acknowledgmentPolicy: this.acknowledgmentPolicy,
         isFirstCallerTurn: this.awaitingFirstCallerTurn,
-        hasReceivedMeaningfulCallerTranscript: this.hasReceivedMeaningfulCallerTranscript || isMeaningfulOpeningCallerTranscript(trimmed),
+        hasReceivedMeaningfulCallerTranscript: this.hasReceivedMeaningfulCallerTranscript || isMeaningfulOpeningCallerTranscript(trimmed, {
+          awaitingName: this.conversationState === "awaiting_opening_name"
+        }),
         turnId
       });
-      if (isMeaningfulOpeningCallerTranscript(trimmed) && outcome.session?.collected_fields?.problem_description) {
+      const fields = outcome.session?.collected_fields ?? {};
+      if (isMeaningfulOpeningCallerTranscript(trimmed, {
+        awaitingName: this.conversationState === "awaiting_opening_name"
+      }) && (fields.problem_description || hasCompleteCallerName(fields))) {
         this.onMeaningfulCallerTranscriptProcessed();
       }
       this.session = outcome.session;
@@ -6882,6 +7402,7 @@ var CallBridge = class {
   responseWatchdogRequest = null;
   openingSilence = new OpeningSilenceController();
   openingGreetingPlaybackComplete = false;
+  openingNameQuestionSent = false;
   queuedOpeningTranscript = null;
   responseCreateCount = 0;
   openingResponseCreateCount = 0;
@@ -7023,10 +7544,10 @@ var CallBridge = class {
       this.orchestrator.markOpeningDelivered();
     }
   }
-  beginOpeningReasonListen() {
+  beginOpeningNameListen() {
     this.openingGreetingPlaybackComplete = true;
     this.openingSilence.beginListeningForReason();
-    this.orchestrator?.onOpeningGreetingComplete();
+    this.orchestrator?.onOpeningNameQuestionComplete();
     this.scheduleOpeningSilenceReprompt();
     const queued = this.queuedOpeningTranscript;
     this.queuedOpeningTranscript = null;
@@ -7034,11 +7555,18 @@ var CallBridge = class {
       void this.processCallerTranscriptAfterOpeningListen(queued);
     }
   }
+  sendOpeningNameQuestion() {
+    if (this.openingNameQuestionSent || !this.openAi || !this.orchestrator) {
+      return;
+    }
+    this.openingNameQuestionSent = true;
+    this.requestAssistantSpeech(REALTIME_OPENING_NAME_QUESTION, "opening_name_question");
+  }
   async processCallerTranscriptAfterOpeningListen(transcript) {
     if (!this.orchestrator?.isOpeningGreetingPlaybackComplete()) {
       return;
     }
-    if (this.openingSilence.isListeningForReason() && !isMeaningfulOpeningCallerTranscript(transcript)) {
+    if (this.openingSilence.isListeningForReason() && !isMeaningfulOpeningCallerTranscript(transcript, { awaitingName: true })) {
       this.scheduleOpeningSilenceReprompt();
       return;
     }
@@ -7046,7 +7574,7 @@ var CallBridge = class {
     if (!this.responseGuard.registerCallerTranscript(itemId)) {
       return;
     }
-    if (isMeaningfulOpeningCallerTranscript(transcript)) {
+    if (isMeaningfulOpeningCallerTranscript(transcript, { awaitingName: true })) {
       this.openingSilence.onMeaningfulCallerTranscript();
       this.responseGuard.completeOpeningReasonListen();
     }
@@ -7240,7 +7768,14 @@ var CallBridge = class {
         this.bargeIn?.handleResponseCompleted();
         this.responseGuard.onResponseDone();
         if (this.responseGuard.wasLastResponseOpeningGreeting()) {
-          this.beginOpeningReasonListen();
+          this.sendOpeningNameQuestion();
+          this.orchestrator?.onAssistantResponseDone();
+          this.clearResponseWatchdog();
+          this.pendingSpeech = null;
+          break;
+        }
+        if (this.responseGuard.wasLastResponseOpeningNameQuestion()) {
+          this.beginOpeningNameListen();
           this.orchestrator?.onAssistantResponseDone();
           this.clearResponseWatchdog();
           this.pendingSpeech = null;
@@ -7303,7 +7838,7 @@ var CallBridge = class {
       });
       return;
     }
-    if (this.openingSilence.isListeningForReason() && !isMeaningfulOpeningCallerTranscript(transcript)) {
+    if (this.openingSilence.isListeningForReason() && !isMeaningfulOpeningCallerTranscript(transcript, { awaitingName: true })) {
       logInfo("opening_transcript_ignored_at_bridge", {
         callSid: this.callSid ?? void 0,
         transcriptLength: transcript.length
@@ -7325,7 +7860,7 @@ var CallBridge = class {
       turnId: this.activeTurnId
     });
     beginTurnDiagnostic(this.callSid ?? "unknown", this.activeTurnId);
-    if (isMeaningfulOpeningCallerTranscript(transcript)) {
+    if (isMeaningfulOpeningCallerTranscript(transcript, { awaitingName: true })) {
       this.openingSilence.onMeaningfulCallerTranscript();
       this.responseGuard.completeOpeningReasonListen();
     }

@@ -10,12 +10,14 @@ import type { PhotosAvailability } from "./photos-field.js";
 import { buildValidatedSpokenSummary } from "./summary-builder.js";
 
 export const REALTIME_OPENING_GREETING =
-  "Thank you for calling Beau's Roofing. I'm Beau's Roofing's AI assistant. How can I help you today?";
+  "Thank you for calling Beau's Roofing. I'm Beau's Roofing's AI assistant.";
 
-export const REALTIME_INTRO_TRANSITION =
-  "Absolutely. I'll run you through a few questions so the roofing team has everything they need.";
+export const REALTIME_OPENING_NAME_QUESTION =
+  "Could I start with your first and last name?";
 
-export const REALTIME_OPENING_QUESTION = "How can I help you today?";
+export const REALTIME_INTRO_TRANSITION = "";
+
+export const REALTIME_OPENING_QUESTION = REALTIME_OPENING_NAME_QUESTION;
 
 export const REALTIME_ANYTHING_ELSE_QUESTION =
   "Is there anything else you'd like the roofing team to know?";
@@ -39,6 +41,14 @@ export type RealtimeFields = Omit<
   intake_intro_delivered?: boolean;
   caller_name_declined?: boolean;
   caller_name_unavailable?: boolean;
+  caller_first_name?: string;
+  caller_last_name?: string;
+  name_awaiting_last_name?: boolean;
+  name_awaiting_last_name_spelling?: boolean;
+  name_awaiting_first_name_spelling?: boolean;
+  name_spelling_verified?: boolean;
+  opening_name_complete?: boolean;
+  schedule_daypart?: "morning" | "afternoon" | "evening";
   name_clarification_attempts?: number;
   additional_notes_responded?: boolean;
   name_needs_clarification?: boolean;

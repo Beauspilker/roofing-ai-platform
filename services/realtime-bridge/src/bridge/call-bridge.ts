@@ -28,6 +28,7 @@ import {
 import { logError, logInfo, logWarn } from "../logger.js";
 import { OpenAiRealtimeSession } from "../openai/realtime-session.js";
 import { SessionOrchestrator } from "../orchestrator/session-orchestrator.js";
+import { REALTIME_OPENING_NAME_QUESTION } from "../orchestrator/realtime-prompts.js";
 import {
   buildTwilioMarkMessage,
   buildTwilioMediaMessage,
@@ -80,6 +81,7 @@ export class CallBridge {
   private responseWatchdogRequest: PendingSpeechRequest | null = null;
   private readonly openingSilence = new OpeningSilenceController();
   private openingGreetingPlaybackComplete = false;
+  private openingNameQuestionSent = false;
   private queuedOpeningTranscript: string | null = null;
   private responseCreateCount = 0;
   private openingResponseCreateCount = 0;
@@ -254,10 +256,10 @@ export class CallBridge {
     }
   }
 
-  private beginOpeningReasonListen(): void {
+  private beginOpeningNameListen(): void {
     this.openingGreetingPlaybackComplete = true;
     this.openingSilence.beginListeningForReason();
-    this.orchestrator?.onOpeningGreetingComplete();
+    this.orchestrator?.onOpeningNameQuestionComplete();
     this.scheduleOpeningSilenceReprompt();
 
     const queued = this.queuedOpeningTranscript;
@@ -268,6 +270,15 @@ export class CallBridge {
     }
   }
 
+  private sendOpeningNameQuestion(): void {
+    if (this.openingNameQuestionSent || !this.openAi || !this.orchestrator) {
+      return;
+    }
+
+    this.openingNameQuestionSent = true;
+    this.requestAssistantSpeech(REALTIME_OPENING_NAME_QUESTION, "opening_name_question");
+  }
+
   private async processCallerTranscriptAfterOpeningListen(transcript: string): Promise<void> {
     if (!this.orchestrator?.isOpeningGreetingPlaybackComplete()) {
       return;
@@ -275,7 +286,7 @@ export class CallBridge {
 
     if (
       this.openingSilence.isListeningForReason() &&
-      !isMeaningfulOpeningCallerTranscript(transcript)
+      !isMeaningfulOpeningCallerTranscript(transcript, { awaitingName: true })
     ) {
       this.scheduleOpeningSilenceReprompt();
       return;
@@ -287,7 +298,7 @@ export class CallBridge {
       return;
     }
 
-    if (isMeaningfulOpeningCallerTranscript(transcript)) {
+    if (isMeaningfulOpeningCallerTranscript(transcript, { awaitingName: true })) {
       this.openingSilence.onMeaningfulCallerTranscript();
       this.responseGuard.completeOpeningReasonListen();
     }
@@ -528,7 +539,15 @@ export class CallBridge {
         this.responseGuard.onResponseDone();
 
         if (this.responseGuard.wasLastResponseOpeningGreeting()) {
-          this.beginOpeningReasonListen();
+          this.sendOpeningNameQuestion();
+          this.orchestrator?.onAssistantResponseDone();
+          this.clearResponseWatchdog();
+          this.pendingSpeech = null;
+          break;
+        }
+
+        if (this.responseGuard.wasLastResponseOpeningNameQuestion()) {
+          this.beginOpeningNameListen();
           this.orchestrator?.onAssistantResponseDone();
           this.clearResponseWatchdog();
           this.pendingSpeech = null;
@@ -605,7 +624,7 @@ export class CallBridge {
 
     if (
       this.openingSilence.isListeningForReason() &&
-      !isMeaningfulOpeningCallerTranscript(transcript)
+      !isMeaningfulOpeningCallerTranscript(transcript, { awaitingName: true })
     ) {
       logInfo("opening_transcript_ignored_at_bridge", {
         callSid: this.callSid ?? undefined,
@@ -635,7 +654,7 @@ export class CallBridge {
 
     beginTurnDiagnostic(this.callSid ?? "unknown", this.activeTurnId);
 
-    if (isMeaningfulOpeningCallerTranscript(transcript)) {
+    if (isMeaningfulOpeningCallerTranscript(transcript, { awaitingName: true })) {
       this.openingSilence.onMeaningfulCallerTranscript();
       this.responseGuard.completeOpeningReasonListen();
     }

@@ -57,7 +57,7 @@ test("I'm calling about roof damage keeps callerName unresolved and selects call
   assert.equal(fields.full_name, undefined);
   assert.match(fields.problem_description ?? "", /roof damage/i);
   assert.equal(getNextRequiredField(fields), "full_name");
-  assert.match(outcome.replyText, /Could I start with your name/i);
+  assert.match(outcome.replyText, /first and last name/i);
 });
 
 test("I am calling for hail damage keeps callerName unresolved", async () => {

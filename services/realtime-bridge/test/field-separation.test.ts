@@ -23,7 +23,8 @@ import {
 } from "../src/orchestrator/summary-builder.js";
 import {
   buildStructuredSpokenSummary,
-  REALTIME_INTRO_TRANSITION,
+  REALTIME_OPENING_GREETING,
+  REALTIME_OPENING_NAME_QUESTION,
   type RealtimeFields,
 } from "../src/orchestrator/realtime-prompts.js";
 import {
@@ -186,30 +187,40 @@ test("caller correction updates only the corrected field", () => {
 test("opening explanation occurs after caller explains reason for calling", async () => {
   const policy = new AcknowledgmentPolicy();
   const outcome = await processRealtimeCallerTurn({
-    session: mockSession,
+    session: {
+      ...mockSession,
+      collected_fields: {
+        caller_first_name: "Beau",
+        caller_last_name: "Spilker",
+        full_name: "Beau Spilker",
+        opening_name_complete: true,
+        pending_question: "reason_for_call",
+      },
+    },
     callSid: "CA123",
     callerPhone: "+15551234567",
     speechResult: "We had hail damage last night",
-    conversationState: "collecting_intake",
+    conversationState: "listening_for_reason",
     acknowledgmentPolicy: policy,
-    isFirstCallerTurn: true,
+    isFirstCallerTurn: false,
     hasReceivedMeaningfulCallerTranscript: true,
   });
 
-  assert.match(outcome.replyText, /few questions/i);
-  assert.match(outcome.replyText, /roofing team has everything they need/i);
+  assert.match(outcome.replyText, /best number to reach you|urgent|insurance|address/i);
 });
 
-test("opening says a few questions so roofing team has everything they need", () => {
-  assert.match(REALTIME_INTRO_TRANSITION, /a few questions/i);
-  assert.match(REALTIME_INTRO_TRANSITION, /roofing team has everything they need/i);
+test("opening uses a separate calm name question after greeting", () => {
+  assert.doesNotMatch(REALTIME_OPENING_GREETING, /\?/);
+  assert.match(REALTIME_OPENING_NAME_QUESTION, /first and last name/i);
 });
 
 test("only one pending question is resolved at a time", () => {
   const pending = resolvePendingQuestion(
     {
       problem_description: "hail damage",
-      full_name: "Beau",
+      full_name: "Beau Spilker",
+      caller_first_name: "Beau",
+      caller_last_name: "Spilker",
       callback_phone: "+14025551234",
       callback_phone_confirmed: true,
       address: "123 Main Street",

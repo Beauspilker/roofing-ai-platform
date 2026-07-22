@@ -2,10 +2,17 @@ import {
   extractDamageOrCallReason,
   extractExplicitCallerName,
   isLikelyCallReasonSpeech,
+  isPlausibleCallerName,
+  validateCallerNameCandidate,
 } from "../orchestrator/field-validation.js";
 import { normalizeCallReasonFromSpeech } from "../orchestrator/call-reason-handling.js";
+import { isSpelledNameSpeech } from "../orchestrator/caller-name-intake.js";
 import type { RealtimeFields } from "../orchestrator/realtime-prompts.js";
-import { REALTIME_OPENING_GREETING, REALTIME_OPENING_QUESTION } from "../orchestrator/realtime-prompts.js";
+import {
+  REALTIME_OPENING_GREETING,
+  REALTIME_OPENING_NAME_QUESTION,
+  REALTIME_OPENING_QUESTION,
+} from "../orchestrator/realtime-prompts.js";
 
 export const OPENING_SILENCE_FIRST_REPROMPT_MS = 6_000;
 export const OPENING_SILENCE_SECOND_REPROMPT_MS = 6_000;
@@ -13,7 +20,7 @@ export const OPENING_SILENCE_HANGUP_MS = 8_000;
 
 export const OPENING_STILL_THERE_PROMPT = "Are you still there?";
 export const OPENING_READY_REPROMPT =
-  "I'm here whenever you're ready. How can I help you today?";
+  "I'm here whenever you're ready. Could I start with your first and last name?";
 export const OPENING_SILENCE_GOODBYE =
   "It sounds like we may have lost the connection. Thanks for calling Beau's Roofing. Have a great day.";
 
@@ -38,6 +45,10 @@ export function isAssistantOpeningEchoTranscript(speech: string): boolean {
     return true;
   }
 
+  if (normalized === REALTIME_OPENING_NAME_QUESTION.trim().toLowerCase()) {
+    return true;
+  }
+
   if (OPENING_ECHO_PATTERN.test(normalized)) {
     return true;
   }
@@ -53,10 +64,13 @@ export function isAssistantOpeningEchoTranscript(speech: string): boolean {
   return false;
 }
 
-export function isMeaningfulOpeningCallerTranscript(speech: string): boolean {
+export function isMeaningfulOpeningCallerTranscript(
+  speech: string,
+  options: { awaitingName?: boolean } = {},
+): boolean {
   const trimmed = speech.trim();
 
-  if (trimmed.length < 3) {
+  if (trimmed.length < 2) {
     return false;
   }
 
@@ -68,19 +82,35 @@ export function isMeaningfulOpeningCallerTranscript(speech: string): boolean {
     return false;
   }
 
+  if (isSpelledNameSpeech(trimmed)) {
+    return true;
+  }
+
   if (extractExplicitCallerName(trimmed)) {
     return true;
   }
 
-  if (extractDamageOrCallReason(trimmed)) {
+  const validated = validateCallerNameCandidate(trimmed, {
+    isDirectNameAnswer: true,
+    allowDirectNameWithoutIntro: true,
+  });
+  if (validated.value && isPlausibleCallerName(validated.value)) {
     return true;
   }
 
-  if (isLikelyCallReasonSpeech(trimmed)) {
-    return true;
+  if (options.awaitingName !== true) {
+    if (extractDamageOrCallReason(trimmed)) {
+      return true;
+    }
+
+    if (isLikelyCallReasonSpeech(trimmed)) {
+      return true;
+    }
+
+    return trimmed.split(/\s+/).length >= 4;
   }
 
-  return trimmed.split(/\s+/).length >= 4;
+  return trimmed.length >= 2;
 }
 
 export function resolveCallReasonFromSpeech(speech: string): string | null {
@@ -91,10 +121,15 @@ export function canAdvanceAfterOpening(
   fields: RealtimeFields,
   options: {
     hasReceivedMeaningfulCallerTranscript?: boolean;
+    awaitingName?: boolean;
   } = {},
 ): boolean {
   if (options.hasReceivedMeaningfulCallerTranscript !== true) {
     return false;
+  }
+
+  if (options.awaitingName === true) {
+    return Boolean(fields.caller_first_name?.trim() || fields.full_name?.trim());
   }
 
   return hasValue(fields.problem_description);

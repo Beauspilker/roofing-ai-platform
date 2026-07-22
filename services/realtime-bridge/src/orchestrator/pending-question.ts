@@ -117,6 +117,10 @@ export function resolvePendingQuestion(
     return stored;
   }
 
+  if (conversationState === "awaiting_opening_name") {
+    return "caller_name";
+  }
+
   if (conversationState === "awaiting_callback_confirmation") {
     return "callback_confirmation";
   }
@@ -178,6 +182,8 @@ export function pendingQuestionForConversationState(
   conversationState: ConversationState,
 ): PendingQuestionKey | null {
   switch (conversationState) {
+    case "awaiting_opening_name":
+      return "caller_name";
     case "awaiting_callback_confirmation":
       return "callback_confirmation";
     case "awaiting_address_confirmation":

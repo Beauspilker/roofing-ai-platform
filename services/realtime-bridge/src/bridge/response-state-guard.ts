@@ -2,6 +2,7 @@ import { logInfo, logWarn } from "../logger.js";
 
 export type ResponseTriggerReason =
   | "opening_greeting"
+  | "opening_name_question"
   | "opening_silence_reprompt"
   | "caller_turn_reply"
   | "closing_message";
@@ -45,6 +46,7 @@ export class ResponseStateGuard {
 
     if (
       reason !== "opening_greeting" &&
+      reason !== "opening_name_question" &&
       reason !== "opening_silence_reprompt" &&
       this.waitingForCaller &&
       !this.callerTurnReady
@@ -61,10 +63,15 @@ export class ResponseStateGuard {
     return true;
   }
 
-  beginOpeningReasonListen(): void {
+  beginOpeningNameListen(): void {
     this.listeningForOpeningReason = true;
     this.waitingForCaller = true;
     this.callerTurnReady = false;
+  }
+
+  /** @deprecated use beginOpeningNameListen */
+  beginOpeningReasonListen(): void {
+    this.beginOpeningNameListen();
   }
 
   completeOpeningReasonListen(): void {
@@ -82,6 +89,10 @@ export class ResponseStateGuard {
 
   wasLastResponseOpeningGreeting(): boolean {
     return this.lastTriggerReason === "opening_greeting";
+  }
+
+  wasLastResponseOpeningNameQuestion(): boolean {
+    return this.lastTriggerReason === "opening_name_question";
   }
 
   beginCallerTurn(turnId: number): void {
@@ -120,7 +131,7 @@ export class ResponseStateGuard {
     this.callerTurnReady = false;
     this.lastTriggerReason = reason;
 
-    if (reason === "opening_greeting" || reason === "opening_silence_reprompt") {
+    if (reason === "opening_greeting" || reason === "opening_name_question" || reason === "opening_silence_reprompt") {
       this.waitingForCaller = reason === "opening_silence_reprompt";
     } else {
       this.waitingForCaller = false;
@@ -160,7 +171,11 @@ export class ResponseStateGuard {
     this.responseTurnId = null;
 
     if (this.lastTriggerReason === "opening_greeting") {
-      this.beginOpeningReasonListen();
+      return;
+    }
+
+    if (this.lastTriggerReason === "opening_name_question") {
+      this.beginOpeningNameListen();
     }
   }
 

@@ -4,6 +4,9 @@ import {
   extractExplicitCallerName,
   isLikelyCallReasonSpeech,
 } from "./field-validation.js";
+import {
+  buildCallReasonQuestionAfterName,
+} from "./caller-name-intake.js";
 import type { ConversationState } from "./conversation-state.js";
 import {
   attachPendingQuestion,
@@ -12,7 +15,6 @@ import {
 } from "./pending-question.js";
 import {
   ensureSingleIntakeQuestion,
-  REALTIME_INTRO_TRANSITION,
   type RealtimeFields,
 } from "./realtime-prompts.js";
 import {
@@ -230,27 +232,33 @@ export function buildCallReasonResolvedReply(
       withIntro,
     );
     return {
-      replyText: ensureSingleIntakeQuestion(
-        `${REALTIME_INTRO_TRANSITION} ${question}`.replace(/\s+/g, " ").trim(),
-      ),
+      replyText: ensureSingleIntakeQuestion(question),
       fields: attachPendingQuestion(withIntro, "active_leak"),
       nextState: "collecting_intake",
     };
   }
 
-  const targetField = nextRequired ?? "full_name";
+  if (!isCallerNameResolved(withIntro)) {
+    const question = EARLY_CALLER_NAME_QUESTION;
+    return {
+      replyText: ensureSingleIntakeQuestion(question),
+      fields: attachPendingQuestion(withIntro, "caller_name"),
+      nextState: "collecting_intake",
+    };
+  }
+
+  const targetField = nextRequired ?? "callback_phone";
   const pendingQuestion = mapRequiredFieldToPending(targetField) as PendingQuestionKey;
   const question =
-    targetField === "full_name" && !isCallerNameResolved(withIntro)
-      ? EARLY_CALLER_NAME_QUESTION
+    targetField === "problem_description"
+      ? buildCallReasonQuestionAfterName(withIntro)
       : getNaturalTransitionQuestion(targetField, withIntro, callerPhone);
 
   return {
-    replyText: ensureSingleIntakeQuestion(
-      `${REALTIME_INTRO_TRANSITION} ${question}`.replace(/\s+/g, " ").trim(),
-    ),
+    replyText: ensureSingleIntakeQuestion(question),
     fields: attachPendingQuestion(withIntro, pendingQuestion),
-    nextState: "collecting_intake",
+    nextState:
+      targetField === "problem_description" ? "listening_for_reason" : "collecting_intake",
   };
 }
 

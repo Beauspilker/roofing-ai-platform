@@ -1,4 +1,5 @@
 export type ConversationState =
+  | "awaiting_opening_name"
   | "listening_for_reason"
   | "collecting_intake"
   | "awaiting_callback_confirmation"
@@ -23,6 +24,7 @@ export const CLOSING_MESSAGE =
 
 export function isAwaitingCallerInput(state: ConversationState): boolean {
   return (
+    state === "awaiting_opening_name" ||
     state === "listening_for_reason" ||
     state === "collecting_intake" ||
     state === "awaiting_callback_confirmation" ||

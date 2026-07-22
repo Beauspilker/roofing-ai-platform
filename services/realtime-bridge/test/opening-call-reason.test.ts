@@ -50,7 +50,7 @@ test("pending call_reason accepts I'm calling for roof damage without confirmati
   assert.equal(fields.problem_description, "roof damage");
   assert.equal(fields.full_name, undefined);
   assert.doesNotMatch(outcome.replyText, /I heard .*Is that correct/i);
-  assert.match(outcome.replyText, /Could I start with your name/i);
+  assert.match(outcome.replyText, /first and last name/i);
   assert.equal(getNextRequiredField(fields), "full_name");
 });
 
@@ -87,7 +87,7 @@ test("My roof is leaking resolves without echo confirmation", async () => {
   });
 
   assert.doesNotMatch(outcome.replyText, /I heard .*Is that correct/i);
-  assert.match(outcome.replyText, /Could I start with your name/i);
+  assert.match(outcome.replyText, /first and last name/i);
 });
 
 test("unclear call reason asks focused clarification without echoing transcript", async () => {
@@ -143,7 +143,7 @@ test("resolved call reason cannot jump to callback phone while callerName is mis
   });
 
   assert.doesNotMatch(outcome.replyText, /best number to reach you/i);
-  assert.match(outcome.replyText, /Could I start with your name/i);
+  assert.match(outcome.replyText, /first and last name/i);
 });
 
 test("Twilio caller ID availability does not skip callerName", async () => {
@@ -159,7 +159,7 @@ test("Twilio caller ID availability does not skip callerName", async () => {
     hasReceivedMeaningfulCallerTranscript: true,
   });
 
-  assert.match(outcome.replyText, /Could I start with your name/i);
+  assert.match(outcome.replyText, /first and last name/i);
   assert.doesNotMatch(outcome.replyText, /best number to reach you/i);
 });
 

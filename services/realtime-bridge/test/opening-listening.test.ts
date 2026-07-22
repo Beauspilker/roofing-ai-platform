@@ -120,6 +120,19 @@ test("response.done after greeting waits for name question before listening", ()
   assert.equal(guard.canTriggerResponse("caller_turn_reply"), false);
 });
 
+test("response.done after name question begins listening only once", () => {
+  const guard = new ResponseStateGuard();
+
+  guard.recordTrigger("opening_name_question");
+  guard.onResponseDone();
+  guard.onResponseDone();
+
+  assert.equal(guard.isListeningForOpeningReason(), true);
+
+  guard.beginOpeningNameListen();
+  assert.equal(guard.isListeningForOpeningReason(), true);
+});
+
 test("recovery caller reply remains blocked during opening silence listen", () => {
   const guard = new ResponseStateGuard();
 

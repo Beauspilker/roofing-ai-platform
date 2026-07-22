@@ -12,6 +12,9 @@ import {
   syncFullNameFromParts,
 } from "../src/orchestrator/caller-name-intake.js";
 import {
+  shouldRequestNameConfirmation,
+} from "../../../lib/call-name-capture.js";
+import {
   REALTIME_OPENING_GREETING,
   REALTIME_OPENING_NAME_QUESTION,
 } from "../src/orchestrator/realtime-prompts.js";
@@ -101,6 +104,80 @@ test("high-confidence common full name does not repeat confirmation", () => {
   assert.doesNotMatch(outcome.replyText ?? "", /Is that correct/i);
 });
 
+test("low speech confidence uncommon name asks for confirmation during opening", () => {
+  const outcome = processCallerNameTurn({}, "Beau Spilker", { confidence: 0.5 });
+  assert.equal(outcome.complete, false);
+  assert.match(outcome.replyText ?? "", /I heard Beau Spilker\. Is that correct/i);
+  assert.equal(outcome.fields.name_pending_confirmation, "Beau Spilker");
+});
+
+test("high-confidence uncommon name still confirms when surname is unusual", () => {
+  assert.equal(
+    shouldRequestNameConfirmation({
+      parsedName: "Beau Spilker",
+      confidence: 0.95,
+    }),
+    true,
+  );
+});
+
+test("unclear opening name does not repeat the opening question", () => {
+  const outcome = processCallerNameTurn({}, "um");
+  assert.equal(outcome.complete, false);
+  assert.equal(outcome.replyText, null);
+});
+
+test("opening name turn processor does not re-ask before caller responds", async () => {
+  const outcome = await processRealtimeCallerTurn({
+    session: mockSession,
+    callSid: "CA123",
+    callerPhone: "+14025551948",
+    speechResult: "uh",
+    conversationState: "awaiting_opening_name",
+    acknowledgmentPolicy: new AcknowledgmentPolicy(),
+  });
+
+  assert.equal(outcome.replyText, "");
+  assert.equal(outcome.nextConversationState, "awaiting_opening_name");
+});
+
+test("opening name confirmation accepts correction and continues", async () => {
+  const confirmOutcome = await processRealtimeCallerTurn({
+    session: {
+      ...mockSession,
+      collected_fields: {
+        pending_question: "caller_name",
+        name_pending_confirmation: "Bo Spilker",
+      },
+    },
+    callSid: "CA123",
+    callerPhone: "+14025551948",
+    speechResult: "No, Beau Spilker",
+    conversationState: "awaiting_opening_name",
+    acknowledgmentPolicy: new AcknowledgmentPolicy(),
+  });
+
+  assert.match(confirmOutcome.replyText, /I heard Beau Spilker\. Is that correct/i);
+
+  const acceptedOutcome = await processRealtimeCallerTurn({
+    session: confirmOutcome.session,
+    callSid: "CA123",
+    callerPhone: "+14025551948",
+    speechResult: "Yes",
+    conversationState: "awaiting_opening_name",
+    acknowledgmentPolicy: new AcknowledgmentPolicy(),
+  });
+
+  assert.match(
+    acceptedOutcome.replyText,
+    /What can the roofing team help you with today/i,
+  );
+  assert.equal(
+    (acceptedOutcome.session?.collected_fields as RealtimeFields).full_name,
+    "Beau Spilker",
+  );
+});
+
 test("opening greeting and name question stay separate", () => {
   assert.doesNotMatch(REALTIME_OPENING_GREETING, /\?/);
   assert.match(REALTIME_OPENING_NAME_QUESTION, /first and last name/i);
@@ -129,7 +206,7 @@ test("opening name completion asks one reason question", async () => {
     },
     callSid: "CA123",
     callerPhone: "+14025551948",
-    speechResult: "Beau Spilker",
+    speechResult: "John Smith",
     conversationState: "awaiting_opening_name",
     acknowledgmentPolicy: new AcknowledgmentPolicy(),
   });
@@ -138,12 +215,29 @@ test("opening name completion asks one reason question", async () => {
   assert.equal(outcome.nextConversationState, "listening_for_reason");
   assert.equal(
     (outcome.session?.collected_fields as RealtimeFields).caller_first_name,
-    "Beau",
+    "John",
   );
   assert.equal(
     (outcome.session?.collected_fields as RealtimeFields).caller_last_name,
-    "Spilker",
+    "Smith",
   );
+});
+
+test("unusual opening name confirms before reason question", async () => {
+  const outcome = await processRealtimeCallerTurn({
+    session: {
+      ...mockSession,
+      collected_fields: { pending_question: "caller_name" },
+    },
+    callSid: "CA123",
+    callerPhone: "+14025551948",
+    speechResult: "Beau Spilker",
+    conversationState: "awaiting_opening_name",
+    acknowledgmentPolicy: new AcknowledgmentPolicy(),
+  });
+
+  assert.match(outcome.replyText, /I heard Beau Spilker\. Is that correct/i);
+  assert.equal(outcome.nextConversationState, "awaiting_opening_name");
 });
 
 test("tomorrow afternoon plus 2 o'clock resolves to 2 PM", () => {

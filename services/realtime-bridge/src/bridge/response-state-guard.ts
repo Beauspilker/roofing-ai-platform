@@ -23,6 +23,7 @@ export class ResponseStateGuard {
   private awaitingClosingMark = false;
   private assistantAudioPending = false;
   private listeningForOpeningReason = false;
+  private openingNameListenStarted = false;
   private lastTriggerReason: ResponseTriggerReason | null = null;
   private lastTranscriptItemId: string | null = null;
   private activeTurnId = 0;
@@ -64,6 +65,11 @@ export class ResponseStateGuard {
   }
 
   beginOpeningNameListen(): void {
+    if (this.openingNameListenStarted) {
+      return;
+    }
+
+    this.openingNameListenStarted = true;
     this.listeningForOpeningReason = true;
     this.waitingForCaller = true;
     this.callerTurnReady = false;
@@ -76,6 +82,7 @@ export class ResponseStateGuard {
 
   completeOpeningReasonListen(): void {
     this.listeningForOpeningReason = false;
+    this.openingNameListenStarted = false;
     this.lastTriggerReason = null;
   }
 

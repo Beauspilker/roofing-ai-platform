@@ -1,4 +1,9 @@
 import {
+  isAwaitingNameConfirmation,
+  processNameCaptureTurn,
+  shouldRequestNameConfirmation,
+} from "../../../../lib/call-name-capture.js";
+import {
   extractExplicitCallerName,
   isLikelyCallReasonSpeech,
   isPlausibleCallerName,
@@ -280,12 +285,82 @@ export type CallerNameTurnOutcome = {
   needsReasonQuestion: boolean;
 };
 
+function mapNameCaptureToOpeningOutcome(
+  capture: ReturnType<typeof processNameCaptureTurn>,
+): CallerNameTurnOutcome {
+  if (capture.status === "accepted") {
+    const synced = syncFullNameFromParts(capture.fields as RealtimeFields);
+    return {
+      fields: synced,
+      replyText: null,
+      complete: true,
+      needsReasonQuestion: true,
+    };
+  }
+
+  return {
+    fields: capture.fields as RealtimeFields,
+    replyText: capture.replyText,
+    complete: false,
+    needsReasonQuestion: false,
+  };
+}
+
+function maybeRequestOpeningNameConfirmation(
+  fields: RealtimeFields,
+  speech: string,
+  parts: { firstName: string; lastName: string },
+  confidence: number | null,
+): CallerNameTurnOutcome | null {
+  const fullName = `${parts.firstName} ${parts.lastName}`;
+
+  if (
+    !shouldRequestNameConfirmation({
+      parsedName: fullName,
+      confidence,
+      nameNeedsClarification: fields.name_needs_clarification === true,
+    })
+  ) {
+    return null;
+  }
+
+  const capture = processNameCaptureTurn({
+    fields: syncFullNameFromParts({
+      ...fields,
+      caller_first_name: parts.firstName,
+      caller_last_name: parts.lastName,
+      name_awaiting_last_name: false,
+      name_needs_clarification: false,
+    }),
+    speech,
+    confidence,
+  });
+
+  if (capture.status === "confirm") {
+    return mapNameCaptureToOpeningOutcome(capture);
+  }
+
+  return null;
+}
+
 export function processCallerNameTurn(
   fields: RealtimeFields,
   speech: string,
+  options: { confidence?: number | null } = {},
 ): CallerNameTurnOutcome {
+  const confidence = options.confidence ?? null;
   let updated: RealtimeFields = { ...fields };
   const trimmed = speech.trim();
+
+  if (isAwaitingNameConfirmation(updated)) {
+    return mapNameCaptureToOpeningOutcome(
+      processNameCaptureTurn({
+        fields: updated,
+        speech: trimmed,
+        confidence,
+      }),
+    );
+  }
 
   if (updated.name_awaiting_first_name_spelling) {
     const spelled = parseSpelledNameSpeech(trimmed);
@@ -325,6 +400,19 @@ export function processCallerNameTurn(
         name_spelling_verified: true,
       });
       if (hasCompleteCallerName(updated)) {
+        const confirmation = maybeRequestOpeningNameConfirmation(
+          updated,
+          trimmed,
+          {
+            firstName: updated.caller_first_name ?? "",
+            lastName: updated.caller_last_name ?? "",
+          },
+          confidence,
+        );
+        if (confirmation) {
+          return confirmation;
+        }
+
         const ack =
           updated.name_spelling_verified === true
             ? buildNameCompleteAcknowledgment(updated)
@@ -364,6 +452,20 @@ export function processCallerNameTurn(
         needsReasonQuestion: false,
       };
     }
+
+    const confirmation = maybeRequestOpeningNameConfirmation(
+      updated,
+      trimmed,
+      {
+        firstName: updated.caller_first_name ?? "",
+        lastName: updated.caller_last_name ?? "",
+      },
+      confidence,
+    );
+    if (confirmation) {
+      return confirmation;
+    }
+
       return {
         fields: updated,
         replyText: null,
@@ -400,6 +502,19 @@ export function processCallerNameTurn(
         complete: false,
         needsReasonQuestion: false,
       };
+    }
+
+    const confirmation = maybeRequestOpeningNameConfirmation(
+      updated,
+      trimmed,
+      {
+        firstName: parts.firstName,
+        lastName: parts.lastName,
+      },
+      confidence,
+    );
+    if (confirmation) {
+      return confirmation;
     }
 
     return {
@@ -442,7 +557,7 @@ export function processCallerNameTurn(
 
   return {
     fields: updated,
-    replyText: OPENING_CALLER_NAME_QUESTION,
+    replyText: null,
     complete: false,
     needsReasonQuestion: false,
   };

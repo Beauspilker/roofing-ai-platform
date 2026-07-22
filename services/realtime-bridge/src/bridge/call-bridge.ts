@@ -83,6 +83,7 @@ export class CallBridge {
   private readonly openingSilence = new OpeningSilenceController();
   private openingGreetingPlaybackComplete = false;
   private openingNameQuestionSent = false;
+  private openingNameListenStarted = false;
   private queuedOpeningTranscript: string | null = null;
   private responseCreateCount = 0;
   private openingResponseCreateCount = 0;
@@ -288,6 +289,11 @@ export class CallBridge {
   }
 
   private beginOpeningNameListen(): void {
+    if (this.openingNameListenStarted) {
+      return;
+    }
+
+    this.openingNameListenStarted = true;
     this.openingGreetingPlaybackComplete = true;
     this.openingSilence.beginListeningForCallerName();
     this.orchestrator?.onOpeningNameQuestionComplete();
@@ -332,6 +338,7 @@ export class CallBridge {
     if (isMeaningfulOpeningCallerTranscript(transcript, { awaitingName: true })) {
       this.openingSilence.onMeaningfulCallerTranscript();
       this.responseGuard.completeOpeningReasonListen();
+      this.openingNameListenStarted = false;
     }
 
     this.processCallerTurnReply(transcript);
@@ -702,9 +709,32 @@ export class CallBridge {
     if (isMeaningfulOpeningCallerTranscript(transcript, { awaitingName: true })) {
       this.openingSilence.onMeaningfulCallerTranscript();
       this.responseGuard.completeOpeningReasonListen();
+      this.openingNameListenStarted = false;
     }
 
-    void this.processCallerTurnReply(transcript);
+    void this.processCallerTurnReply(transcript, this.extractTranscriptConfidence(event));
+  }
+
+  private extractTranscriptConfidence(event: {
+    [key: string]: unknown;
+  }): number | null {
+    const item = event.item as { confidence?: unknown } | undefined;
+    const candidates = [event.confidence, item?.confidence];
+
+    for (const candidate of candidates) {
+      if (typeof candidate === "number" && Number.isFinite(candidate)) {
+        return candidate;
+      }
+
+      if (typeof candidate === "string") {
+        const parsed = Number.parseFloat(candidate);
+        if (Number.isFinite(parsed)) {
+          return parsed;
+        }
+      }
+    }
+
+    return null;
   }
 
   private scheduleResponseWatchdog(turnId: number, request: PendingSpeechRequest): void {
@@ -786,14 +816,19 @@ export class CallBridge {
     });
   }
 
-  private processCallerTurnReply(transcript: string): void {
+  private processCallerTurnReply(
+    transcript: string,
+    speechConfidence: number | null = null,
+  ): void {
     if (!this.orchestrator || !this.openAi) {
       return;
     }
 
     const turnId = this.activeTurnId;
 
-    void this.orchestrator.handleCallerTranscript(transcript, this.activeTurnId).then((result) => {
+    void this.orchestrator
+      .handleCallerTranscript(transcript, this.activeTurnId, speechConfidence)
+      .then((result) => {
       if (this.turnTiming.isStaleTurn(turnId)) {
         return;
       }

@@ -190,7 +190,11 @@ export class SessionOrchestrator {
     };
   }
 
-  async handleCallerTranscript(transcript: string, turnId?: number): Promise<OrchestratorReply | null> {
+  async handleCallerTranscript(
+    transcript: string,
+    turnId?: number,
+    speechConfidence: number | null = null,
+  ): Promise<OrchestratorReply | null> {
     const trimmed = transcript.trim();
 
     if (!trimmed) {
@@ -229,6 +233,7 @@ export class SessionOrchestrator {
         callSid: this.context.callSid,
         callerPhone: this.context.callerPhone,
         speechResult: trimmed,
+        speechConfidence,
         conversationState: this.conversationState,
         acknowledgmentPolicy: this.acknowledgmentPolicy,
         isFirstCallerTurn: this.awaitingFirstCallerTurn,

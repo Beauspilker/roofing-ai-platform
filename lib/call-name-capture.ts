@@ -167,10 +167,80 @@ export function shouldConfirmRecognizedName(
   confidence: number | null,
 ): boolean {
   if (confidence === null) {
-    return true;
+    return false;
   }
 
   return confidence < LOW_SPEECH_CONFIDENCE_THRESHOLD;
+}
+
+const COMMON_SURNAMES = new Set([
+  "smith",
+  "johnson",
+  "williams",
+  "brown",
+  "jones",
+  "garcia",
+  "miller",
+  "davis",
+  "wilson",
+  "anderson",
+  "taylor",
+  "moore",
+  "martin",
+  "thompson",
+  "white",
+  "harris",
+  "clark",
+  "lewis",
+  "walker",
+  "hall",
+  "young",
+  "allen",
+  "king",
+  "wright",
+  "scott",
+  "green",
+  "baker",
+  "adams",
+  "nelson",
+  "hill",
+]);
+
+export function isNameRecognitionUncertain(parsedName: string): boolean {
+  const words = parsedName.trim().split(/\s+/).filter(Boolean);
+
+  if (words.length < 2) {
+    return false;
+  }
+
+  const lastName = words.slice(1).join(" ");
+  const normalized = lastName.toLowerCase();
+
+  if (COMMON_SURNAMES.has(normalized)) {
+    return false;
+  }
+
+  return (
+    normalized.length >= 7 ||
+    /[^a-z'-]/i.test(lastName) ||
+    /[qxz]/i.test(normalized)
+  );
+}
+
+export function shouldRequestNameConfirmation(input: {
+  parsedName: string;
+  confidence: number | null;
+  nameNeedsClarification?: boolean;
+}): boolean {
+  if (shouldConfirmRecognizedName(input.confidence)) {
+    return true;
+  }
+
+  if (input.nameNeedsClarification === true) {
+    return true;
+  }
+
+  return isNameRecognitionUncertain(input.parsedName);
 }
 
 export function buildNameConfirmationPrompt(name: string): string {
@@ -401,6 +471,25 @@ export function processNameCaptureTurn(input: {
         name_awaiting_repeat: true,
       }),
       replyText: buildNameRepeatPrompt(),
+      nameConfirmationRequested: false,
+      nameCorrected: false,
+    };
+  }
+
+  if (
+    !shouldRequestNameConfirmation({
+      parsedName,
+      confidence: input.confidence,
+      nameNeedsClarification: fields.name_needs_clarification === true,
+    })
+  ) {
+    return {
+      status: "accepted",
+      fields: clearNameCaptureState({
+        ...fields,
+        full_name: parsedName,
+      }),
+      replyText: null,
       nameConfirmationRequested: false,
       nameCorrected: false,
     };

@@ -132,6 +132,7 @@ export type ProcessRealtimeTurnInput = {
   callSid: string;
   callerPhone: string;
   speechResult: string;
+  speechConfidence?: number | null;
   conversationState: ConversationState;
   acknowledgmentPolicy: AcknowledgmentPolicy;
   isFirstCallerTurn?: boolean;
@@ -277,11 +278,12 @@ function buildInvalidNameCaptureRepeatOutcome(input: {
 function processValidatedNameCaptureTurn(input: {
   fields: RealtimeFields;
   speech: string;
+  confidence?: number | null;
 }): ReturnType<typeof processNameCaptureTurn> {
   const outcome = processNameCaptureTurn({
     fields: input.fields,
     speech: input.speech,
-    confidence: null,
+    confidence: input.confidence ?? null,
   });
 
   if (outcome.status === "confirm") {
@@ -1086,28 +1088,32 @@ export async function processRealtimeCallerTurn(
   }
 
   if (conversationState === "awaiting_opening_name") {
-    const nameOutcome = processCallerNameTurn(fieldsBefore, trimmedSpeech);
+    const nameOutcome = processCallerNameTurn(fieldsBefore, trimmedSpeech, {
+      confidence: input.speechConfidence ?? null,
+    });
     let updatedFields = nameOutcome.fields;
+    const pendingQuestionText =
+      nameOutcome.replyText?.trim() || OPENING_CALLER_NAME_QUESTION;
 
     if (!nameOutcome.complete) {
       updatedFields = attachPendingQuestion(updatedFields, "caller_name");
 
       session = applyLocalSessionUpdate(session, {
         collectedFields: updatedFields,
-        currentQuestion: nameOutcome.replyText ?? OPENING_CALLER_NAME_QUESTION,
+        currentQuestion: pendingQuestionText,
       });
 
       persistTurnAsync(callSid, {
         collectedFields: updatedFields,
-        currentQuestion: nameOutcome.replyText ?? OPENING_CALLER_NAME_QUESTION,
+        currentQuestion: pendingQuestionText,
         callerSpeech: trimmedSpeech,
-        assistantReply: nameOutcome.replyText ?? OPENING_CALLER_NAME_QUESTION,
+        assistantReply: nameOutcome.replyText?.trim() || "",
       });
 
       return finishTurn(input, {
-        replyText: ensureSingleIntakeQuestion(
-          nameOutcome.replyText ?? OPENING_CALLER_NAME_QUESTION,
-        ),
+        replyText: nameOutcome.replyText?.trim()
+          ? ensureSingleIntakeQuestion(nameOutcome.replyText)
+          : "",
         hangup: false,
         hangupAfterMark: false,
         session,
@@ -1236,6 +1242,7 @@ export async function processRealtimeCallerTurn(
     const nameOutcome = processValidatedNameCaptureTurn({
       fields: fieldsBefore,
       speech: trimmedSpeech,
+      confidence: input.speechConfidence ?? null,
     });
 
     if (nameOutcome.status === "confirm" || nameOutcome.status === "repeat") {

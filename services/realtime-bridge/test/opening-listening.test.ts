@@ -6,6 +6,7 @@ import {
   isAssistantOpeningEchoTranscript,
   isMeaningfulOpeningCallerTranscript,
   OpeningSilenceController,
+  OPENING_NAME_SILENCE_FIRST_REPROMPT_MS,
   OPENING_SILENCE_FIRST_REPROMPT_MS,
   OPENING_STILL_THERE_PROMPT,
   resolveCallReasonFromSpeech,
@@ -196,4 +197,23 @@ test("opening silence reprompt fires after configured delay", () => {
   assert.equal(OPENING_SILENCE_FIRST_REPROMPT_MS >= 5_000, true);
   assert.equal(OPENING_STILL_THERE_PROMPT.includes("still there"), true);
   controller.clearSilenceTimer();
+});
+
+test("caller name silence uses a longer first reprompt than reason listening", () => {
+  const nameController = new OpeningSilenceController();
+  const reasonController = new OpeningSilenceController();
+
+  nameController.beginListeningForCallerName();
+  reasonController.beginListeningForReason();
+
+  assert.equal(nameController.isAwaitingCallerName(), true);
+  assert.equal(reasonController.isAwaitingCallerName(), false);
+  assert.equal(
+    OPENING_NAME_SILENCE_FIRST_REPROMPT_MS > OPENING_SILENCE_FIRST_REPROMPT_MS,
+    true,
+  );
+  assert.equal(OPENING_NAME_SILENCE_FIRST_REPROMPT_MS, 10_000);
+
+  nameController.clearSilenceTimer();
+  reasonController.clearSilenceTimer();
 });

@@ -15,6 +15,8 @@ import {
 } from "../orchestrator/realtime-prompts.js";
 
 export const OPENING_SILENCE_FIRST_REPROMPT_MS = 6_000;
+/** Longer first reprompt while waiting for first + last name (multi-word answers). */
+export const OPENING_NAME_SILENCE_FIRST_REPROMPT_MS = 10_000;
 export const OPENING_SILENCE_SECOND_REPROMPT_MS = 6_000;
 export const OPENING_SILENCE_HANGUP_MS = 8_000;
 
@@ -144,6 +146,7 @@ export type OpeningSilencePrompt =
 
 export class OpeningSilenceController {
   private listeningForReason = false;
+  private awaitingCallerName = false;
   private meaningfulTranscriptReceived = false;
   private silenceStage: OpeningSilenceStage = 0;
   private silenceTimer: NodeJS.Timeout | null = null;
@@ -161,10 +164,23 @@ export class OpeningSilenceController {
   }
 
   beginListeningForReason(): void {
+    this.awaitingCallerName = false;
     this.listeningForReason = true;
     this.meaningfulTranscriptReceived = false;
     this.silenceStage = 0;
     this.clearSilenceTimer();
+  }
+
+  beginListeningForCallerName(): void {
+    this.awaitingCallerName = true;
+    this.listeningForReason = true;
+    this.meaningfulTranscriptReceived = false;
+    this.silenceStage = 0;
+    this.clearSilenceTimer();
+  }
+
+  isAwaitingCallerName(): boolean {
+    return this.awaitingCallerName;
   }
 
   onMeaningfulCallerTranscript(): void {
@@ -175,6 +191,7 @@ export class OpeningSilenceController {
 
   reset(): void {
     this.listeningForReason = false;
+    this.awaitingCallerName = false;
     this.meaningfulTranscriptReceived = false;
     this.silenceStage = 0;
     this.clearSilenceTimer();
@@ -187,9 +204,13 @@ export class OpeningSilenceController {
 
     this.clearSilenceTimer();
 
+    const firstRepromptMs = this.awaitingCallerName
+      ? OPENING_NAME_SILENCE_FIRST_REPROMPT_MS
+      : OPENING_SILENCE_FIRST_REPROMPT_MS;
+
     const delayMs =
       this.silenceStage === 0
-        ? OPENING_SILENCE_FIRST_REPROMPT_MS
+        ? firstRepromptMs
         : this.silenceStage === 1
           ? OPENING_SILENCE_SECOND_REPROMPT_MS
           : OPENING_SILENCE_HANGUP_MS;

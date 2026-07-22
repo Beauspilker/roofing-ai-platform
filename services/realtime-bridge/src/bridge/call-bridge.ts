@@ -289,7 +289,7 @@ export class CallBridge {
 
   private beginOpeningNameListen(): void {
     this.openingGreetingPlaybackComplete = true;
-    this.openingSilence.beginListeningForReason();
+    this.openingSilence.beginListeningForCallerName();
     this.orchestrator?.onOpeningNameQuestionComplete();
     this.scheduleOpeningSilenceReprompt();
 

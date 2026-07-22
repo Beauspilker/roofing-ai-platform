@@ -731,6 +731,41 @@ export async function processRealtimeCallerTurn(
     const capture = processScheduleCapture(fieldsBefore, trimmedSpeech);
     let nextFields = capture.fields;
 
+    if (capture.flexibleAcceptMessage) {
+      const filledCount = countNewlyFilledFields(fieldsBefore, nextFields);
+      const post = buildPostIntakeReply(
+        acknowledgmentPolicy,
+        fieldsBefore,
+        nextFields,
+        trimmedSpeech,
+        callerPhone,
+        filledCount,
+      );
+      const reply = ensureSingleIntakeQuestion(
+        `${capture.flexibleAcceptMessage} ${post.replyText}`.trim(),
+      );
+
+      session = applyLocalSessionUpdate(session, {
+        collectedFields: post.fields,
+        currentQuestion: reply,
+      });
+
+      persistTurnAsync(callSid, {
+        collectedFields: post.fields,
+        currentQuestion: reply,
+        callerSpeech: trimmedSpeech,
+        assistantReply: reply,
+      });
+
+      return finishTurn(input, {
+        replyText: reply,
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: post.nextState,
+      });
+    }
+
     if (capture.clarificationPrompt) {
       const reply = ensureSingleIntakeQuestion(capture.clarificationPrompt);
 

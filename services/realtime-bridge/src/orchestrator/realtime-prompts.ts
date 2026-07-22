@@ -38,6 +38,7 @@ export type RealtimeFields = Omit<
   schedule_confirmed?: boolean;
   schedule_pending_clarification?: boolean;
   schedule_clarification_prompt?: string;
+  schedule_clarification_attempts?: number;
   intake_intro_delivered?: boolean;
   caller_name_declined?: boolean;
   caller_name_unavailable?: boolean;
@@ -46,6 +47,7 @@ export type RealtimeFields = Omit<
   name_awaiting_last_name?: boolean;
   name_awaiting_last_name_spelling?: boolean;
   name_awaiting_first_name_spelling?: boolean;
+  name_awaiting_full_name_spelling?: boolean;
   name_spelling_verified?: boolean;
   opening_name_complete?: boolean;
   schedule_daypart?: "morning" | "afternoon" | "evening";

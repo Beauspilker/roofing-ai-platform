@@ -56,7 +56,7 @@ test("hail damage with volunteered name does not ask again", async () => {
   });
 
   assert.doesNotMatch(outcome.replyText, /first and last name/i);
-  assert.match(outcome.replyText, /I heard Beau Spilker\. Is that correct/i);
+  assert.match(outcome.replyText, /What can the roofing team help you with today/i);
 });
 
 test("immediate safety issue is handled before caller name", async () => {

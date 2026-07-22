@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { AcknowledgmentPolicy } from "../src/orchestrator/acknowledgment-policy.js";
+import { ResponseStateGuard } from "../src/bridge/response-state-guard.js";
 import {
   buildCallReasonQuestionAfterName,
+  buildFullNameSpellingPrompt,
   hasCompleteCallerName,
   OPENING_CALLER_NAME_QUESTION,
   parseCallerNameParts,
@@ -21,6 +23,8 @@ import {
 import {
   parseScheduleSpeech,
   processScheduleCapture,
+  SCHEDULE_DAYPART_CLARIFICATION_PROMPT,
+  SCHEDULE_FLEXIBLE_ACCEPT_MESSAGE,
 } from "../src/orchestrator/schedule-normalizer.js";
 import { processRealtimeCallerTurn } from "../src/orchestrator/realtime-turn-processor.js";
 import type { RealtimeFields } from "../src/orchestrator/realtime-prompts.js";
@@ -111,13 +115,13 @@ test("low speech confidence uncommon name asks for confirmation during opening",
   assert.equal(outcome.fields.name_pending_confirmation, "Beau Spilker");
 });
 
-test("high-confidence uncommon name still confirms when surname is unusual", () => {
+test("high-confidence uncommon name does not confirm without low confidence", () => {
   assert.equal(
     shouldRequestNameConfirmation({
       parsedName: "Beau Spilker",
       confidence: 0.95,
     }),
-    true,
+    false,
   );
 });
 
@@ -223,7 +227,7 @@ test("opening name completion asks one reason question", async () => {
   );
 });
 
-test("unusual opening name confirms before reason question", async () => {
+test("unusual opening name proceeds without confirmation at high confidence", async () => {
   const outcome = await processRealtimeCallerTurn({
     session: {
       ...mockSession,
@@ -234,10 +238,11 @@ test("unusual opening name confirms before reason question", async () => {
     speechResult: "Beau Spilker",
     conversationState: "awaiting_opening_name",
     acknowledgmentPolicy: new AcknowledgmentPolicy(),
+    speechConfidence: 0.95,
   });
 
-  assert.match(outcome.replyText, /I heard Beau Spilker\. Is that correct/i);
-  assert.equal(outcome.nextConversationState, "awaiting_opening_name");
+  assert.match(outcome.replyText, /What can the roofing team help you with today/i);
+  assert.equal(outcome.nextConversationState, "listening_for_reason");
 });
 
 test("tomorrow afternoon plus 2 o'clock resolves to 2 PM", () => {
@@ -378,4 +383,112 @@ test("call reason question uses first name after opening name", () => {
   });
   assert.match(question, /Thank you, Beau\./i);
   assert.match(question, /What can the roofing team help you with today/i);
+});
+
+test("tomorrow afternoon followed by 2 o'clock resolves to 2 PM", () => {
+  const initial = processScheduleCapture({}, "Tomorrow afternoon", JULY_20_2026);
+  const resolved = processScheduleCapture(initial.fields, "2 o'clock", JULY_20_2026);
+  assert.match(resolved.confirmationPrompt ?? "", /2:00 PM/i);
+});
+
+test("anytime after five stores flexible availability", () => {
+  const capture = processScheduleCapture({}, "anytime after five", JULY_20_2026);
+  assert.equal(capture.fields.schedule_confirmed, true);
+  assert.match(capture.fields.appointment_preference ?? "", /anytime after five/i);
+});
+
+test("between two and four resolves to a confirmation window", () => {
+  const capture = processScheduleCapture({}, "between two and four", JULY_20_2026);
+  assert.match(capture.confirmationPrompt ?? "", /between/i);
+});
+
+test("whenever stores flexible availability", () => {
+  const capture = processScheduleCapture({}, "whenever", JULY_20_2026);
+  assert.equal(capture.fields.schedule_confirmed, true);
+  assert.match(capture.fields.appointment_preference ?? "", /whenever/i);
+});
+
+test("two unclear schedule answers continue gracefully", () => {
+  const initial = processScheduleCapture({}, "Tomorrow afternoon", JULY_20_2026);
+  assert.match(initial.clarificationPrompt ?? "", /works best/i);
+
+  const firstUnclear = processScheduleCapture(initial.fields, "uh", JULY_20_2026);
+  assert.equal(firstUnclear.clarificationPrompt, SCHEDULE_DAYPART_CLARIFICATION_PROMPT);
+
+  const secondUnclear = processScheduleCapture(firstUnclear.fields, "hmm", JULY_20_2026);
+  assert.equal(secondUnclear.flexibleAcceptMessage, SCHEDULE_FLEXIBLE_ACCEPT_MESSAGE);
+  assert.equal(secondUnclear.fields.schedule_confirmed, true);
+});
+
+test("scheduling does not repeat the same prompt indefinitely", () => {
+  let fields = processScheduleCapture({}, "Tomorrow afternoon", JULY_20_2026).fields;
+  const prompts = new Set<string>();
+
+  for (const answer of ["uh", "hmm", "still not sure"]) {
+    const capture = processScheduleCapture(fields, answer, JULY_20_2026);
+    if (capture.clarificationPrompt) {
+      prompts.add(capture.clarificationPrompt);
+      fields = capture.fields;
+      continue;
+    }
+    break;
+  }
+
+  assert.equal(prompts.size <= 2, true);
+});
+
+test("name question cannot fire twice before a response", () => {
+  const guard = new ResponseStateGuard();
+  guard.recordTrigger("opening_name_question");
+  guard.onResponseDone();
+  guard.onResponseDone();
+  assert.equal(guard.isListeningForOpeningReason(), true);
+});
+
+test("corrected name continues without looping", async () => {
+  const confirmOutcome = await processRealtimeCallerTurn({
+    session: {
+      ...mockSession,
+      collected_fields: {
+        pending_question: "caller_name",
+        name_pending_confirmation: "Bo Spilker",
+      },
+    },
+    callSid: "CA123",
+    callerPhone: "+14025551948",
+    speechResult: "No, Beau Spilker",
+    conversationState: "awaiting_opening_name",
+    acknowledgmentPolicy: new AcknowledgmentPolicy(),
+  });
+
+  assert.match(confirmOutcome.replyText, /I heard Beau Spilker\. Is that correct/i);
+
+  const acceptedOutcome = await processRealtimeCallerTurn({
+    session: confirmOutcome.session,
+    callSid: "CA123",
+    callerPhone: "+14025551948",
+    speechResult: "Yes",
+    conversationState: "awaiting_opening_name",
+    acknowledgmentPolicy: new AcknowledgmentPolicy(),
+  });
+
+  assert.match(
+    acceptedOutcome.replyText,
+    /What can the roofing team help you with today/i,
+  );
+});
+
+test("spelled name continues without looping", () => {
+  const spelled = processCallerNameTurn(
+    {
+      name_awaiting_full_name_spelling: true,
+      caller_first_name: "Beau",
+    },
+    "B-E-A-U, S-P-I-L-K-E-R",
+  );
+
+  assert.equal(spelled.complete, true);
+  assert.equal(spelled.fields.full_name, "Beau Spilker");
+  assert.equal(spelled.replyText, null);
+  assert.match(buildFullNameSpellingPrompt(), /spell your first and last name/i);
 });

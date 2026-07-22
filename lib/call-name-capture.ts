@@ -6,7 +6,7 @@ import {
 } from "@/lib/call-intelligence";
 import { isConfirmationPhrase, isCorrectionPhrase } from "@/lib/twilio/voice-phrases";
 
-export const MAX_NAME_CONFIRMATION_ATTEMPTS = 3;
+export const MAX_NAME_CONFIRMATION_ATTEMPTS = 2;
 export const LOW_SPEECH_CONFIDENCE_THRESHOLD = 0.72;
 
 const NAME_PREFIX_PATTERN =
@@ -236,11 +236,7 @@ export function shouldRequestNameConfirmation(input: {
     return true;
   }
 
-  if (input.nameNeedsClarification === true) {
-    return true;
-  }
-
-  return isNameRecognitionUncertain(input.parsedName);
+  return input.nameNeedsClarification === true;
 }
 
 export function buildNameConfirmationPrompt(name: string): string {
@@ -429,6 +425,21 @@ export function processNameCaptureTurn(input: {
         replyText: buildNameConfirmationPrompt(parsedCorrection),
         nameConfirmationRequested: true,
         nameCorrected: true,
+      };
+    }
+
+    fields = incrementNameConfirmationAttempts(fields);
+
+    if ((fields.name_confirmation_attempts ?? 0) >= MAX_NAME_CONFIRMATION_ATTEMPTS) {
+      return {
+        status: "accepted",
+        fields: acceptPendingName({
+          ...fields,
+          name_pending_confirmation: pendingName,
+        }),
+        replyText: null,
+        nameConfirmationRequested: false,
+        nameCorrected: false,
       };
     }
 

@@ -7,6 +7,14 @@ export const COMPANY_TIMEZONE = process.env.COMPANY_TIMEZONE?.trim() || "America
 export const SCHEDULE_PARSE_FALLBACK_PROMPT =
   "I'm sorry, I had trouble understanding the timing. What specific day and time would work best for you?";
 
+export const SCHEDULE_DAYPART_CLARIFICATION_PROMPT =
+  "Would morning, afternoon, or evening work best?";
+
+export const SCHEDULE_FLEXIBLE_ACCEPT_MESSAGE =
+  "That's okay. I'll note that your timing is flexible.";
+
+const GENERIC_SCHEDULE_TIME_PROMPT = /^what time works best\?$/i;
+
 export type ScheduleParseResult =
   | {
       status: "needs_time_clarification";
@@ -23,6 +31,11 @@ export type ScheduleParseResult =
       spoken: string;
       isoStart: string;
       isoEnd?: string;
+      raw: string;
+    }
+  | {
+      status: "flexible_availability";
+      spoken: string;
       raw: string;
     }
   | {
@@ -175,6 +188,7 @@ type ScheduleDaypart = "morning" | "afternoon" | "evening";
 
 export type ScheduleParseOptions = {
   knownDaypart?: ScheduleDaypart;
+  knownScheduleRaw?: string;
 };
 
 function parseHourToken(token: string): number | null {
@@ -273,6 +287,19 @@ function parseColloquialTimeFromSpeech(
     return { hour, minute: 15 };
   }
 
+  const hourThirty = normalized.match(
+    new RegExp(`\\b${HOUR_TOKEN}\\s+thirty\\b`, "i"),
+  );
+  if (hourThirty) {
+    const parsedHour = parseHourToken(hourThirty[1] ?? "");
+    if (parsedHour === null) {
+      return null;
+    }
+
+    const hour = applyMeridiemToHour(parsedHour, undefined, daypart);
+    return { hour, minute: 30 };
+  }
+
   const halfPast = normalized.match(new RegExp(`\\bhalf past ${HOUR_TOKEN}\\b`, "i"));
   if (halfPast) {
     const parsedHour = parseHourToken(halfPast[1] ?? "");
@@ -296,7 +323,7 @@ function parseColloquialTimeFromSpeech(
   }
 
   const oClockTime = normalized.match(
-    new RegExp(`\\b(?:at\\s+)?${HOUR_TOKEN}(?::(\\d{2}))?\\s+o\\s+clock\\b`, "i"),
+    new RegExp(`\\b(?:at\\s+|around\\s+|about\\s+)?${HOUR_TOKEN}(?::(\\d{2}))?\\s+o\\s+clock\\b`, "i"),
   );
   if (oClockTime) {
     const parsedHour = parseHourToken(oClockTime[1] ?? "");
@@ -393,7 +420,10 @@ function parseTimeFromSpeech(
   }
 
   const betweenTimes = normalized.match(
-    /\bbetween\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(?:am|pm)?\s+and\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(am|pm)?/i,
+    new RegExp(
+      `\\bbetween\\s+${HOUR_TOKEN}(?::(\\d{2}))?\\s*(?:am|pm)?\\s+and\\s+${HOUR_TOKEN}(?::(\\d{2}))?\\s*(am|pm)?`,
+      "i",
+    ),
   );
   if (betweenTimes) {
     const startHour = parseHourToken(betweenTimes[1] ?? "");
@@ -423,6 +453,71 @@ function parseTimeFromSpeech(
     }
 
     return { hour, minute, endHour: endHour24, endMinute };
+  }
+
+  const fromToTimes = normalized.match(
+    new RegExp(
+      `\\bfrom\\s+${HOUR_TOKEN}(?::(\\d{2}))?\\s*(?:am|pm)?\\s+to\\s+${HOUR_TOKEN}(?::(\\d{2}))?\\s*(am|pm)?`,
+      "i",
+    ),
+  );
+  if (fromToTimes) {
+    const startHour = parseHourToken(fromToTimes[1] ?? "");
+    const endHour = parseHourToken(fromToTimes[3] ?? "");
+    if (startHour === null || endHour === null) {
+      return null;
+    }
+
+    let hour = startHour;
+    const minute = Number.parseInt(fromToTimes[2] ?? "0", 10);
+    const meridiem = fromToTimes[5]?.toLowerCase();
+    let endHour24 = endHour;
+    const endMinute = Number.parseInt(fromToTimes[4] ?? "0", 10);
+
+    if (meridiem === "pm" && hour < 12) {
+      hour += 12;
+    }
+    if (meridiem === "am" && hour === 12) {
+      hour = 0;
+    }
+    if (!meridiem && daypart) {
+      hour = applyDaypartMeridiem(hour, daypart);
+      endHour24 = applyDaypartMeridiem(endHour, daypart);
+    } else if (!meridiem && hour <= 7) {
+      hour += 12;
+      endHour24 += 12;
+    }
+
+    return { hour, minute, endHour: endHour24, endMinute };
+  }
+
+  const afterTime = normalized.match(
+    new RegExp(
+      `\\b(?:any\\s*time|anytime|after)\\s+${HOUR_TOKEN}(?::(\\d{2}))?\\s*(am|pm)?\\b`,
+      "i",
+    ),
+  );
+  if (afterTime) {
+    const parsedHour = parseHourToken(afterTime[1] ?? "");
+    if (parsedHour === null) {
+      return null;
+    }
+
+    const minute = Number.parseInt(afterTime[2] ?? "0", 10);
+    const meridiem = afterTime[3]?.toLowerCase();
+    let hour = parsedHour;
+
+    if (meridiem === "pm" && hour < 12) {
+      hour += 12;
+    } else if (meridiem === "am" && hour === 12) {
+      hour = 0;
+    } else if (!meridiem && daypart) {
+      hour = applyDaypartMeridiem(hour, daypart);
+    } else if (!meridiem && hour <= 7) {
+      hour += 12;
+    }
+
+    return { hour, minute };
   }
 
   const bareTime = normalized.match(
@@ -496,6 +591,76 @@ function weekdayIndex(name: string): number | null {
   return map[name.toLowerCase()] ?? null;
 }
 
+function resolveTargetDateFromSpeech(
+  normalized: string,
+  today: LocalDateParts,
+  knownScheduleRaw?: string,
+): LocalDateParts {
+  let targetDate = { ...today };
+  let useNextWeek = false;
+
+  if (/\btomorrow\b/.test(normalized)) {
+    return addDays(today, 1);
+  }
+
+  if (/\bnext week\b/.test(normalized)) {
+    return addDays(today, 7);
+  }
+
+  const weekdayMatch = normalized.match(
+    /\b(next\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i,
+  );
+  if (weekdayMatch) {
+    useNextWeek = Boolean(weekdayMatch[1]);
+    const weekday = weekdayIndex(weekdayMatch[2] ?? "");
+    if (weekday !== null) {
+      return resolveWeekday(today, weekday, useNextWeek);
+    }
+  }
+
+  const known = (knownScheduleRaw ?? "").toLowerCase().replace(/[^\w\s:]/g, " ").replace(/\s+/g, " ").trim();
+  if (!known) {
+    return targetDate;
+  }
+
+  if (/\btomorrow\b/.test(known)) {
+    return addDays(today, 1);
+  }
+
+  if (/\bnext week\b/.test(known)) {
+    return addDays(today, 7);
+  }
+
+  const knownWeekdayMatch = known.match(
+    /\b(next\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i,
+  );
+  if (knownWeekdayMatch) {
+    useNextWeek = Boolean(knownWeekdayMatch[1]);
+    const weekday = weekdayIndex(knownWeekdayMatch[2] ?? "");
+    if (weekday !== null) {
+      return resolveWeekday(today, weekday, useNextWeek);
+    }
+  }
+
+  return targetDate;
+}
+
+function buildFlexibleAvailabilitySpoken(
+  raw: string,
+  targetDate: LocalDateParts,
+): string {
+  const trimmed = raw.trim();
+  if (/\btomorrow\b/i.test(trimmed)) {
+    return trimmed;
+  }
+
+  if (/\b(morning|afternoon|evening|anytime|whenever|flexible|as soon as possible|before work|after work|during lunch)\b/i.test(trimmed)) {
+    return trimmed;
+  }
+
+  return `${formatSpokenDate(targetDate)} ${trimmed}`.trim();
+}
+
 export function parseScheduleSpeech(
   speech: string,
   now: Date = new Date(),
@@ -531,31 +696,66 @@ function parseScheduleSpeechInternal(
     return { status: "nothing_schedulable", raw };
   }
 
-  if (/\bafter work\b|\bafter i get off\b|\bwhen i get off\b/.test(normalized)) {
+  const today = getLocalParts(now, timeZone);
+  const targetDate = resolveTargetDateFromSpeech(
+    normalized,
+    today,
+    options.knownScheduleRaw,
+  );
+
+  if (
+    /\b(whenever|any time|anytime|as soon as possible|asap|flexible)\b/.test(normalized)
+  ) {
     return {
-      status: "needs_time_clarification",
-      prompt: "What time should I put down?",
+      status: "flexible_availability",
+      spoken: buildFlexibleAvailabilitySpoken(raw, targetDate),
       raw,
     };
   }
 
-  const today = getLocalParts(now, timeZone);
-  let targetDate = { ...today };
-  let useNextWeek = false;
+  if (/\bbefore work\b|\bduring lunch\b|\bsometime tomorrow\b/.test(normalized)) {
+    return {
+      status: "flexible_availability",
+      spoken: buildFlexibleAvailabilitySpoken(raw, targetDate),
+      raw,
+    };
+  }
 
-  if (/\btomorrow\b/.test(normalized)) {
-    targetDate = addDays(today, 1);
-  } else if (/\bnext week\b/.test(normalized)) {
-    targetDate = addDays(today, 7);
-  } else {
-    const weekdayMatch = normalized.match(/\b(next\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i);
-    if (weekdayMatch) {
-      useNextWeek = Boolean(weekdayMatch[1]);
-      const weekday = weekdayIndex(weekdayMatch[2] ?? "");
-      if (weekday !== null) {
-        targetDate = resolveWeekday(today, weekday, useNextWeek);
-      }
-    }
+  if (/\blater in the afternoon\b/.test(normalized)) {
+    return {
+      status: "flexible_availability",
+      spoken: buildFlexibleAvailabilitySpoken(raw, targetDate),
+      raw,
+    };
+  }
+
+  if (/\bafter work\b|\bafter i get off\b|\bwhen i get off\b/.test(normalized)) {
+    return {
+      status: "flexible_availability",
+      spoken: buildFlexibleAvailabilitySpoken(raw, targetDate),
+      raw,
+    };
+  }
+
+  if (/\bbefore\s+(noon|midday)\b/.test(normalized)) {
+    const dateLabel = formatSpokenDate(targetDate);
+    return {
+      status: "needs_confirmation",
+      spoken: `${dateLabel} before noon`,
+      isoStart: makeUtcDate(targetDate.year, targetDate.month, targetDate.day, 8, 0, timeZone).toISOString(),
+      isoEnd: makeUtcDate(targetDate.year, targetDate.month, targetDate.day, 12, 0, timeZone).toISOString(),
+      raw,
+    };
+  }
+
+  if (/\b(noon|midday)\b/.test(normalized)) {
+    const dateLabel = formatSpokenDate(targetDate);
+    return {
+      status: "needs_confirmation",
+      spoken: `${dateLabel} at 12:00 PM`,
+      isoStart: makeUtcDate(targetDate.year, targetDate.month, targetDate.day, 12, 0, timeZone).toISOString(),
+      raw,
+    };
   }
 
   const daypart =
@@ -573,6 +773,14 @@ function parseScheduleSpeechInternal(
         spoken: `Would ${dateLabel} between 8:00 and 11:00 AM work?`,
         isoStart: makeUtcDate(targetDate.year, targetDate.month, targetDate.day, 8, 0, timeZone).toISOString(),
         isoEnd: makeUtcDate(targetDate.year, targetDate.month, targetDate.day, 11, 0, timeZone).toISOString(),
+        raw,
+      };
+    }
+
+    if (hasAfternoon && !/\btomorrow\b|\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/.test(normalized)) {
+      return {
+        status: "flexible_availability",
+        spoken: buildFlexibleAvailabilitySpoken(raw, targetDate),
         raw,
       };
     }
@@ -772,6 +980,18 @@ export function applyScheduleParseResult(
     return fields;
   }
 
+  if (result.status === "flexible_availability") {
+    return syncLegacyStringFields({
+      ...fields,
+      appointment_preference_raw: result.raw,
+      appointment_preference: result.spoken,
+      schedule_confirmed: true,
+      schedule_pending_clarification: false,
+      schedule_clarification_prompt: undefined,
+      schedule_clarification_attempts: undefined,
+    });
+  }
+
   return syncLegacyStringFields({
     ...fields,
     appointment_preference_raw: result.raw,
@@ -818,6 +1038,65 @@ export function isScheduleComplete(fields: RealtimeFields): boolean {
   );
 }
 
+function isScheduleClarificationFailure(result: ScheduleParseResult): boolean {
+  return (
+    result.status === "needs_time_clarification" ||
+    result.status === "needs_date_clarification" ||
+    result.status === "nothing_schedulable"
+  );
+}
+
+function isGenericScheduleTimePrompt(prompt: string | undefined): boolean {
+  if (!prompt?.trim()) {
+    return true;
+  }
+
+  return GENERIC_SCHEDULE_TIME_PROMPT.test(prompt.trim());
+}
+
+function acceptFlexibleSchedulePreference(
+  fields: RealtimeFields,
+  preference: string,
+): RealtimeFields {
+  const trimmed = preference.trim();
+
+  return syncLegacyStringFields({
+    ...fields,
+    appointment_preference: trimmed,
+    appointment_preference_raw: trimmed,
+    schedule_confirmed: true,
+    schedule_pending_clarification: false,
+    schedule_clarification_prompt: undefined,
+    schedule_clarification_attempts: undefined,
+  });
+}
+
+function resolveScheduleClarificationPrompt(
+  parsed: ScheduleParseResult,
+  nextAttempts: number,
+): string {
+  if (nextAttempts >= 1) {
+    return SCHEDULE_DAYPART_CLARIFICATION_PROMPT;
+  }
+
+  if (
+    parsed.status === "needs_time_clarification" ||
+    parsed.status === "needs_date_clarification"
+  ) {
+    if (isGenericScheduleTimePrompt(parsed.prompt)) {
+      return SCHEDULE_DAYPART_CLARIFICATION_PROMPT;
+    }
+
+    return parsed.prompt;
+  }
+
+  if (parsed.status === "nothing_schedulable") {
+    return SCHEDULE_PARSE_FALLBACK_PROMPT;
+  }
+
+  return SCHEDULE_DAYPART_CLARIFICATION_PROMPT;
+}
+
 export function processScheduleCapture(
   fields: RealtimeFields,
   speech: string,
@@ -826,11 +1105,13 @@ export function processScheduleCapture(
   fields: RealtimeFields;
   clarificationPrompt?: string;
   confirmationPrompt?: string;
+  flexibleAcceptMessage?: string;
 } {
   try {
     const combined = `${fields.appointment_preference_raw ?? ""} ${speech}`.trim();
     const parsed = parseScheduleSpeech(combined, now, COMPANY_TIMEZONE, {
       knownDaypart: fields.schedule_daypart,
+      knownScheduleRaw: fields.appointment_preference_raw,
     });
     let updated = applyScheduleParseResult(
       {
@@ -840,26 +1121,8 @@ export function processScheduleCapture(
       parsed,
     );
 
-    if (parsed.status === "needs_time_clarification") {
-      updated = {
-        ...updated,
-        schedule_pending_clarification: true,
-        schedule_clarification_prompt: parsed.prompt,
-        schedule_daypart:
-          extractDaypartFromSpeech(parsed.raw) ??
-          fields.schedule_daypart ??
-          extractDaypartFromSpeech(fields.appointment_preference_raw ?? ""),
-      };
-      return { fields: updated, clarificationPrompt: parsed.prompt };
-    }
-
-    if (parsed.status === "needs_date_clarification") {
-      updated = {
-        ...updated,
-        schedule_pending_clarification: true,
-        schedule_clarification_prompt: parsed.prompt,
-      };
-      return { fields: updated, clarificationPrompt: parsed.prompt };
+    if (parsed.status === "flexible_availability") {
+      return { fields: updated };
     }
 
     if (parsed.status === "needs_confirmation") {
@@ -867,6 +1130,7 @@ export function processScheduleCapture(
         ...updated,
         schedule_pending_clarification: false,
         schedule_clarification_prompt: undefined,
+        schedule_clarification_attempts: undefined,
       };
       return {
         fields: updated,
@@ -874,10 +1138,41 @@ export function processScheduleCapture(
       };
     }
 
+    if (isScheduleClarificationFailure(parsed)) {
+      const alreadyClarifying = fields.schedule_pending_clarification === true;
+      const attempts = alreadyClarifying
+        ? (fields.schedule_clarification_attempts ?? 0)
+        : 0;
+
+      if (alreadyClarifying && attempts >= 1) {
+        return {
+          fields: acceptFlexibleSchedulePreference(updated, combined),
+          flexibleAcceptMessage: SCHEDULE_FLEXIBLE_ACCEPT_MESSAGE,
+        };
+      }
+
+      const nextAttempts = alreadyClarifying ? attempts + 1 : 0;
+      const prompt = resolveScheduleClarificationPrompt(parsed, nextAttempts);
+      updated = {
+        ...updated,
+        schedule_pending_clarification: true,
+        schedule_clarification_prompt: prompt,
+        schedule_clarification_attempts: nextAttempts,
+        schedule_daypart:
+          parsed.status === "needs_time_clarification"
+            ? extractDaypartFromSpeech(parsed.raw) ??
+              fields.schedule_daypart ??
+              extractDaypartFromSpeech(fields.appointment_preference_raw ?? "")
+            : fields.schedule_daypart,
+      };
+      return { fields: updated, clarificationPrompt: prompt };
+    }
+
     updated = {
       ...updated,
       schedule_pending_clarification: true,
       schedule_clarification_prompt: SCHEDULE_PARSE_FALLBACK_PROMPT,
+      schedule_clarification_attempts: (fields.schedule_clarification_attempts ?? 0) + 1,
     };
 
     return {
@@ -887,17 +1182,27 @@ export function processScheduleCapture(
   } catch (error) {
     logScheduleParseError(error, speech);
     const combined = `${fields.appointment_preference_raw ?? ""} ${speech}`.trim();
+    const attempts = fields.schedule_clarification_attempts ?? 0;
+
+    if (attempts >= 1) {
+      return {
+        fields: acceptFlexibleSchedulePreference(fields, combined),
+        flexibleAcceptMessage: SCHEDULE_FLEXIBLE_ACCEPT_MESSAGE,
+      };
+    }
+
     const updated: RealtimeFields = {
       ...fields,
       appointment_preference_raw: combined,
       schedule_pending_clarification: true,
-      schedule_clarification_prompt: SCHEDULE_PARSE_FALLBACK_PROMPT,
+      schedule_clarification_prompt: SCHEDULE_DAYPART_CLARIFICATION_PROMPT,
       schedule_confirmed: false,
+      schedule_clarification_attempts: attempts + 1,
     };
 
     return {
       fields: updated,
-      clarificationPrompt: SCHEDULE_PARSE_FALLBACK_PROMPT,
+      clarificationPrompt: SCHEDULE_DAYPART_CLARIFICATION_PROMPT,
     };
   }
 }

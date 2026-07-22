@@ -257,6 +257,10 @@ export function buildLastNameSpellingPrompt(): string {
   return "Could you spell your last name for me so I make sure the roofing team has it correctly?";
 }
 
+export function buildFullNameSpellingPrompt(): string {
+  return "Could you spell your first and last name for me?";
+}
+
 export function buildFirstNameSpellingPrompt(): string {
   return "Could you spell your first name as well?";
 }
@@ -400,26 +404,9 @@ export function processCallerNameTurn(
         name_spelling_verified: true,
       });
       if (hasCompleteCallerName(updated)) {
-        const confirmation = maybeRequestOpeningNameConfirmation(
-          updated,
-          trimmed,
-          {
-            firstName: updated.caller_first_name ?? "",
-            lastName: updated.caller_last_name ?? "",
-          },
-          confidence,
-        );
-        if (confirmation) {
-          return confirmation;
-        }
-
-        const ack =
-          updated.name_spelling_verified === true
-            ? buildNameCompleteAcknowledgment(updated)
-            : null;
         return {
           fields: updated,
-          replyText: ack,
+          replyText: null,
           complete: true,
           needsReasonQuestion: true,
         };
@@ -428,6 +415,35 @@ export function processCallerNameTurn(
     return {
       fields: updated,
       replyText: buildLastNameSpellingPrompt(),
+      complete: false,
+      needsReasonQuestion: false,
+    };
+  }
+
+  if (updated.name_awaiting_full_name_spelling) {
+    const spelled = parseSpelledNameSpeech(trimmed);
+    if (spelled.firstName && spelled.lastName) {
+      updated = syncFullNameFromParts({
+        ...updated,
+        caller_first_name: spelled.firstName,
+        caller_last_name: spelled.lastName,
+        name_awaiting_full_name_spelling: false,
+        name_needs_clarification: false,
+        name_spelling_verified: true,
+      });
+      if (hasCompleteCallerName(updated)) {
+        return {
+          fields: updated,
+          replyText: null,
+          complete: true,
+          needsReasonQuestion: true,
+        };
+      }
+    }
+
+    return {
+      fields: updated,
+      replyText: buildFullNameSpellingPrompt(),
       complete: false,
       needsReasonQuestion: false,
     };
@@ -442,29 +458,29 @@ export function processCallerNameTurn(
         caller_last_name: lastName,
         name_awaiting_last_name: false,
       });
-    if (updated.name_needs_clarification === true) {
-      updated.name_awaiting_last_name_spelling = true;
-      updated.name_spelling_verified = false;
-      return {
-        fields: updated,
-        replyText: buildLastNameSpellingPrompt(),
-        complete: false,
-        needsReasonQuestion: false,
-      };
-    }
+      if (updated.name_needs_clarification === true) {
+        updated.name_awaiting_last_name_spelling = true;
+        updated.name_spelling_verified = false;
+        return {
+          fields: updated,
+          replyText: buildLastNameSpellingPrompt(),
+          complete: false,
+          needsReasonQuestion: false,
+        };
+      }
 
-    const confirmation = maybeRequestOpeningNameConfirmation(
-      updated,
-      trimmed,
-      {
-        firstName: updated.caller_first_name ?? "",
-        lastName: updated.caller_last_name ?? "",
-      },
-      confidence,
-    );
-    if (confirmation) {
-      return confirmation;
-    }
+      const confirmation = maybeRequestOpeningNameConfirmation(
+        updated,
+        trimmed,
+        {
+          firstName: updated.caller_first_name ?? "",
+          lastName: updated.caller_last_name ?? "",
+        },
+        confidence,
+      );
+      if (confirmation) {
+        return confirmation;
+      }
 
       return {
         fields: updated,
@@ -549,11 +565,22 @@ export function processCallerNameTurn(
     };
   }
 
+  const attempts = (updated.name_clarification_attempts ?? 0) + 1;
   updated = {
     ...updated,
     name_needs_clarification: true,
-    name_clarification_attempts: (updated.name_clarification_attempts ?? 0) + 1,
+    name_clarification_attempts: attempts,
   };
+
+  if (attempts >= 2) {
+    updated.name_awaiting_full_name_spelling = true;
+    return {
+      fields: updated,
+      replyText: buildFullNameSpellingPrompt(),
+      complete: false,
+      needsReasonQuestion: false,
+    };
+  }
 
   return {
     fields: updated,

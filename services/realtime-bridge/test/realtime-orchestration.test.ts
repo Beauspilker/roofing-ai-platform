@@ -725,12 +725,12 @@ test("Friday morning requires a defined window or clarification", () => {
   }
 });
 
-test("after work requires a specific time", () => {
+test("after work stores flexible availability", () => {
   const parsed = parseScheduleSpeech("After work", JULY_20_2026, "America/Chicago");
 
-  assert.equal(parsed.status, "needs_time_clarification");
-  if (parsed.status === "needs_time_clarification") {
-    assert.match(parsed.prompt, /What time should I put down/i);
+  assert.equal(parsed.status, "flexible_availability");
+  if (parsed.status === "flexible_availability") {
+    assert.match(parsed.spoken, /after work/i);
   }
 });
 

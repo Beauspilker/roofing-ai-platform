@@ -76,7 +76,7 @@ test("volunteered name on first turn is stored and not asked again", async () =>
   assert.equal(fields.caller_first_name, "Beau");
   assert.equal(fields.caller_last_name, "Spilker");
   assert.doesNotMatch(outcome.replyText, /first and last name/i);
-  assert.match(outcome.replyText, /I heard Beau Spilker\. Is that correct/i);
+  assert.match(outcome.replyText, /What can the roofing team help you with today/i);
 });
 
 test("caller_name is selected before callback phone when both are missing", () => {

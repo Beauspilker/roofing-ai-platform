@@ -3520,12 +3520,27 @@ var OpeningSilenceController = class {
 var CONTEXT_ACKNOWLEDGMENTS = {
   callback_phone: ["Absolutely.", "Thank you."],
   address: ["Thank you.", "All right."],
-  emergency_or_active_leak: ["I'm glad everyone is safe.", "Understood."],
+  emergency_or_active_leak: ["Understood.", "Thank you."],
   insurance_claim_started: ["That helps.", "Okay."],
   adjuster_contacted: ["That helps.", "Thanks for clarifying."],
   appointment_preference: ["All right.", "Okay."],
   default: ["Thank you.", "All right.", "That helps.", "Okay."]
 };
+function shouldUseSafetyAcknowledgment(speech) {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  if (!normalized) {
+    return false;
+  }
+  return /\b(injur(?:y|ies|ed)|someone(?:'?s)? hurt|people (?:were |are )?hurt|got hurt|been hurt|anyone hurt)\b/.test(
+    normalized
+  ) || /\b(everyone(?:'?s)? (?:is )?safe|everybody(?:'?s)? (?:is )?safe|we(?:'?re| are) safe|nobody(?:'?s)? hurt|no one(?:'?s)? hurt|everyone(?:'?s)? okay)\b/.test(
+    normalized
+  ) || /\b(trapped|evacuat(?:e|ed|ing)|had to (?:leave|get out)|get(?:ting)? out of (?:the )?(?:house|home))\b/.test(
+    normalized
+  ) || /\b(in danger|active danger|unsafe|not safe|dangerous for (?:us|people|anyone))\b/.test(
+    normalized
+  ) || /\b(emergency|urgent emergency|medical emergency|life.?threatening)\b/.test(normalized);
+}
 var CLOSING_PHRASES = [
   "sounds good",
   "perfect",
@@ -3555,12 +3570,12 @@ var AcknowledgmentPolicy = class {
   turnsSinceAck = 0;
   selectAcknowledgment(options) {
     this.turnsSinceAck += 1;
-    if (options.isEmergency && !options.emergencyAlreadyAcknowledged) {
+    const answer = options.answer?.trim() ?? "";
+    if (shouldUseSafetyAcknowledgment(answer) && !options.emergencyAlreadyAcknowledged) {
       const ack = "I'm glad everyone is safe.";
       this.recordUsed(ack);
       return ack;
     }
-    const answer = options.answer?.trim() ?? "";
     const isSubstantiveAnswer = answer.length >= 12 && !/^(yes|no|yeah|nope|yep|yup|correct|right)\b/i.test(answer);
     const shouldAcknowledge = options.forceAck === true || options.afterConfirmation === true || isSubstantiveAnswer && (options.filledCount ?? 0) > 0 && this.turnsSinceAck >= 2;
     if (!shouldAcknowledge) {

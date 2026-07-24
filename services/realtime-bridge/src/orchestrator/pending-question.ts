@@ -149,11 +149,8 @@ export function resolvePendingQuestion(
     return "summary_confirmation";
   }
 
-  const nextRequired = getNextRequiredField(fields);
-
   if (
     needsCallbackConfirmation(fields) &&
-    nextRequired === "callback_phone" &&
     isCallerNameResolved(fields) &&
     !needsImmediateSafetyClarification(fields)
   ) {
@@ -162,7 +159,6 @@ export function resolvePendingQuestion(
 
   if (
     needsAddressConfirmation(fields) &&
-    nextRequired === "address" &&
     isCallbackPhoneResolved(fields) &&
     isCallerNameResolved(fields)
   ) {
@@ -175,6 +171,15 @@ export function resolvePendingQuestion(
       : "preferred_callback_time";
   }
 
+  if (conversationState === "listening_for_reason") {
+    return "reason_for_call";
+  }
+
+  if (conversationState === "collecting_intake") {
+    return null;
+  }
+
+  const nextRequired = getNextRequiredField(fields);
   return nextRequired ? mapRequiredFieldToPending(nextRequired) : null;
 }
 

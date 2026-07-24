@@ -222,5 +222,6 @@ test("unresolved callback confirmation is not selected while caller name is miss
     "collecting_intake",
   );
 
-  assert.equal(pending, "caller_name");
+  assert.notEqual(pending, "callback_confirmation");
+  assert.equal(pending, null);
 });

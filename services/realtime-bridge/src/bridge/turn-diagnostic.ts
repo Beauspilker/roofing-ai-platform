@@ -302,7 +302,6 @@ export function explainPostIntakeBranch(
   if (
     isCallerNameResolved(fields) &&
     needsCallbackConfirmation(fields) &&
-    nextRequired === "callback_phone" &&
     !needsImmediateSafetyClarification(fields)
   ) {
     return {
@@ -314,8 +313,7 @@ export function explainPostIntakeBranch(
   if (
     isCallerNameResolved(fields) &&
     isCallbackPhoneResolved(fields) &&
-    needsAddressReadback(fields) &&
-    nextRequired === "address"
+    needsAddressReadback(fields)
   ) {
     return {
       action: "address_confirmation_readback",

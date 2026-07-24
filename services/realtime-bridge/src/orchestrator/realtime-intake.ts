@@ -16,11 +16,19 @@ import {
   normalizeCallbackPhoneE164,
 } from "./callback-phone.js";
 import {
+  applyAdaptiveCorrections,
   applyAnswerForPendingQuestion,
   extractAllFieldsFromTranscript,
   isShortPendingStyleAnswer,
   mergeExtractedFields,
 } from "./multi-field-extraction.js";
+import {
+  getFieldClarificationAttempts,
+  incrementFieldClarificationAttempt,
+  mapPendingQuestionToRequiredField,
+  markFieldUncertain,
+  MAX_FIELD_CLARIFICATION_ATTEMPTS,
+} from "./field-completion.js";
 import { REALTIME_ANYTHING_ELSE_QUESTION, type RealtimeFields } from "./realtime-prompts.js";
 import {
   applyDirectAnswerToMissingField,
@@ -117,7 +125,8 @@ export function mergeRealtimeCallerAnswer(
   );
 
   const fieldsBeforeMerge = sanitizedFields;
-  let updated = applyAnswerForPendingQuestion(sanitizedFields, answer, callerPhone, pendingQuestion);
+  let updated = applyAdaptiveCorrections(sanitizedFields, answer);
+  updated = applyAnswerForPendingQuestion(updated, answer, callerPhone, pendingQuestion);
   updated = {
     ...updated,
     pending_question: undefined,
@@ -126,10 +135,10 @@ export function mergeRealtimeCallerAnswer(
   const shortAnswer = isShortPendingStyleAnswer(answer);
   const afterPendingOnly = updated;
 
-  if (!shortAnswer) {
-    const extracted = extractAllFieldsFromTranscript(answer, callerPhone, pendingQuestion);
-    updated = mergeExtractedFields(updated, extracted);
+  const extracted = extractAllFieldsFromTranscript(answer, callerPhone, pendingQuestion);
+  updated = mergeExtractedFields(updated, extracted, answer);
 
+  if (!shortAnswer) {
     const missingBeforeDirect = getMissingRequiredFields(updated);
     const openingReasonTurn = isOpeningReasonCaptureContext(updated, {
       isFirstCallerTurn: options.isFirstCallerTurn,
@@ -145,6 +154,27 @@ export function mergeRealtimeCallerAnswer(
       !skipDirectNameFromReasonSpeech
     ) {
       updated = applyDirectAnswerToMissingField(updated, answer, callerPhone, null);
+    }
+  }
+
+  const pendingField = mapPendingQuestionToRequiredField(pendingQuestion ?? undefined);
+  if (
+    pendingField &&
+    (pendingField === "insurance_claim_started" ||
+      pendingField === "adjuster_contacted" ||
+      pendingField === "emergency_or_active_leak")
+  ) {
+    const beforeValue = afterPendingOnly[pendingField];
+    const afterValue = updated[pendingField];
+    if (
+      isStructuredBooleanUnset(beforeValue) &&
+      isStructuredBooleanUnset(afterValue) &&
+      answer.trim().length > 0
+    ) {
+      updated = incrementFieldClarificationAttempt(updated, pendingField);
+      if (getFieldClarificationAttempts(updated, pendingField) >= MAX_FIELD_CLARIFICATION_ATTEMPTS) {
+        updated = markFieldUncertain(updated, pendingField, answer.trim());
+      }
     }
   }
 
@@ -266,6 +296,7 @@ export function buildIntakeReply(
 export function appendAnythingElseNotes(
   fields: RealtimeFields,
   speech: string,
+  callerPhone?: string,
 ): RealtimeFields {
   const trimmed = speech.trim();
 
@@ -276,10 +307,15 @@ export function appendAnythingElseNotes(
   const existing = fields.additional_notes?.trim();
   const combined = existing ? `${existing} ${trimmed}` : trimmed;
 
-  return syncLegacyStringFields({
+  let updated = syncLegacyStringFields({
     ...fields,
     additional_notes: combined.slice(0, 500),
   });
+
+  const extracted = extractAllFieldsFromTranscript(trimmed, callerPhone, null);
+  updated = mergeExtractedFields(updated, extracted, trimmed);
+
+  return updated;
 }
 
 function isAnythingElseDeclined(speech: string): boolean {

@@ -400,8 +400,7 @@ function buildPostIntakeReply(
   if (
     isCallerNameResolved(updatedFields) &&
     !needsImmediateSafetyClarification(updatedFields) &&
-    needsCallbackReadback(updatedFields) &&
-    nextRequired === "callback_phone"
+    needsCallbackReadback(updatedFields)
   ) {
     return packagePostIntakeResult(
       updatedFields,
@@ -414,8 +413,7 @@ function buildPostIntakeReply(
   if (
     isCallerNameResolved(updatedFields) &&
     isCallbackPhoneResolved(updatedFields) &&
-    needsAddressReadback(updatedFields) &&
-    nextRequired === "address"
+    needsAddressReadback(updatedFields)
   ) {
     return packagePostIntakeResult(
       updatedFields,

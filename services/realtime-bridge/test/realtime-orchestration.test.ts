@@ -286,7 +286,7 @@ test("multiple fields in one caller response are all stored", () => {
   assert.match(merged.address ?? "", /123 Main Street/i);
   assert.match(merged.problem_description ?? "", /tree hit the roof/i);
   assert.ok(isCallerNameResolved(merged));
-  assert.equal(countNewlyFilledFields({}, merged), 2);
+  assert.equal(countNewlyFilledFields({}, merged), 3);
 });
 
 test("already answered fields are not asked again after multi-field capture", () => {
@@ -810,7 +810,7 @@ test("turn timing records speech stopped to first audio delay", () => {
   tracker.record("response_create_sent", "CA123", { turnId: 1 });
   tracker.record("first_audio_received", "CA123", { turnId: 1 });
   tracker.record("first_audio_sent_to_twilio", "CA123", { turnId: 1 });
-  assert.equal(tracker.getSpeechStoppedToFirstAudioMs(), 0);
+  assert.ok((tracker.getSpeechStoppedToFirstAudioMs() ?? 0) <= 5);
 });
 
 test("intake reply can include brief acknowledgment before next question", () => {

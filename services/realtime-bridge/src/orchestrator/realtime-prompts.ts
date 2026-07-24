@@ -20,7 +20,7 @@ export const REALTIME_INTRO_TRANSITION = "";
 export const REALTIME_OPENING_QUESTION = REALTIME_OPENING_NAME_QUESTION;
 
 export const REALTIME_ANYTHING_ELSE_QUESTION =
-  "Is there anything else you'd like the roofing team to know?";
+  "Is there anything else you'd like the roofing company to know before I send this over?";
 
 export type RealtimeFields = Omit<
   CollectedFields,
@@ -61,6 +61,13 @@ export type RealtimeFields = Omit<
   adjuster_contacted_legacy?: string;
   photos_available_legacy?: string;
   active_leak?: string;
+  field_resolution?: Partial<
+    Record<
+      string,
+      "missing" | "captured" | "uncertain" | "confirmed"
+    >
+  >;
+  field_clarification_attempts?: Partial<Record<string, number>>;
 };
 
 export function ensureSingleIntakeQuestion(text: string): string {

@@ -2,7 +2,7 @@ import type { ConversationState } from "./conversation-state.js";
 import type { RealtimeFields } from "./realtime-prompts.js";
 import { isSummaryConfirmed } from "./realtime-prompts.js";
 import { normalizeCallbackPhoneE164 } from "./callback-phone.js";
-import { isAddressConfirmed } from "./address-confirmation.js";
+import { isAddressConfirmed, hasConfirmableAddress } from "./address-confirmation.js";
 import {
   EARLY_CALLER_NAME_QUESTION,
   extractDamageOrCallReason,
@@ -18,6 +18,10 @@ import { normalizeCallReasonFromSpeech } from "./call-reason-handling.js";
 import { hasCompleteCallerName, processCallerNameTurn } from "./caller-name-intake.js";
 import { isScheduleComplete } from "./schedule-normalizer.js";
 import { needsCallbackConfirmation, mapRequiredFieldToPending } from "./pending-question.js";
+import {
+  isFieldAskable,
+  isFieldResolvedEnoughToSkip,
+} from "./field-completion.js";
 import {
   isStructuredBooleanUnset,
   parseExplicitBoolean,
@@ -110,6 +114,10 @@ export function isCallbackPhoneResolved(fields: RealtimeFields): boolean {
 }
 
 function isFieldComplete(field: RequiredFieldKey, fields: RealtimeFields): boolean {
+  if (isFieldResolvedEnoughToSkip(field, fields)) {
+    return true;
+  }
+
   switch (field) {
     case "full_name":
       return isCallerNameResolved(fields);
@@ -170,11 +178,15 @@ function collectMissingFieldsInPriorityOrder(fields: RealtimeFields): RequiredFi
   }
 
   if (!isCallbackComplete(fields)) {
-    missing.push("callback_phone");
+    if (!hasValue(fields.callback_phone)) {
+      missing.push("callback_phone");
+    }
   }
 
   if (!isAddressConfirmed(fields)) {
-    missing.push("address");
+    if (!hasConfirmableAddress(fields.address)) {
+      missing.push("address");
+    }
   }
 
   if (
@@ -190,7 +202,7 @@ function collectMissingFieldsInPriorityOrder(fields: RealtimeFields): RequiredFi
     }
   }
 
-  return missing;
+  return missing.filter((field) => isFieldAskable(field, fields));
 }
 
 /** Deterministic gate — summary/closing blocked while this returns any item. */

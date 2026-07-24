@@ -776,11 +776,16 @@ export class CallBridge {
       logWarn("response_watchdog_exhausted", {
         callSid: this.callSid ?? undefined,
         turnId,
+        cause: "stalled_response_generation",
       });
-      this.responseGuard.releaseActiveResponse({
-        waitingForCaller: true,
-        preserveCallerTurnReady: true,
-      });
+      this.responseGuard.prepareCallerTurnRecovery();
+      this.enqueueOrSpeakSpeech(
+        {
+          text: "Thanks for your patience. I had a brief hiccup — could you repeat that last answer for me?",
+          reason: "caller_turn_reply",
+        },
+        { turnId },
+      );
       return;
     }
 

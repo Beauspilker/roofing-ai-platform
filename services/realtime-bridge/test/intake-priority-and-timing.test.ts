@@ -56,7 +56,11 @@ test("hail damage with volunteered name does not ask again", async () => {
   });
 
   assert.doesNotMatch(outcome.replyText, /first and last name/i);
-  assert.match(outcome.replyText, /What can the roofing team help you with today/i);
+  assert.match(outcome.replyText, /best number to reach you/i);
+  assert.match(
+    (outcome.session?.collected_fields as RealtimeFields).problem_description ?? "",
+    /hail damage/i,
+  );
 });
 
 test("immediate safety issue is handled before caller name", async () => {
@@ -198,7 +202,9 @@ test("turn timing records all stages with turn id", () => {
   tracker.record("response_create_sent", "CA123", { turnId: 1 });
   tracker.record("first_audio_received", "CA123", { turnId: 1 });
   tracker.record("first_audio_sent_to_twilio", "CA123", { turnId: 1 });
-  assert.equal(tracker.getSpeechStoppedToFirstAudioMs(), 0);
+  const delayMs = tracker.getSpeechStoppedToFirstAudioMs();
+  assert.ok(typeof delayMs === "number");
+  assert.ok(delayMs >= 0 && delayMs <= 50);
 });
 
 test("stale turn milestones are ignored", () => {

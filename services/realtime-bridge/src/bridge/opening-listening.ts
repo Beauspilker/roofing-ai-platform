@@ -148,6 +148,7 @@ export class OpeningSilenceController {
   private listeningForReason = false;
   private awaitingCallerName = false;
   private meaningfulTranscriptReceived = false;
+  private callerSpeechActive = false;
   private silenceStage: OpeningSilenceStage = 0;
   private silenceTimer: NodeJS.Timeout | null = null;
 
@@ -186,7 +187,29 @@ export class OpeningSilenceController {
   onMeaningfulCallerTranscript(): void {
     this.meaningfulTranscriptReceived = true;
     this.listeningForReason = false;
+    this.callerSpeechActive = false;
     this.clearSilenceTimer();
+  }
+
+  onCallerSpeechStarted(): void {
+    if (!this.listeningForReason) {
+      return;
+    }
+
+    this.callerSpeechActive = true;
+    this.clearSilenceTimer();
+  }
+
+  onCallerSpeechStopped(): void {
+    this.callerSpeechActive = false;
+  }
+
+  isCallerSpeechActive(): boolean {
+    return this.callerSpeechActive;
+  }
+
+  completeOpeningListen(): void {
+    this.onMeaningfulCallerTranscript();
   }
 
   reset(): void {
@@ -222,6 +245,11 @@ export class OpeningSilenceController {
 
   private handleSilenceTimeout(onPrompt: (prompt: OpeningSilencePrompt) => void): void {
     if (!this.isListeningForReason()) {
+      return;
+    }
+
+    if (this.callerSpeechActive) {
+      this.scheduleSilenceCheck(onPrompt);
       return;
     }
 

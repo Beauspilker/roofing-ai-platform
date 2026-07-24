@@ -10,8 +10,16 @@ import {
   logCallDisconnect,
   logFirstAssistantAudioReceived,
   logResponseCreateSent,
+  logStallDetected,
+  logRecoveryTriggered,
+  logTurnBridgeEvent,
   beginTurnDiagnostic,
 } from "../bridge/turn-diagnostic.js";
+import {
+  StallRecoveryController,
+  buildStallRecoveryReply,
+  type StallCategory,
+} from "../bridge/stall-recovery.js";
 import { PlaybackTracker } from "../bridge/playback-tracker.js";
 import {
   ResponseStateGuard,
@@ -89,6 +97,9 @@ export class CallBridge {
   private openingResponseCreateCount = 0;
   private postOpeningResponseCreateCount = 0;
   private readonly audioDiagnostics = new CallAudioDiagnostics();
+  private readonly stallRecovery = new StallRecoveryController();
+  private bargeInCancelledResponse = false;
+  private callerSpeechActive = false;
 
   constructor(private readonly params: CallBridgeParams) {}
 
@@ -220,6 +231,16 @@ export class CallBridge {
       onAssistantSpeakingChange: () => {},
       onBargeIn: () => {
         this.audioDiagnostics.recordBargeIn(this.activeTurnId);
+        this.bargeInCancelledResponse = true;
+        this.pendingSpeech = null;
+        this.clearResponseWatchdog();
+        this.stallRecovery.clearAudioCompletionWatch();
+        this.responseGuard.onResponseCancelled();
+        this.pendingClientResponse = false;
+        logTurnBridgeEvent("turn_diag_barge_in", {
+          turnId: this.activeTurnId,
+          callSid: this.callSid ?? undefined,
+        });
       },
       onTruncation: () => {
         this.audioDiagnostics.recordTruncation(this.activeTurnId);
@@ -352,6 +373,11 @@ export class CallBridge {
 
   private handleOpeningSilencePrompt(prompt: OpeningSilencePrompt): void {
     if (this.closed || !this.openingSilence.isListeningForReason()) {
+      return;
+    }
+
+    if (this.callerSpeechActive || this.openingSilence.isCallerSpeechActive()) {
+      this.scheduleOpeningSilenceReprompt();
       return;
     }
 
@@ -508,16 +534,31 @@ export class CallBridge {
         logInfo("openai_session_ready", { type: event.type });
         break;
       case "input_audio_buffer.speech_started":
+        this.callerSpeechActive = true;
+        this.openingSilence.onCallerSpeechStarted();
+        logTurnBridgeEvent("turn_diag_caller_speech_started", {
+          turnId: this.activeTurnId,
+          callSid: this.callSid ?? undefined,
+        });
         this.responseGuard.onCallerSpeechStarted();
         this.bargeIn?.handleCallerSpeechStarted();
         break;
       case "input_audio_buffer.speech_stopped":
+        this.callerSpeechActive = false;
+        this.openingSilence.onCallerSpeechStopped();
+        logTurnBridgeEvent("turn_diag_caller_speech_stopped", {
+          turnId: this.activeTurnId + 1,
+          callSid: this.callSid ?? undefined,
+        });
         this.activeTurnId += 1;
         this.responseGuard.beginCallerTurn(this.activeTurnId);
         this.turnTiming.beginTurn(this.callSid ?? undefined, this.activeTurnId);
         this.turnTiming.record("speech_stopped", this.callSid ?? undefined, {
           turnId: this.activeTurnId,
         });
+        if (this.openingSilence.isListeningForReason()) {
+          this.scheduleOpeningSilenceReprompt();
+        }
         break;
       case "conversation.item.input_audio_transcription.completed":
         void this.handleTranscriptionCompleted(event);
@@ -562,6 +603,9 @@ export class CallBridge {
           turnId: this.activeTurnId,
         });
         logFirstAssistantAudioReceived();
+        this.stallRecovery.beginAudioCompletionWatch(this.activeTurnId, (category) => {
+          this.handleStallRecovery(category, this.activeTurnId);
+        });
         this.responseGuard.onAssistantAudioDelta();
         this.audioDiagnostics.recordOpenAiAudioDelta(
           this.activeTurnId,
@@ -584,6 +628,7 @@ export class CallBridge {
         }
         break;
       case "response.done":
+        this.stallRecovery.clearAudioCompletionWatch();
         this.bargeIn?.handleResponseCompleted();
         this.responseGuard.onResponseDone();
         this.audioDiagnostics.recordOpenAiResponseEvent("response.done", this.activeTurnId);
@@ -634,12 +679,29 @@ export class CallBridge {
         this.pendingClientResponse = false;
         this.awaitingClosingMark = false;
         this.clearResponseWatchdog();
-        this.flushPendingSpeech();
+        this.stallRecovery.clearAudioCompletionWatch();
+        logTurnBridgeEvent("turn_diag_response_cancelled", {
+          turnId: this.activeTurnId,
+          callSid: this.callSid ?? undefined,
+          bargeIn: this.bargeInCancelledResponse,
+        });
+        {
+          const skipReplay = this.bargeInCancelledResponse;
+          this.bargeInCancelledResponse = false;
+          if (!skipReplay) {
+            this.flushPendingSpeech();
+          }
+        }
         void this.processQueuedCallerTranscript();
         break;
       case "error":
         logError("openai_event_error", {
           errorType: String(event.error ?? "unknown"),
+        });
+        logStallDetected({
+          category: "websocket_interrupted",
+          turnId: this.activeTurnId,
+          callSid: this.callSid ?? undefined,
         });
         this.responseGuard.onOpenAiError();
         this.pendingClientResponse = false;
@@ -705,12 +767,11 @@ export class CallBridge {
     });
 
     beginTurnDiagnostic(this.callSid ?? "unknown", this.activeTurnId);
-
-    if (isMeaningfulOpeningCallerTranscript(transcript, { awaitingName: true })) {
-      this.openingSilence.onMeaningfulCallerTranscript();
-      this.responseGuard.completeOpeningReasonListen();
-      this.openingNameListenStarted = false;
-    }
+    logTurnBridgeEvent("turn_diag_transcript_received", {
+      turnId: this.activeTurnId,
+      callSid: this.callSid ?? undefined,
+      transcriptLength: transcript.length,
+    });
 
     void this.processCallerTurnReply(transcript, this.extractTranscriptConfidence(event));
   }
@@ -778,14 +839,7 @@ export class CallBridge {
         turnId,
         cause: "stalled_response_generation",
       });
-      this.responseGuard.prepareCallerTurnRecovery();
-      this.enqueueOrSpeakSpeech(
-        {
-          text: "Thanks for your patience. I had a brief hiccup — could you repeat that last answer for me?",
-          reason: "caller_turn_reply",
-        },
-        { turnId },
-      );
+      this.handleStallRecovery("response_audio_stalled", turnId);
       return;
     }
 
@@ -821,6 +875,69 @@ export class CallBridge {
     });
   }
 
+  private handleStallRecovery(category: StallCategory, turnId: number): void {
+    if (this.closed || this.callerSpeechActive || this.openingSilence.isCallerSpeechActive()) {
+      return;
+    }
+
+    if (!this.stallRecovery.canAttemptRecovery()) {
+      logStallDetected({
+        category: `${category}_recovery_exhausted`,
+        turnId,
+        callSid: this.callSid ?? undefined,
+      });
+      return;
+    }
+
+    logStallDetected({
+      category,
+      turnId,
+      callSid: this.callSid ?? undefined,
+    });
+
+    const attempt = this.stallRecovery.recordRecoveryAttempt();
+    logRecoveryTriggered({
+      category,
+      attempt,
+      turnId,
+      callSid: this.callSid ?? undefined,
+    });
+
+    this.responseGuard.prepareCallerTurnRecovery();
+    this.pendingClientResponse = false;
+    this.clearResponseWatchdog();
+    this.stallRecovery.clearExtractionWatch();
+    this.stallRecovery.clearAudioCompletionWatch();
+
+    const fields =
+      (this.orchestrator?.getSession()?.collected_fields as import("../orchestrator/realtime-prompts.js").RealtimeFields | undefined) ??
+      {};
+    const reply = buildStallRecoveryReply(fields, this.callerPhone, attempt);
+
+    this.enqueueOrSpeakSpeech(
+      {
+        text: reply,
+        reason: "caller_turn_reply",
+      },
+      { turnId },
+    );
+  }
+
+  private completeOpeningListenIfNeeded(transcript: string): void {
+    if (
+      !this.openingSilence.isListeningForReason() &&
+      !this.openingNameListenStarted
+    ) {
+      return;
+    }
+
+    if (isMeaningfulOpeningCallerTranscript(transcript, { awaitingName: true })) {
+      this.openingSilence.completeOpeningListen();
+      this.responseGuard.completeOpeningReasonListen();
+      this.openingNameListenStarted = false;
+    }
+  }
+
   private processCallerTurnReply(
     transcript: string,
     speechConfidence: number | null = null,
@@ -831,23 +948,42 @@ export class CallBridge {
 
     const turnId = this.activeTurnId;
 
+    logTurnBridgeEvent("turn_diag_extraction_started", {
+      turnId,
+      callSid: this.callSid ?? undefined,
+    });
+
+    this.stallRecovery.beginExtractionWatch(turnId, (category) => {
+      this.handleStallRecovery(category, turnId);
+    });
+
     void this.orchestrator
       .handleCallerTranscript(transcript, this.activeTurnId, speechConfidence)
       .then((result) => {
       if (this.turnTiming.isStaleTurn(turnId)) {
+        this.stallRecovery.completeExtraction();
         return;
       }
+
+      this.stallRecovery.completeExtraction();
+      logTurnBridgeEvent("turn_diag_extraction_completed", {
+        turnId,
+        callSid: this.callSid ?? undefined,
+      });
 
       this.turnTiming.record("caller_turn_processed", this.callSid ?? undefined, { turnId });
 
       if (!result?.replyText) {
         if (this.openingSilence.isListeningForReason()) {
+          this.scheduleOpeningSilenceReprompt();
           return;
         }
 
-        this.attemptEmptyReplyRecovery(transcript);
+        this.handleStallRecovery("extraction_no_response_requested", turnId);
         return;
       }
+
+      this.completeOpeningListenIfNeeded(transcript);
 
       if (result.structuredStateUpdated) {
         this.turnTiming.record("structured_state_updated", this.callSid ?? undefined, { turnId });
@@ -860,7 +996,7 @@ export class CallBridge {
         ? "closing_message"
         : "caller_turn_reply";
 
-      this.enqueueOrSpeakSpeech(
+      const sent = this.enqueueOrSpeakSpeech(
         {
           text: result.replyText,
           reason,
@@ -869,16 +1005,14 @@ export class CallBridge {
         },
         { turnId },
       );
+
+      if (!sent && reason === "caller_turn_reply") {
+        this.handleStallRecovery("extraction_no_response_requested", turnId);
+      }
     }).catch((error) => {
+      this.stallRecovery.completeExtraction();
       logError("caller_turn_processing_failed", { callSid: this.callSid ?? undefined, turnId }, error);
-      this.responseGuard.prepareCallerTurnRecovery();
-      this.enqueueOrSpeakSpeech(
-        {
-          text: "Thanks for your patience. Could you repeat that last answer for me?",
-          reason: "caller_turn_reply",
-        },
-        { turnId },
-      );
+      this.handleStallRecovery("transcript_extraction_stalled", turnId);
     });
   }
 

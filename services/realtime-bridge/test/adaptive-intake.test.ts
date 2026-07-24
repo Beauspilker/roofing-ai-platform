@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { OpeningSilenceController } from "../src/bridge/opening-listening.js";
 import { ResponseStateGuard } from "../src/bridge/response-state-guard.js";
+import { AcknowledgmentPolicy } from "../src/orchestrator/acknowledgment-policy.js";
+import { processRealtimeCallerTurn } from "../src/orchestrator/realtime-turn-processor.js";
 import {
   extractAllFieldsFromTranscript,
   mergeExtractedFields,
@@ -235,4 +238,106 @@ test("natural transition question targets next missing field only", () => {
     getNaturalTransitionQuestion(next!, fields, CALLER_PHONE),
     /best number|callback/i,
   );
+});
+
+test("opening response captures name plus future answers from one transcript", async () => {
+  const speech =
+    "My name is Beau Spilker. We got hail Tuesday night, insurance hasn't been contacted, and I'm available tomorrow afternoon.";
+
+  const outcome = await processRealtimeCallerTurn({
+    session: {
+      id: "session-1",
+      twilio_call_sid: "CA123",
+      company_id: "company-1",
+      caller_phone: CALLER_PHONE,
+      called_phone: "+14027611540",
+      status: "active",
+      current_question: null,
+      collected_fields: {},
+      transcript: [],
+      attempt_count: 0,
+      started_at: new Date().toISOString(),
+      last_activity_at: new Date().toISOString(),
+      completed_at: null,
+      expires_at: new Date().toISOString(),
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    },
+    callSid: "CA123",
+    callerPhone: CALLER_PHONE,
+    speechResult: speech,
+    conversationState: "awaiting_opening_name",
+    acknowledgmentPolicy: new AcknowledgmentPolicy(),
+    isFirstCallerTurn: true,
+  });
+
+  const fields = outcome.session?.collected_fields as RealtimeFields;
+  assert.equal(fields.full_name, "Beau Spilker");
+  assert.match(fields.problem_description ?? "", /hail/i);
+  assert.equal(fields.insurance_claim_started, false);
+  assert.match(fields.appointment_preference_raw ?? "", /tomorrow afternoon/i);
+  assert.notEqual(outcome.nextConversationState, "listening_for_reason");
+  assert.doesNotMatch(outcome.replyText, /What can the roofing team help you with today/i);
+});
+
+test("name correction during opening does not store problem_description", () => {
+  const extracted = extractAllFieldsFromTranscript(
+    "No, Beau Spilker",
+    CALLER_PHONE,
+    "caller_name",
+  );
+
+  assert.equal(extracted.problem_description, undefined);
+});
+
+test("long insurance haven't called answer stores false and uncertain", () => {
+  const merged = mergeRealtimeCallerAnswer(
+    { problem_description: "leak" },
+    "I haven't called insurance because I wasn't sure if it was bad enough.",
+    CALLER_PHONE,
+    { pendingQuestion: "insurance_claim", conversationState: "collecting_intake" },
+  );
+
+  assert.equal(merged.insurance_claim_started, false);
+  assert.equal(getFieldCompletionStatus("insurance_claim_started", merged), "uncertain");
+  assert.equal(isFieldAskable("insurance_claim_started", merged), false);
+});
+
+test("adjuster visited but unresolved is captured without forcing yes no", () => {
+  const parsed = parseInsuranceLongAnswer(
+    "They came out yesterday, but nothing has been approved.",
+  );
+  assert.equal(parsed?.adjuster_contacted, true);
+  assert.equal(parsed?.insuranceStatus, "adjuster_visited_unresolved");
+
+  const merged = mergeRealtimeCallerAnswer(
+    { problem_description: "leak", insurance_claim_started: undefined },
+    "They came out yesterday, but nothing has been approved.",
+    CALLER_PHONE,
+    { pendingQuestion: "insurance_claim" },
+  );
+
+  assert.equal(merged.adjuster_contacted, true);
+  assert.equal(isFieldAskable("insurance_claim_started", merged), false);
+});
+
+test("paying out of pocket resolves insurance without looping", () => {
+  const merged = mergeRealtimeCallerAnswer(
+    { problem_description: "leak" },
+    "I'm paying out of pocket.",
+    CALLER_PHONE,
+    { pendingQuestion: "insurance_claim" },
+  );
+
+  assert.equal(merged.insurance_claim_started, false);
+  assert.equal(merged.insurance_status, "out_of_pocket");
+  assert.equal(isFieldAskable("insurance_claim_started", merged), false);
+});
+
+test("opening silence controller waits while caller speech is active", () => {
+  const controller = new OpeningSilenceController();
+  controller.beginListeningForCallerName();
+  controller.onCallerSpeechStarted();
+  assert.equal(controller.isCallerSpeechActive(), true);
+  assert.equal(controller.isListeningForReason(), true);
 });

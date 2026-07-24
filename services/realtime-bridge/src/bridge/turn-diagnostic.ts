@@ -353,6 +353,39 @@ export function logFirstAssistantAudioReceived(): void {
   });
 }
 
+export function logTurnBridgeEvent(
+  event: string,
+  payload: Record<string, unknown>,
+): void {
+  logTurnDiagnostic(event, payload);
+}
+
+export function logStallDetected(input: {
+  category: string;
+  turnId?: number;
+  callSid?: string;
+}): void {
+  logWarn("turn_diag_stall_detected", {
+    stallCategory: input.category,
+    turnId: input.turnId,
+    callSid: input.callSid,
+  });
+}
+
+export function logRecoveryTriggered(input: {
+  category: string;
+  attempt: number;
+  turnId?: number;
+  callSid?: string;
+}): void {
+  logWarn("turn_diag_recovery_triggered", {
+    stallCategory: input.category,
+    recoveryAttempt: input.attempt,
+    turnId: input.turnId,
+    callSid: input.callSid,
+  });
+}
+
 export function logCallDisconnect(input: {
   callId?: string;
   reason: string;

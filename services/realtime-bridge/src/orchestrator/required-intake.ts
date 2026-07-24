@@ -132,8 +132,14 @@ function isFieldComplete(field: RequiredFieldKey, fields: RealtimeFields): boole
     case "emergency_or_active_leak":
       return !isStructuredBooleanUnset(fields.emergency_or_active_leak);
     case "insurance_claim_started":
+      if (fields.insurance_status || fields.field_resolution?.insurance_claim_started === "uncertain") {
+        return true;
+      }
       return !isStructuredBooleanUnset(fields.insurance_claim_started);
     case "adjuster_contacted":
+      if (fields.field_resolution?.adjuster_contacted === "uncertain" || fields.field_resolution?.adjuster_contacted === "captured") {
+        return true;
+      }
       if (fields.insurance_claim_started !== true) {
         return true;
       }

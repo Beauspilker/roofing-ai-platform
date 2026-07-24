@@ -313,6 +313,18 @@ export function isPlausibleServiceAddress(address: string): boolean {
   return true;
 }
 
+function isNameCorrectionSpeech(text: string): boolean {
+  const trimmed = text.trim();
+
+  if (!/^no\b/i.test(trimmed)) {
+    return false;
+  }
+
+  const correctedName = trimmed.replace(/^no,?\s*(?:that'?s\s+)?(?:wrong|incorrect|not\s+right)?,?\s*/i, "").trim();
+
+  return correctedName.length > 0 && isPlausibleCallerName(correctedName);
+}
+
 export function isPlausibleDamageDescription(text: string): boolean {
   const trimmed = text.trim();
 
@@ -321,6 +333,14 @@ export function isPlausibleDamageDescription(text: string): boolean {
   }
 
   if (isPlausibleCallerName(trimmed)) {
+    return false;
+  }
+
+  if (isNameCorrectionSpeech(trimmed)) {
+    return false;
+  }
+
+  if (/^(yes|yeah|yep|yup|no|nope|nah|correct|right)\.?$/i.test(trimmed)) {
     return false;
   }
 

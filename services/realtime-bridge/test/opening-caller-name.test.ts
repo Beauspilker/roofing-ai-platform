@@ -98,7 +98,9 @@ test("opening response with volunteered name does not ask again", async () => {
   assert.equal(fields.caller_first_name, "Beau");
   assert.equal(fields.caller_last_name, "Spilker");
   assert.doesNotMatch(outcome.replyText, /first and last name/i);
-  assert.match(outcome.replyText, /What can the roofing team help you with today/i);
+  assert.doesNotMatch(outcome.replyText, /What can the roofing team help you with today/i);
+  assert.match(outcome.replyText, /best number to reach you/i);
+  assert.equal(outcome.nextConversationState, "collecting_intake");
 });
 
 test("opening response This is Beau with tree damage stores both fields", async () => {
@@ -117,7 +119,8 @@ test("opening response This is Beau with tree damage stores both fields", async 
   const fields = outcome.session?.collected_fields as RealtimeFields;
   assert.equal(fields.caller_first_name, "Beau");
   assert.equal(fields.caller_last_name, "Spilker");
-  assert.match(outcome.replyText, /What can the roofing team help you with today/i);
+  assert.match(fields.problem_description ?? "", /tree fell on my roof/i);
+  assert.match(outcome.replyText, /best number to reach you/i);
 });
 
 test("hail damage and roof leak cannot pass caller-name validation", () => {

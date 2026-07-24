@@ -75,16 +75,26 @@ function shouldExtractCallbackPhone(
 
 function extractInsuranceClaim(speech: string, pending: PendingQuestionKey | null): boolean | null {
   const longAnswer = parseInsuranceLongAnswer(speech);
-  if (longAnswer?.insurance_claim_started !== undefined && longAnswer.insurance_claim_started !== null) {
+  if (longAnswer?.resolved && longAnswer.insurance_claim_started !== undefined && longAnswer.insurance_claim_started !== null) {
     return longAnswer.insurance_claim_started;
   }
 
   if (allowsBooleanDirectAnswer(pending, "insurance_claim")) {
+    const parsed = parseInsuranceLongAnswer(speech);
+    if (parsed?.resolved) {
+      return parsed.insurance_claim_started ?? null;
+    }
     return parseExplicitBoolean(speech);
   }
 
-  if (/\b(insurance|claim)\b/i.test(speech)) {
-    return parseExplicitBoolean(speech);
+  if (/\b(insurance|claim|adjuster|out of pocket|estimate)\b/i.test(speech)) {
+    const parsed = parseInsuranceLongAnswer(speech);
+    if (parsed?.resolved && parsed.insurance_claim_started !== undefined && parsed.insurance_claim_started !== null) {
+      return parsed.insurance_claim_started;
+    }
+    if (speech.trim().split(/\s+/).length <= 8) {
+      return parseExplicitBoolean(speech);
+    }
   }
 
   return null;
@@ -92,7 +102,7 @@ function extractInsuranceClaim(speech: string, pending: PendingQuestionKey | nul
 
 function extractAdjusterContact(speech: string, pending: PendingQuestionKey | null): boolean | null {
   const longAnswer = parseInsuranceLongAnswer(speech);
-  if (longAnswer?.adjuster_contacted !== undefined && longAnswer.adjuster_contacted !== null) {
+  if (longAnswer?.resolved && longAnswer.adjuster_contacted !== undefined && longAnswer.adjuster_contacted !== null) {
     return longAnswer.adjuster_contacted;
   }
 
@@ -119,44 +129,130 @@ function extractAdjusterContact(speech: string, pending: PendingQuestionKey | nu
   return null;
 }
 
-export function parseInsuranceLongAnswer(speech: string): {
+export type InsuranceLongAnswerResult = {
   insurance_claim_started?: boolean | null;
   adjuster_contacted?: boolean | null;
   uncertainClaim?: boolean;
+  insuranceStatus?: string;
   contextNote?: string;
-} | null {
+  resolved?: boolean;
+};
+
+export function parseInsuranceLongAnswer(speech: string): InsuranceLongAnswerResult | null {
   const trimmed = speech.trim();
-  if (!trimmed || !/\b(insurance|claim|adjuster)\b/i.test(trimmed)) {
+  const lower = trimmed.toLowerCase();
+
+  if (
+    !trimmed ||
+    (!/\b(insurance|claim|adjuster|estimate|out of pocket|came out|approved|paying)\b/i.test(
+      trimmed,
+    ) &&
+      !/^(i'm not sure yet|not sure yet|unsure|i don't know yet)\.?$/i.test(lower))
+  ) {
     return null;
   }
 
-  const lower = trimmed.toLowerCase();
-  const result: {
-    insurance_claim_started?: boolean | null;
-    adjuster_contacted?: boolean | null;
-    uncertainClaim?: boolean;
-    contextNote?: string;
-  } = {};
+  const result: InsuranceLongAnswerResult = {
+    contextNote: trimmed.length > 12 ? trimmed : undefined,
+  };
+
+  if (/^(i'm not sure yet|not sure yet|unsure|i don't know yet)\.?$/i.test(lower)) {
+    result.uncertainClaim = true;
+    result.resolved = true;
+    return result;
+  }
 
   if (
+    /\b(paying out of pocket|pay out of pocket|paying cash|out of pocket|self[- ]?pay|no insurance)\b/i.test(
+      trimmed,
+    )
+  ) {
+    result.insurance_claim_started = false;
+    result.insuranceStatus = "out_of_pocket";
+    result.resolved = true;
+  }
+
+  if (
+    /\b(just want an estimate|estimate first|want an estimate|not filing|no claim|not a claim)\b/i.test(
+      trimmed,
+    )
+  ) {
+    result.insurance_claim_started = false;
+    result.insuranceStatus = "estimate_only";
+    result.resolved = true;
+  }
+
+  if (
+    /\b(haven't|have not|didn't|did not|hasn't|has not)\s+(been\s+)?(called|contacted|reached|spoken to|filed with)\b/i.test(
+      trimmed,
+    ) &&
+    /\b(insurance|claim|adjuster|them)\b/i.test(trimmed)
+  ) {
+    result.insurance_claim_started = false;
+    result.resolved = true;
+  }
+
+  if (
+    /\b(haven't|have not|didn't|did not)\s+(called|contacted|reached|spoken to|filed with)\s+(the\s+)?(insurance|my insurance|insurance company|them|a claim)\b/i.test(
+      trimmed,
+    ) ||
     /\b(haven't|have not|didn't|did not)\s+(contacted|called|spoken to|reached|filed with)\s+(the\s+)?(insurance|my insurance|insurance company|a claim)/i.test(
       trimmed,
     ) ||
     /\bno claim yet\b/i.test(lower)
   ) {
     result.insurance_claim_started = false;
+    result.resolved = true;
+  }
+
+  if (/\binsurance is involved\b/i.test(trimmed)) {
+    result.insurance_claim_started = result.insurance_claim_started ?? true;
+    result.uncertainClaim = result.uncertainClaim ?? true;
+    result.resolved = true;
   }
 
   if (
-    /\b(wasn't sure|was not sure|not sure|unsure|don't know|do not know)\b.*\b(claim|insurance|damage|bad enough|warrant)\b/i.test(
+    /\b(might be|could be|think it is|maybe)\b.*\b(insurance claim|an insurance claim|a claim)\b/i.test(
+      trimmed,
+    ) &&
+    /\b(haven't|have not|didn't|did not)\s+(contacted|called|reached)\b/i.test(trimmed)
+  ) {
+    result.uncertainClaim = true;
+    result.insurance_claim_started = result.insurance_claim_started ?? false;
+    result.resolved = true;
+  }
+
+  if (
+    /\b(wasn't sure|was not sure|not sure|unsure|don't know|do not know)\b.*\b(claim|insurance|damage|bad enough|warrant|estimate)\b/i.test(
       trimmed,
     )
   ) {
     result.uncertainClaim = true;
-    result.contextNote = trimmed;
+    result.resolved = true;
   }
 
   if (
+    /\b(came out|been out|visited|was here|inspection)\b.*\b(yesterday|today|last week|adjuster|insurance)\b/i.test(
+      trimmed,
+    ) ||
+    /\b(adjuster|insurance)\b.*\b(came out|been out|visited|was here|inspection)\b/i.test(trimmed) ||
+    /\b(insurance|adjuster)\s+came out\b/i.test(trimmed)
+  ) {
+    result.adjuster_contacted = true;
+    result.insurance_claim_started = result.insurance_claim_started ?? true;
+    if (
+      /\b(nothing has been approved|not approved|not been approved|pending|unresolved|no decision|waiting on)\b/i.test(
+        trimmed,
+      )
+    ) {
+      result.insuranceStatus = "adjuster_visited_unresolved";
+      result.uncertainClaim = true;
+    }
+    result.resolved = true;
+  }
+
+  if (
+    /\b(no adjuster|adjuster hasn't|adjuster has not|no one has come|nobody has come)\b/i.test(trimmed) ||
     /\b(insurance|adjuster)\b.*\b(haven't|hasn't|have not|has not|not yet|no one)\b.*\b(come out|been out|visited|shown up|contacted)\b/i.test(
       trimmed,
     ) ||
@@ -165,18 +261,78 @@ export function parseInsuranceLongAnswer(speech: string): {
     )
   ) {
     result.adjuster_contacted = false;
+    result.resolved = true;
   }
 
-  const explicit = parseExplicitBoolean(trimmed);
-  if (explicit !== null && /\b(insurance|claim)\b/i.test(trimmed)) {
-    result.insurance_claim_started = explicit;
+  if (trimmed.split(/\s+/).length <= 6) {
+    const explicit = parseExplicitBoolean(trimmed);
+    if (explicit !== null && /\b(insurance|claim|adjuster)\b/i.test(trimmed)) {
+      if (/\badjuster\b/i.test(trimmed)) {
+        result.adjuster_contacted = explicit;
+      } else {
+        result.insurance_claim_started = explicit;
+      }
+      result.resolved = true;
+    }
   }
 
-  if (Object.keys(result).length === 0) {
+  if (
+    result.insurance_claim_started === undefined &&
+    result.adjuster_contacted === undefined &&
+    !result.uncertainClaim &&
+    !result.insuranceStatus
+  ) {
     return null;
   }
 
+  result.resolved = result.resolved ?? true;
   return result;
+}
+
+export function applyInsuranceLongAnswerToFields(
+  fields: RealtimeFields,
+  speech: string,
+): RealtimeFields {
+  const parsed = parseInsuranceLongAnswer(speech);
+  if (!parsed) {
+    return fields;
+  }
+
+  let updated: RealtimeFields = { ...fields };
+
+  if (parsed.insurance_claim_started !== undefined && parsed.insurance_claim_started !== null) {
+    updated.insurance_claim_started = parsed.insurance_claim_started;
+  }
+
+  if (parsed.adjuster_contacted !== undefined && parsed.adjuster_contacted !== null) {
+    updated.adjuster_contacted = parsed.adjuster_contacted;
+  }
+
+  if (parsed.insuranceStatus) {
+    updated.insurance_status = parsed.insuranceStatus.slice(0, 120);
+  }
+
+  if (parsed.contextNote) {
+    updated = appendContextNote(updated, parsed.contextNote);
+  }
+
+  if (parsed.uncertainClaim) {
+    updated = markFieldUncertain(
+      updated,
+      "insurance_claim_started",
+      parsed.contextNote ?? speech.trim(),
+    );
+  } else if (parsed.resolved) {
+    updated = markFieldCaptured(updated, "insurance_claim_started");
+  }
+
+  if (parsed.adjuster_contacted !== undefined && parsed.adjuster_contacted !== null) {
+    updated = markFieldCaptured(updated, "adjuster_contacted");
+  } else if (parsed.resolved && updated.insurance_claim_started === false) {
+    updated = markFieldCaptured(updated, "adjuster_contacted");
+  }
+
+  return syncLegacyStringFields(updated);
 }
 
 function extractActiveLeak(speech: string, pending: PendingQuestionKey | null): boolean | null {
@@ -248,6 +404,7 @@ function extractAddressFromSpeech(speech: string): string | null {
 function extractScheduleHint(speech: string): string | null {
   const patterns = [
     /\b(?:i'?m |i am )?(?:available|free|good)\s+(?:after|from|around|at)\s+[^,.;]+/i,
+    /\b(?:available|free)\s+(?:tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?:\s+(?:morning|afternoon|evening))?/i,
     /\b(?:anytime|whenever)\s+(?:after|before|around)\s+[^,.;]+/i,
     /\b(?:after|before)\s+(?:work|five|5|noon|morning|afternoon|evening)\b[^,.;]*/i,
     /\b(?:morning|afternoon|evening)\s+(?:works|would work|is fine|is good)\b/i,
@@ -393,6 +550,9 @@ export function extractAllFieldsFromTranscript(
   if (insuranceLong?.contextNote) {
     extracted.additional_notes = insuranceLong.contextNote.slice(0, 500);
   }
+  if (insuranceLong?.insuranceStatus) {
+    extracted.insurance_status = insuranceLong.insuranceStatus.slice(0, 120);
+  }
 
   const insurance = extractInsuranceClaim(trimmed, pendingQuestion);
   if (insurance !== null) {
@@ -503,15 +663,22 @@ export function mergeExtractedFields(
     updated.insurance_claim_started = extracted.insurance_claim_started;
     if (insuranceLong?.uncertainClaim) {
       updated = markFieldUncertain(updated, "insurance_claim_started", insuranceLong.contextNote);
-    } else if (updated.field_resolution?.insurance_claim_started !== "uncertain") {
+    } else if (insuranceLong?.resolved || updated.field_resolution?.insurance_claim_started !== "uncertain") {
       updated = markFieldCaptured(updated, "insurance_claim_started");
     }
-  } else if (insuranceLong?.uncertainClaim) {
-    updated = markFieldUncertain(updated, "insurance_claim_started", insuranceLong.contextNote);
+  } else if (insuranceLong?.uncertainClaim || insuranceLong?.resolved) {
+    updated = applyInsuranceLongAnswerToFields(updated, speech);
+  }
+
+  if (hasValue(extracted.insurance_status)) {
+    updated.insurance_status = extracted.insurance_status;
   }
 
   if (extracted.adjuster_contacted !== undefined && extracted.adjuster_contacted !== null) {
     updated.adjuster_contacted = extracted.adjuster_contacted;
+    updated = markFieldCaptured(updated, "adjuster_contacted");
+  } else if (insuranceLong?.adjuster_contacted !== undefined && insuranceLong.adjuster_contacted !== null) {
+    updated.adjuster_contacted = insuranceLong.adjuster_contacted;
     updated = markFieldCaptured(updated, "adjuster_contacted");
   }
 
@@ -665,43 +832,34 @@ export function applyAnswerForPendingQuestion(
     case "insurance_claim":
     case "adjuster_contacted":
     case "active_leak": {
-      if (pendingQuestion === "insurance_claim") {
-        const longInsurance = parseInsuranceLongAnswer(trimmed);
-        if (longInsurance) {
-          if (
-            longInsurance.insurance_claim_started !== undefined &&
-            longInsurance.insurance_claim_started !== null
-          ) {
-            updated.insurance_claim_started = longInsurance.insurance_claim_started;
-          }
-          if (
-            longInsurance.adjuster_contacted !== undefined &&
-            longInsurance.adjuster_contacted !== null
-          ) {
-            updated.adjuster_contacted = longInsurance.adjuster_contacted;
-          }
-          if (longInsurance.contextNote) {
-            updated = appendContextNote(updated, longInsurance.contextNote);
-          }
-          if (longInsurance.uncertainClaim) {
-            updated = markFieldUncertain(
-              updated,
-              "insurance_claim_started",
-              longInsurance.contextNote ?? trimmed,
-            );
-          }
+      if (pendingQuestion === "insurance_claim" || pendingQuestion === "adjuster_contacted") {
+        const beforeResolution = updated.field_resolution?.insurance_claim_started;
+        updated = applyInsuranceLongAnswerToFields(updated, trimmed);
+        if (
+          updated.field_resolution?.insurance_claim_started !== beforeResolution ||
+          updated.insurance_status ||
+          updated.field_resolution?.adjuster_contacted
+        ) {
           break;
         }
       }
 
       const parsed = parseExplicitBoolean(trimmed);
-      if (parsed !== null) {
+      if (parsed !== null && pendingQuestion !== "insurance_claim" && pendingQuestion !== "adjuster_contacted") {
         const fieldMap = {
           insurance_claim: "insurance_claim_started",
           adjuster_contacted: "adjuster_contacted",
           active_leak: "emergency_or_active_leak",
         } as const;
         updated[fieldMap[pendingQuestion]] = parsed;
+      } else if (parsed !== null && trimmed.split(/\s+/).length <= 6) {
+        const fieldMap = {
+          insurance_claim: "insurance_claim_started",
+          adjuster_contacted: "adjuster_contacted",
+          active_leak: "emergency_or_active_leak",
+        } as const;
+        updated[fieldMap[pendingQuestion]] = parsed;
+        updated = markFieldCaptured(updated, fieldMap[pendingQuestion]);
       }
       break;
     }

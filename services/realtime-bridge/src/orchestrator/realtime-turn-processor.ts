@@ -92,6 +92,10 @@ import {
   sanitizeInvalidStoredCallerName,
 } from "./field-validation.js";
 import {
+  extractAllFieldsFromTranscript,
+  mergeExtractedFields,
+} from "./multi-field-extraction.js";
+import {
   attachPendingQuestion,
   pendingQuestionForConversationState,
   pendingQuestionForNextField,
@@ -1124,7 +1128,8 @@ export async function processRealtimeCallerTurn(
     const nameOutcome = processCallerNameTurn(fieldsBefore, trimmedSpeech, {
       confidence: input.speechConfidence ?? null,
     });
-    let updatedFields = nameOutcome.fields;
+    const extracted = extractAllFieldsFromTranscript(trimmedSpeech, callerPhone, "caller_name");
+    let updatedFields = mergeExtractedFields(nameOutcome.fields, extracted, trimmedSpeech);
     const pendingQuestionText =
       nameOutcome.replyText?.trim() || OPENING_CALLER_NAME_QUESTION;
 
@@ -1151,17 +1156,56 @@ export async function processRealtimeCallerTurn(
         hangupAfterMark: false,
         session,
         nextConversationState: "awaiting_opening_name",
+        structuredStateUpdated: true,
       });
     }
 
-    updatedFields = attachPendingQuestion(
-      {
+    updatedFields = {
+      ...updatedFields,
+      opening_name_complete: true,
+      intake_intro_delivered: true,
+    };
+
+    if (detectEmergency(trimmedSpeech) && !updatedFields.emergency_acknowledged) {
+      updatedFields = {
         ...updatedFields,
-        opening_name_complete: true,
-        intake_intro_delivered: true,
-      },
-      "reason_for_call",
-    );
+        urgency: updatedFields.urgency ?? "emergency",
+        emergency_acknowledged: true,
+      };
+    }
+
+    if (updatedFields.problem_description?.trim()) {
+      updatedFields = syncLegacyStringFields({
+        ...updatedFields,
+        call_reason_awaiting_clarification: false,
+        pending_question: undefined,
+      });
+
+      const post = buildCallReasonResolvedReply(updatedFields, callerPhone);
+
+      session = applyLocalSessionUpdate(session, {
+        collectedFields: post.fields,
+        currentQuestion: post.replyText,
+      });
+
+      persistTurnAsync(callSid, {
+        collectedFields: post.fields,
+        currentQuestion: post.replyText,
+        callerSpeech: trimmedSpeech,
+        assistantReply: post.replyText,
+      });
+
+      return finishTurn(input, {
+        replyText: ensureNonEmptyReply(post.replyText, SAFE_INTAKE_REPROMPT),
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: post.nextState,
+        structuredStateUpdated: true,
+      });
+    }
+
+    updatedFields = attachPendingQuestion(updatedFields, "reason_for_call");
 
     const reasonQuestion = nameOutcome.replyText
       ? `${nameOutcome.replyText} What can the roofing team help you with today?`
@@ -1185,6 +1229,7 @@ export async function processRealtimeCallerTurn(
       hangupAfterMark: false,
       session,
       nextConversationState: "listening_for_reason",
+      structuredStateUpdated: true,
     });
   }
 

@@ -61,6 +61,7 @@ export type RealtimeFields = Omit<
   adjuster_contacted_legacy?: string;
   photos_available_legacy?: string;
   active_leak?: string;
+  insurance_status?: string;
   field_resolution?: Partial<
     Record<
       string,

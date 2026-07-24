@@ -38,7 +38,7 @@ export function isCompanyPhoneNumber(phone: string): boolean {
 
 export function buildCallbackReadbackConfirmation(phone: string): string {
   const spoken = formatCallbackForSpeech(phone);
-  return `I have your callback number as ${spoken}. Is that correct?`;
+  return `Just to confirm, your callback number is ${spoken}. Is that correct?`;
 }
 
 export function isCallbackConfirmed(speech: string): boolean {

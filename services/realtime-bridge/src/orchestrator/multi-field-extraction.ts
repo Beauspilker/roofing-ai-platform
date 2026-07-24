@@ -16,6 +16,7 @@ import {
   confirmAddress,
   isAddressConfirmedSpeech,
   isAddressRejectedSpeech,
+  sanitizeAddressValue,
 } from "./address-confirmation.js";
 import {
   extractDamageOrCallReason,
@@ -340,7 +341,10 @@ function extractActiveLeak(speech: string, pending: PendingQuestionKey | null): 
     return parseExplicitBoolean(speech);
   }
 
-  if (/\b(leak|water|drip|flooding|getting inside|active leak)\b/i.test(speech)) {
+  const leakSignal =
+    /\b(leak|water|drip|flooding|getting inside|active leak|leaking|intrusion|moisture|dripping)\b/i;
+
+  if (leakSignal.test(speech)) {
     if (
       /\b(no|not|none)\s+(active\s+)?(leak|water)\b|\b(no leak|not leaking|no water damage)\b/i.test(
         speech,
@@ -350,10 +354,14 @@ function extractActiveLeak(speech: string, pending: PendingQuestionKey | null): 
     }
 
     if (
-      /water.*(inside|getting in|coming into)|active leak|leaking inside|pouring into|coming into the/i.test(
+      /water.*(inside|getting in|coming into|leaking into|pouring)|active leak|leaking inside|pouring into|coming into the|leaking into|ceiling is dripping|water intrusion|moisture is coming in|leaks when it rains|roof leak|there is a leak|there'?s a leak/i.test(
         speech,
       )
     ) {
+      return true;
+    }
+
+    if (/\b(is leaking|water is leaking|water'?s leaking)\b/i.test(speech)) {
       return true;
     }
 
@@ -368,7 +376,7 @@ function extractActiveLeak(speech: string, pending: PendingQuestionKey | null): 
   return null;
 }
 
-function extractAddressFromSpeech(speech: string): string | null {
+export function extractAddressFromSpeech(speech: string): string | null {
   const correctionMatch = speech.match(
     /(?:no,?|actually|instead|rather|correction).*?(?:address is|it's|it is)\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80})/i,
   );
@@ -480,7 +488,7 @@ export function applyAdaptiveCorrections(
   const address = extractAddressFromSpeech(speech);
 
   if (address) {
-    updated.address = address.slice(0, 500);
+    updated.address = sanitizeAddressValue(address).slice(0, 500);
     updated.address_confirmed = false;
   }
 
@@ -582,7 +590,7 @@ export function extractAllFieldsFromTranscript(
   if (detectEmergency(trimmed)) {
     extracted.urgency = extracted.urgency ?? "emergency";
     if (
-      /water.*(inside|getting in|coming into)|active leak|leaking inside|flooding|pouring into/i.test(
+      /water.*(inside|getting in|coming into|leaking into)|active leak|leaking inside|flooding|pouring into|leaking into|ceiling is dripping|water intrusion|moisture is coming in|leaks when it rains|roof leak|there is a leak|there'?s a leak|\b(is leaking|water is leaking|water'?s leaking)\b/i.test(
         trimmed,
       )
     ) {
@@ -625,7 +633,7 @@ export function mergeExtractedFields(
     isPlausibleServiceAddress(extracted.address!) &&
     (!hasValue(updated.address) || allowOverwrite)
   ) {
-    updated.address = extracted.address!.trim().slice(0, 500);
+    updated.address = sanitizeAddressValue(extracted.address!.trim()).slice(0, 500);
     updated.address_confirmed = false;
   }
 
@@ -824,7 +832,7 @@ export function applyAnswerForPendingQuestion(
     case "service_address":
       if (!hasValue(updated.address)) {
         if (isPlausibleServiceAddress(trimmed)) {
-          updated.address = trimmed.slice(0, 500);
+          updated.address = sanitizeAddressValue(trimmed).slice(0, 500);
           updated.address_confirmed = false;
         }
       }

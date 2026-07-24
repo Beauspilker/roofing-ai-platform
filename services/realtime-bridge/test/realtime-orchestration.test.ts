@@ -446,9 +446,9 @@ test("summary confirmation does not include closing in the same response", async
     acknowledgmentPolicy: policy,
   });
 
-  assert.match(outcome.replyText, /Does all of that sound correct\?/);
+  assert.match(outcome.replyText, /Perfect, I have everything I need/i);
   assert.doesNotMatch(outcome.replyText, /Great\. I'll send this information/);
-  assert.equal(outcome.hangupAfterMark, false);
+  assert.equal(outcome.hangupAfterMark, true);
 });
 
 test("assistant waits after Does all of that sound correct", async () => {
@@ -519,8 +519,9 @@ test("confirmation yes returns closing only in a separate turn", async () => {
 
 test("closing message matches required wording", () => {
   assert.equal(buildClosingMessage(), CLOSING_MESSAGE);
-  assert.match(CLOSING_MESSAGE, /^Great\./);
-  assert.match(CLOSING_MESSAGE, /someone will follow up with you by call or text/);
+  assert.match(CLOSING_MESSAGE, /^Perfect, I have everything I need\./);
+  assert.match(CLOSING_MESSAGE, /I'll send this information to the roofing company/i);
+  assert.match(CLOSING_MESSAGE, /have a great day/i);
 });
 
 test("ResponseStateGuard blocks duplicate closing triggers while awaiting mark", () => {
@@ -557,7 +558,7 @@ test("callback readback uses natural phone groups", () => {
   assert.equal(formatCallbackForSpeech("+14025555678"), "402-555-5678");
   assert.match(
     buildCallbackReadbackConfirmation("+14025555678"),
-    /I have your callback number as 402-555-5678\. Is that correct\?/,
+    /Just to confirm, your callback number is 402-555-5678\. Is that correct\?/,
   );
 });
 
@@ -671,7 +672,7 @@ test("address is read back and confirmed", async () => {
   });
 
   assert.match(outcome.replyText, /123 Main Street/i);
-  assert.match(outcome.replyText, /Is that right\?/);
+  assert.match(outcome.replyText, /Is that correct\?/);
   assert.equal(outcome.nextConversationState, "awaiting_address_confirmation");
 });
 

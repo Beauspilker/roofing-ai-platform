@@ -69,6 +69,16 @@ export type RealtimeFields = Omit<
     >
   >;
   field_clarification_attempts?: Partial<Record<string, number>>;
+  field_being_confirmed?: "callback_phone" | "address" | "full_name" | "appointment_preference";
+  activeConfirmationField?: "callback_phone" | "address" | "full_name" | "appointment_preference";
+  current_field_value?: string;
+  activeConfirmationValue?: string;
+  confirmation_attempt_count?: number;
+  correctionAttemptCount?: number;
+  confirmationStatus?: "pending" | "accepted" | "rejected" | "corrected" | "clarifying";
+  confirmation_last_outcome?: "accepted" | "rejected" | "corrected" | "unchanged" | "needs_clarification";
+  pending_correction_hint?: string;
+  intake_information_sent?: boolean;
 };
 
 export function ensureSingleIntakeQuestion(text: string): string {
@@ -169,8 +179,16 @@ export function buildSummaryWithConfirmation(fields: RealtimeFields): string {
   return `${buildStructuredSpokenSummary(fields)} Does all of that sound correct?`;
 }
 
-export function buildClosingMessage(): string {
-  return CLOSING_MESSAGE;
+export function buildIntakeClosingMessage(options: { informationSent?: boolean } = {}): string {
+  const dispatchLine = options.informationSent
+    ? "I've sent your information to the roofing company, and someone will reach out using the callback information you provided."
+    : "I'll send this information to the roofing company, and someone will reach out using the callback information you provided.";
+
+  return `Perfect, I have everything I need. ${dispatchLine} Thanks for calling, and have a great day.`;
+}
+
+export function buildClosingMessage(options: { informationSent?: boolean } = {}): string {
+  return buildIntakeClosingMessage(options);
 }
 
 export function isAnythingElseDeclined(speech: string): boolean {

@@ -68,8 +68,9 @@ test("immediate safety issue is handled before caller name", async () => {
   assert.equal(
     needsImmediateSafetyClarification({
       problem_description: "Water is pouring in through the ceiling",
+      emergency_or_active_leak: true,
     }),
-    true,
+    false,
   );
 
   const outcome = await processRealtimeCallerTurn({
@@ -83,8 +84,12 @@ test("immediate safety issue is handled before caller name", async () => {
     hasReceivedMeaningfulCallerTranscript: true,
   });
 
-  assert.match(outcome.replyText, /active leak|water getting inside/i);
-  assert.doesNotMatch(outcome.replyText, /first and last name/i);
+  assert.equal(
+    (outcome.session?.collected_fields as RealtimeFields).emergency_or_active_leak,
+    true,
+  );
+  assert.doesNotMatch(outcome.replyText, /active leak or water getting inside/i);
+  assert.match(outcome.replyText, /first and last name/i);
 });
 
 test("caller name is prioritized before callback address insurance and scheduling", () => {

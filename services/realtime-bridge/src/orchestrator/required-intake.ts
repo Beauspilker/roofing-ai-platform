@@ -19,6 +19,10 @@ import { hasCompleteCallerName, processCallerNameTurn } from "./caller-name-inta
 import { isScheduleComplete } from "./schedule-normalizer.js";
 import { needsCallbackConfirmation, mapRequiredFieldToPending } from "./pending-question.js";
 import {
+  inferFieldsFromCapturedContext,
+  problemDescriptionImpliesActiveLeak,
+} from "./field-normalization.js";
+import {
   isFieldAskable,
   isFieldResolvedEnoughToSkip,
 } from "./field-completion.js";
@@ -153,62 +157,68 @@ function isFieldComplete(field: RequiredFieldKey, fields: RealtimeFields): boole
 
 /** Safety before name only when the opening reason suggests an immediate safety concern. */
 export function needsImmediateSafetyClarification(fields: RealtimeFields): boolean {
-  if (!isStructuredBooleanUnset(fields.emergency_or_active_leak)) {
+  const normalized = inferFieldsFromCapturedContext(fields);
+
+  if (!isStructuredBooleanUnset(normalized.emergency_or_active_leak)) {
     return false;
   }
 
-  if (fields.emergency_acknowledged === true) {
+  if (normalized.emergency_acknowledged === true) {
     return true;
   }
 
-  const problem = fields.problem_description?.toLowerCase() ?? "";
+  const problem = normalized.problem_description?.toLowerCase() ?? "";
 
-  return /\b(active leak|water (is )?((getting )?in|inside|pouring)|pouring in|flooding|emergency|collapse|structural damage|someone (is )?hurt|injured)\b/i.test(
-    problem,
+  return (
+    problemDescriptionImpliesActiveLeak(problem) ||
+    /\b(active leak|water (is )?((getting )?in|inside|pouring|leaking)|pouring in|flooding|emergency|collapse|structural damage|someone (is )?hurt|injured)\b/i.test(
+      problem,
+    )
   );
 }
 
 function collectMissingFieldsInPriorityOrder(fields: RealtimeFields): RequiredFieldKey[] {
+  const normalized = inferFieldsFromCapturedContext(fields);
   const missing: RequiredFieldKey[] = [];
 
-  if (needsImmediateSafetyClarification(fields)) {
+  if (needsImmediateSafetyClarification(normalized)) {
     missing.push("emergency_or_active_leak");
   }
 
-  if (!isCallerNameResolved(fields)) {
+  if (!isCallerNameResolved(normalized)) {
     missing.push("full_name");
   }
 
-  if (!hasValue(fields.problem_description)) {
+  if (!hasValue(normalized.problem_description)) {
     missing.push("problem_description");
   }
 
-  if (!isCallbackComplete(fields)) {
-    if (!hasValue(fields.callback_phone)) {
+  if (!isCallbackComplete(normalized)) {
+    if (!hasValue(normalized.callback_phone)) {
       missing.push("callback_phone");
     }
   }
 
-  if (!isAddressConfirmed(fields)) {
-    if (!hasConfirmableAddress(fields.address)) {
+  if (!isAddressConfirmed(normalized)) {
+    if (!hasConfirmableAddress(normalized.address)) {
       missing.push("address");
     }
   }
 
   if (
-    !isFieldComplete("emergency_or_active_leak", fields) &&
+    !isFieldComplete("emergency_or_active_leak", normalized) &&
     !missing.includes("emergency_or_active_leak")
   ) {
     missing.push("emergency_or_active_leak");
   }
 
   for (const field of BRANCH_FIELD_ORDER) {
-    if (!isFieldComplete(field, fields)) {
+    if (!isFieldComplete(field, normalized)) {
       missing.push(field);
     }
   }
 
-  return missing.filter((field) => isFieldAskable(field, fields));
+  return missing.filter((field) => isFieldAskable(field, normalized));
 }
 
 /** Deterministic gate — summary/closing blocked while this returns any item. */
@@ -248,6 +258,12 @@ function hasValidMissingFieldLists(fields: RealtimeFields): boolean {
   const sharedMissing = getSharedMissingFields(fields);
 
   return Array.isArray(missing) && Array.isArray(sharedMissing);
+}
+
+/** Summary readback is only needed when uncertainty remains in captured fields. */
+export function shouldPresentFullSummaryConfirmation(fields: RealtimeFields): boolean {
+  const resolution = fields.field_resolution ?? {};
+  return Object.values(resolution).some((status) => status === "uncertain");
 }
 
 /** Summary may be presented only when every shared/required intake field is resolved. */

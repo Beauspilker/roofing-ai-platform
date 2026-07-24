@@ -25,8 +25,16 @@ export function formatAddressForSpeech(address: string): string {
   return formatted;
 }
 
+export function sanitizeAddressValue(address: string): string {
+  return address
+    .replace(/(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/g, " ")
+    .replace(/\b(call me at|my number is|phone number is|callback number is)\b.*$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export function buildAddressReadbackConfirmation(address: string): string {
-  return `I have ${formatAddressForSpeech(address)}. Is that right?`;
+  return `And your service address is ${formatAddressForSpeech(sanitizeAddressValue(address))}. Is that correct?`;
 }
 
 export function needsAddressReadback(fields: RealtimeFields): boolean {
@@ -49,20 +57,6 @@ export function isAddressRejectedSpeech(speech: string): boolean {
   const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
 
   return /^(no|nope|nah|not quite|incorrect|wrong|change|fix|update)\b/.test(normalized);
-}
-
-export function applyAddressCorrection(fields: RealtimeFields, speech: string): RealtimeFields {
-  const trimmed = speech.trim();
-
-  if (!trimmed) {
-    return fields;
-  }
-
-  return syncLegacyStringFields({
-    ...fields,
-    address: trimmed.slice(0, 500),
-    address_confirmed: false,
-  });
 }
 
 export function confirmAddress(fields: RealtimeFields): RealtimeFields {

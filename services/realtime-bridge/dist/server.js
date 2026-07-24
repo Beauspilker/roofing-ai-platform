@@ -681,7 +681,7 @@ function isCompanyPhoneNumber(phone) {
 }
 function buildCallbackReadbackConfirmation(phone) {
   const spoken = formatCallbackForSpeech(phone);
-  return `I have your callback number as ${spoken}. Is that correct?`;
+  return `Just to confirm, your callback number is ${spoken}. Is that correct?`;
 }
 function isCallbackConfirmed(speech) {
   const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
@@ -867,9 +867,6 @@ function applyCorrectionToStructuredField(fields, speech) {
   return syncLegacyStringFields(updated);
 }
 
-// src/orchestrator/conversation-state.ts
-var CLOSING_MESSAGE = "Great. I'll send this information to the roofing team, and someone will follow up with you by call or text. Thanks for calling Beau's Roofing. Have a great day.";
-
 // src/orchestrator/field-validation.ts
 var DAMAGE_AND_INTAKE_TERMS = /\b(hail(?:\s+damage)?|storm(?:\s+damage)?|roof(?:ing)?(?:\s+leak)?|roof\s+leak|leak(?:ing)?|missing\s+shingles?|shingles?|damage|damaged|insurance|claim|adjuster|estimate|inspection|replacement|pictures?|photos?|appointment|today|tomorrow|morning|afternoon|evening|urgent|emergency|water|tree(?:\s+damage)?|wind|gutter|repair|replace|callback|address|property|number|yes|no|yeah|nope|yep|nah|correct|right)\b/i;
 var PHONE_PATTERN = /(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/;
@@ -878,6 +875,7 @@ var NON_NAME_I_AM_LEAD_INS = /^(?:i'?m|i am)\s+(?:calling(?:\s+(?:about|for|rega
 var CALL_REASON_LEAD_IN_PATTERN = /\b(?:i'?m|i am|we'?re|we are)\s+(?:calling(?:\s+(?:about|for|regarding))?|call(?:ing)?\s+(?:about|for|regarding)|having|needing|looking(?:\s+for)?|wondering(?:\s+(?:about|if))?|trying(?:\s+to)?|reporting|asking(?:\s+about)?)\b/i;
 var POSITIVE_NAME_INTRO_PATTERNS = [
   /\b(?:my name is|name is)\s+([A-Za-z][A-Za-z'\-]+(?:\s+[A-Za-z][A-Za-z'\-]+){0,3})(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i,
+  /\b(?:i am|i'm)\s+([A-Za-z][A-Za-z'\-]+(?:\s+[A-Za-z][A-Za-z'\-]+){0,2})(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i,
   /\bthis is\s+([A-Za-z][A-Za-z'\-]+(?:\s+[A-Za-z][A-Za-z'\-]+){0,2})(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i,
   /\b(?:it'?s|it is)\s+([A-Za-z][A-Za-z'\-]+(?:\s+[A-Za-z][A-Za-z'\-]+){0,2})(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i,
   /\b(?:i am|i'm)\s+([A-Za-z][A-Za-z'\-]+(?:\s+[A-Za-z][A-Za-z'\-]+){0,2})(?=\s*,\s*and\b)/i,
@@ -1077,12 +1075,26 @@ function isPlausibleServiceAddress(address) {
   }
   return true;
 }
+function isNameCorrectionSpeech(text) {
+  const trimmed = text.trim();
+  if (!/^no\b/i.test(trimmed)) {
+    return false;
+  }
+  const correctedName = trimmed.replace(/^no,?\s*(?:that'?s\s+)?(?:wrong|incorrect|not\s+right)?,?\s*/i, "").trim();
+  return correctedName.length > 0 && isPlausibleCallerName(correctedName);
+}
 function isPlausibleDamageDescription(text) {
   const trimmed = text.trim();
   if (trimmed.length < 4) {
     return false;
   }
   if (isPlausibleCallerName(trimmed)) {
+    return false;
+  }
+  if (isNameCorrectionSpeech(trimmed)) {
+    return false;
+  }
+  if (/^(yes|yeah|yep|yup|no|nope|nah|correct|right)\.?$/i.test(trimmed)) {
     return false;
   }
   return containsRoofingDamageLanguage(trimmed) || /tree|water|hole|missing|broken|hit|fell|last night|yesterday/i.test(trimmed);
@@ -1206,7 +1218,7 @@ function buildValidatedSpokenSummary(fields) {
 var REALTIME_OPENING_GREETING = "Thank you for calling Beau's Roofing. I'm Beau's Roofing's AI assistant.";
 var REALTIME_OPENING_NAME_QUESTION = "Could I start with your first and last name?";
 var REALTIME_OPENING_QUESTION = REALTIME_OPENING_NAME_QUESTION;
-var REALTIME_ANYTHING_ELSE_QUESTION = "Is there anything else you'd like the roofing team to know?";
+var REALTIME_ANYTHING_ELSE_QUESTION = "Is there anything else you'd like the roofing company to know before I send this over?";
 function ensureSingleIntakeQuestion(text) {
   const trimmed = text.trim();
   if (!trimmed) {
@@ -1237,8 +1249,12 @@ function buildStructuredSpokenSummary(fields) {
 function buildSummaryWithConfirmation(fields) {
   return `${buildStructuredSpokenSummary(fields)} Does all of that sound correct?`;
 }
-function buildClosingMessage() {
-  return CLOSING_MESSAGE;
+function buildIntakeClosingMessage(options = {}) {
+  const dispatchLine = options.informationSent ? "I've sent your information to the roofing company, and someone will reach out using the callback information you provided." : "I'll send this information to the roofing company, and someone will reach out using the callback information you provided.";
+  return `Perfect, I have everything I need. ${dispatchLine} Thanks for calling, and have a great day.`;
+}
+function buildClosingMessage(options = {}) {
+  return buildIntakeClosingMessage(options);
 }
 function isAnythingElseDeclined(speech) {
   const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
@@ -1284,8 +1300,11 @@ function formatAddressForSpeech(address) {
   }
   return formatted;
 }
+function sanitizeAddressValue(address) {
+  return address.replace(/(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/g, " ").replace(/\b(call me at|my number is|phone number is|callback number is)\b.*$/i, "").replace(/\s+/g, " ").trim();
+}
 function buildAddressReadbackConfirmation(address) {
-  return `I have ${formatAddressForSpeech(address)}. Is that right?`;
+  return `And your service address is ${formatAddressForSpeech(sanitizeAddressValue(address))}. Is that correct?`;
 }
 function needsAddressReadback(fields) {
   return hasConfirmableAddress(fields.address) && fields.address_confirmed !== true;
@@ -1303,23 +1322,660 @@ function isAddressRejectedSpeech(speech) {
   const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
   return /^(no|nope|nah|not quite|incorrect|wrong|change|fix|update)\b/.test(normalized);
 }
-function applyAddressCorrection(fields, speech) {
-  const trimmed = speech.trim();
-  if (!trimmed) {
-    return fields;
-  }
-  return syncLegacyStringFields({
-    ...fields,
-    address: trimmed.slice(0, 500),
-    address_confirmed: false
-  });
-}
 function confirmAddress(fields) {
   return syncLegacyStringFields({
     ...fields,
     address: fields.address ? formatAddressForSpeech(fields.address) : fields.address,
     address_confirmed: true
   });
+}
+
+// ../../lib/call-summary.ts
+var FILLER_WORDS = /\b(uh+|um+|uh huh|you know|i mean|kind of|sort of|like|basically|literally|anyway)\b/gi;
+var OPENING_FILLER = /^(hey|hi|hello|yeah|yep|so|well|okay|ok|thanks|thank you)[,.]?\s+/i;
+var CALL_PREFIX = /^(i'?m calling because|calling because|i wanted to (call|see|ask)|i need to (report|tell you about|let you know))\s+/i;
+var UNCERTAIN_PHRASES = /\b(i think|hopefully|maybe|probably|it sounds like|sounds like|i guess|i believe|i feel like)\b/gi;
+function hasText(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+function isYes(value) {
+  return hasText(value) && /^(yes|yeah|yep|yup|true|correct|sure)$/i.test(value.trim());
+}
+function isNo(value) {
+  return hasText(value) && /^(no|nope|nah|false|none|not|negative)$/i.test(value.trim());
+}
+function capitalize(text) {
+  if (!text) {
+    return text;
+  }
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+function stripConversationalFiller(text) {
+  let cleaned = text.trim();
+  for (let pass = 0; pass < 3; pass += 1) {
+    cleaned = cleaned.replace(OPENING_FILLER, "").replace(CALL_PREFIX, "").replace(UNCERTAIN_PHRASES, "").replace(FILLER_WORDS, " ").replace(/\s{2,}/g, " ").trim();
+  }
+  return cleaned.replace(/[,.]$/, "").trim();
+}
+function extractDamageTiming(text) {
+  const lower = text.toLowerCase();
+  if (/\byesterday\b/.test(lower)) {
+    return "yesterday";
+  }
+  if (/\blast night\b/.test(lower)) {
+    return "last night";
+  }
+  if (/\bthis morning\b/.test(lower)) {
+    return "this morning";
+  }
+  if (/\btoday\b/.test(lower)) {
+    return "today";
+  }
+  if (/\blast week\b/.test(lower)) {
+    return "last week";
+  }
+  if (/\brecent(ly)?\b/.test(lower)) {
+    return "recently";
+  }
+  return null;
+}
+function extractLeakLocation(text) {
+  const match = text.match(
+    /\b(?:into|in|affecting)\s+(?:the\s+)?([a-z]+(?:\s+[a-z]+)?)\b/i
+  );
+  if (match?.[1] && !/home|house|property|inside/.test(match[1])) {
+    return match[1].trim();
+  }
+  const roomMatch = text.match(
+    /\b(kitchen|bathroom|bedroom|living room|garage|basement|attic|dining room)\b/i
+  );
+  return roomMatch?.[1]?.trim() ?? null;
+}
+function professionalizeFreeText(text) {
+  const cleaned = stripConversationalFiller(text);
+  if (!cleaned) {
+    return "";
+  }
+  return cleaned.replace(/\bmessed up\b/gi, "damaged").replace(/\bgot hit really bad\b/gi, "sustained significant damage").replace(/\bhit really bad\b/gi, "sustained significant damage").replace(/\bstarted leaking\b/gi, "water intrusion began").replace(/\bleaking\b/gi, "water intrusion").replace(/\bfiled an insurance claim\b/gi, "insurance claim started").replace(/\btalked to insurance\b/gi, "insurance claim initiated").replace(/\bspoken to insurance\b/gi, "insurance claim initiated").replace(/\bshingles everywhere\b/gi, "loose shingles reported").replace(/\bshingles all over\b/gi, "loose shingles reported").replace(/\bneed someone to come\b/gi, "inspection requested").replace(/\bjust need\b/gi, "requested").trim();
+}
+function summarizeDamageReason(fields) {
+  const problem = hasText(fields.problem_description) ? stripConversationalFiller(fields.problem_description) : "";
+  const projectType = fields.project_type?.trim().toLowerCase() ?? "";
+  const lower = problem.toLowerCase();
+  const timing = extractDamageTiming(problem);
+  if (/shingles everywhere|shingles all over|missing shingles|loose shingles/i.test(lower)) {
+    return /storm|hail|wind|tornado|hurricane/i.test(lower) || fields.storm_damage === "yes" ? "Loose shingles reported following the storm" : "Loose shingles reported on the roof system";
+  }
+  if (/hail/.test(lower) || projectType === "storm damage") {
+    return timing ? `Suspected hail damage that occurred ${timing}` : "Suspected hail damage";
+  }
+  if (/wind/.test(lower) || projectType === "wind damage") {
+    return timing ? `Suspected wind damage that occurred ${timing}` : "Suspected wind damage";
+  }
+  if (/tree|through the roof|collapse|caved/.test(lower)) {
+    return "Structural roof damage requiring urgent attention";
+  }
+  if (/tornado|hurricane|storm/.test(lower) || fields.storm_damage === "yes") {
+    return timing ? `Storm-related roof damage reported ${timing}` : "Storm-related roof damage";
+  }
+  if (projectType === "replacement") {
+    return "Roof replacement inquiry";
+  }
+  if (projectType === "repair") {
+    return "Roof repair request";
+  }
+  if (projectType === "inspection") {
+    return "Roof inspection request";
+  }
+  if (problem) {
+    const professional = professionalizeFreeText(problem);
+    if (professional) {
+      return capitalize(professional);
+    }
+  }
+  if (projectType) {
+    return capitalize(`${projectType} inquiry`);
+  }
+  return null;
+}
+function summarizeLeak(fields) {
+  const problem = fields.problem_description ?? "";
+  const notes = fields.additional_notes ?? "";
+  const combined = `${problem} ${notes}`.toLowerCase();
+  if (!isYes(fields.active_leak) && !/leak|water|pouring|drip/.test(combined)) {
+    if (isNo(fields.active_leak)) {
+      return "No active interior water intrusion reported";
+    }
+    return null;
+  }
+  const location = extractLeakLocation(`${problem} ${notes}`);
+  if (location) {
+    return `Interior water intrusion affecting the ${location}`;
+  }
+  return "Active interior water intrusion reported";
+}
+function summarizeInsurance(fields) {
+  if (isYes(fields.insurance_claim)) {
+    return "Insurance claim has already been initiated";
+  }
+  if (isNo(fields.insurance_claim)) {
+    return "Insurance claim has not been initiated";
+  }
+  return null;
+}
+function summarizeAppointment(fields) {
+  const raw = fields.appointment_preference;
+  if (!hasText(raw) || raw.toLowerCase() === "none") {
+    return null;
+  }
+  let cleaned = stripConversationalFiller(raw).replace(/^i just need someone to come\b/i, "").replace(/^i need someone (out|to come)\b/i, "").replace(/^someone to come\b/i, "").replace(/^please come\b/i, "").trim();
+  if (!cleaned) {
+    cleaned = raw.trim();
+  }
+  if (/^(tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i.test(cleaned)) {
+    return `Requested inspection ${cleaned.toLowerCase()}`;
+  }
+  return `Requested inspection: ${cleaned}`;
+}
+function summarizeUrgency(fields) {
+  const urgency = fields.urgency?.trim().toLowerCase();
+  if (!urgency) {
+    return null;
+  }
+  if (urgency === "emergency") {
+    return "Marked as urgent priority";
+  }
+  if (urgency === "flexible") {
+    return "Flexible scheduling noted";
+  }
+  return "Standard scheduling requested";
+}
+function summarizeAdditionalNotes(fields) {
+  const notes = fields.additional_notes;
+  if (!hasText(notes) || notes.toLowerCase() === "none") {
+    return null;
+  }
+  const professional = professionalizeFreeText(notes);
+  return professional ? capitalize(professional) : null;
+}
+function buildProfessionalSummaryContent(fields) {
+  return {
+    reason: summarizeDamageReason(fields),
+    contactName: hasText(fields.full_name) ? fields.full_name.trim() : null,
+    location: hasText(fields.address) ? fields.address.trim() : null,
+    leak: summarizeLeak(fields),
+    insurance: summarizeInsurance(fields),
+    urgency: summarizeUrgency(fields),
+    appointment: summarizeAppointment(fields),
+    additionalNotes: summarizeAdditionalNotes(fields)
+  };
+}
+function buildCrmCallSummary(fields) {
+  const content = buildProfessionalSummaryContent(fields);
+  const lines = [];
+  if (content.reason) {
+    lines.push(`Reason: ${content.reason}`);
+  }
+  if (content.contactName) {
+    lines.push(`Contact: ${content.contactName}`);
+  }
+  if (hasText(fields.callback_phone)) {
+    lines.push(`Phone: ${fields.callback_phone.trim()}`);
+  }
+  if (content.location) {
+    lines.push(`Property: ${content.location}`);
+  }
+  if (content.leak) {
+    lines.push(`Water intrusion: ${content.leak}`);
+  }
+  if (content.insurance) {
+    lines.push(`Insurance: ${content.insurance}`);
+  }
+  if (content.urgency) {
+    lines.push(`Priority: ${content.urgency}`);
+  }
+  if (content.appointment) {
+    lines.push(`Scheduling: ${content.appointment}`);
+  }
+  if (content.additionalNotes) {
+    lines.push(`Notes: ${content.additionalNotes}`);
+  }
+  return lines.join("\n");
+}
+
+// ../../lib/call-intelligence.ts
+var STAGE_FIELD_KEYS = {
+  problem: "problem_description",
+  full_name: "full_name",
+  callback_phone: "callback_phone",
+  address: "address",
+  project_type: "project_type",
+  active_leak: "active_leak",
+  storm_damage: "storm_damage",
+  insurance_claim: "insurance_claim",
+  urgency: "urgency",
+  appointment: "appointment_preference",
+  additional_notes: "additional_notes"
+};
+var INTERRUPTION_PREFIX_PATTERN = /^(actually|wait|hold on|hang on|one second|one sec|sorry)[,.]?\s+/i;
+var CORRECTION_PREFIX_PATTERN = /^(no|actually|wait|not|correction)[,.]?\s+/i;
+var EMERGENCY_PATTERN = /\b(tree through|through the roof|roof collapse|collapsed|caved in|water pouring|pouring in|ceiling leaking badly|electrical hazard|spark|storm happening now|active storm|emergency|urgent|asap)\b/i;
+function stripInterruptionPrefix(speech) {
+  return speech.replace(INTERRUPTION_PREFIX_PATTERN, "").trim();
+}
+function hasCorrectionIntent(speech) {
+  const normalized = speech.trim().toLowerCase();
+  return CORRECTION_PREFIX_PATTERN.test(normalized) || /\b(not|actually|instead|rather|meant|correction|wrong)\b/.test(normalized);
+}
+function detectEmergency(speech) {
+  return EMERGENCY_PATTERN.test(speech.toLowerCase()) || /water.*(inside|coming in|pouring)|ceiling.*leak/i.test(speech.toLowerCase());
+}
+function applyTargetedCorrection(fields, speech, currentStage, callerPhone) {
+  const cleaned = stripInterruptionPrefix(speech).replace(CORRECTION_PREFIX_PATTERN, "").trim();
+  const text = cleaned || speech.trim();
+  const lower = text.toLowerCase();
+  const updated = { ...fields };
+  const nameMatch = text.match(
+    /(?:name is|my name is|i'?m|this is|it's|it is|call me)\s+([A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,3})/i
+  );
+  if (nameMatch?.[1]) {
+    updated.full_name = nameMatch[1].trim();
+    return { fields: updated, updated: true, field: "full_name" };
+  }
+  const firstNameMatch = text.match(
+    /\b(?:my )?first name is\s+([A-Za-z][A-Za-z'-]+)/i
+  );
+  if (firstNameMatch?.[1]) {
+    const lastName = updated.full_name?.trim().split(/\s+/).slice(1).join(" ");
+    updated.full_name = lastName ? `${firstNameMatch[1].trim()} ${lastName}` : firstNameMatch[1].trim();
+    return { fields: updated, updated: true, field: "full_name" };
+  }
+  const lastNameMatch = text.match(
+    /\b(?:my )?last name is\s+([A-Za-z][A-Za-z'-]+)/i
+  );
+  if (lastNameMatch?.[1]) {
+    const firstName = updated.full_name?.trim().split(/\s+/)[0] ?? "";
+    updated.full_name = firstName ? `${firstName} ${lastNameMatch[1].trim()}` : lastNameMatch[1].trim();
+    return { fields: updated, updated: true, field: "full_name" };
+  }
+  if (/\b(last name|surname)\b.*\b(wrong|incorrect)\b/i.test(lower)) {
+    updated.name_pending_confirmation = void 0;
+    updated.full_name = void 0;
+    updated.name_awaiting_repeat = true;
+    return { fields: updated, updated: true, field: "full_name" };
+  }
+  const addressMatch = text.match(
+    /\b(?:address is|at|to)\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80})/i
+  ) ?? text.match(
+    /(?:change|update|correct|fix).*?(?:address|location|property).*?(?:to|is)\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80})/i
+  );
+  if (addressMatch?.[1]) {
+    updated.address = addressMatch[1].trim();
+    return { fields: updated, updated: true, field: "address" };
+  }
+  const phone = text.match(
+    /(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/
+  );
+  if (phone) {
+    const digits = phone[0].replace(/\D/g, "").slice(-10);
+    updated.callback_phone = digits;
+    return { fields: updated, updated: true, field: "callback_phone" };
+  }
+  if (/wind damage|\bwind\b/i.test(lower)) {
+    updated.project_type = "wind damage";
+    updated.storm_damage = "yes";
+    if (!updated.problem_description?.toLowerCase().includes("wind")) {
+      updated.problem_description = text;
+    }
+    return { fields: updated, updated: true, field: "project_type" };
+  }
+  if (/hail/i.test(lower)) {
+    updated.project_type = "storm damage";
+    updated.storm_damage = "yes";
+    return { fields: updated, updated: true, field: "project_type" };
+  }
+  if (/appointment|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d\s*(am|pm)/i.test(
+    text
+  )) {
+    updated.appointment_preference = text;
+    return { fields: updated, updated: true, field: "appointment_preference" };
+  }
+  if (/^(yes|yeah|yep|no|nope|nah)\b/i.test(lower) && fields.insurance_claim) {
+    updated.insurance_claim = /^(yes|yeah|yep)\b/i.test(lower) ? "yes" : "no";
+    return { fields: updated, updated: true, field: "insurance_claim" };
+  }
+  if (hasCorrectionIntent(speech) && text.length > 0) {
+    if (currentStage === "wrap_up" || fields.summary_delivered) {
+      return { fields, updated: false };
+    }
+    const fieldKey = STAGE_FIELD_KEYS[currentStage];
+    updated[fieldKey] = text;
+    return { fields: updated, updated: true, field: fieldKey };
+  }
+  if (callerPhone && /same number|this number/i.test(lower)) {
+    updated.callback_phone = callerPhone;
+    return { fields: updated, updated: true, field: "callback_phone" };
+  }
+  return { fields, updated: false };
+}
+
+// ../../lib/twilio/voice-phrases.ts
+var OPENING_QUESTION = "What's going on with the roof?";
+var OPENING_GREETING = "Hi, thanks for calling Beau's Roofing. I'm the AI assistant here to help. " + OPENING_QUESTION;
+var OPENING_RETRY_PROMPT = `I didn't catch that. ${OPENING_QUESTION}`;
+function isExplicitCallerHangupDuringIntake(speech) {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  return /^(goodbye|good bye|bye|bye bye)\b/.test(normalized);
+}
+function isConfirmationPhrase(speech) {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  return /^(yes|yeah|yep|yup|correct|right|exactly|sure|absolutely|sounds good|sound good|that'?s right|thats right|that is correct|all good|perfect|ok(?:ay)?)\b/.test(
+    normalized
+  ) || normalized === "uh huh";
+}
+function isCorrectionPhrase(speech) {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  return /^(no|nope|nah|not quite|incorrect|wrong|that'?s wrong|thats wrong|not right|actually)\b/.test(
+    normalized
+  );
+}
+
+// ../../lib/call-name-capture.ts
+var MAX_NAME_CONFIRMATION_ATTEMPTS = 2;
+var LOW_SPEECH_CONFIDENCE_THRESHOLD = 0.72;
+var NAME_PREFIX_PATTERN = /^(?:my name is|name is|this is|i am|i'm|it's|it is|call me)\s+/i;
+var CORRECTION_PREFIX_PATTERN2 = /^(no|actually|wait|not|correction)[,.]?\s+/i;
+function hasText2(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+function isAwaitingNameConfirmation(fields) {
+  return hasText2(fields.name_pending_confirmation) && !hasText2(fields.full_name);
+}
+function normalizePersonName(name) {
+  return name.trim().split(/\s+/).map(
+    (part) => part.split("-").map((segment) => {
+      if (!segment) {
+        return segment;
+      }
+      return segment.charAt(0).toUpperCase() + segment.slice(1).toLowerCase();
+    }).join("-")
+  ).join(" ");
+}
+function parseNameFromSpeech(text) {
+  const cleaned = stripInterruptionPrefix(text.trim()).replace(CORRECTION_PREFIX_PATTERN2, "").trim();
+  if (!cleaned) {
+    return null;
+  }
+  const nonNameLeadIn = /^(?:i'?m|i am)\s+(?:calling(?:\s+(?:about|for|regarding))?|call(?:ing)?\s+(?:about|for|regarding)|having|needing|looking(?:\s+for)?|wondering(?:\s+(?:about|if))?|trying(?:\s+to)?|reporting|asking(?:\s+about)?)\b/i;
+  if (nonNameLeadIn.test(cleaned)) {
+    return null;
+  }
+  const positivePatterns = [
+    /\b(?:my name is|name is)\s+([A-Za-z][A-Za-z'-]+(?:\s+[A-Za-z][A-Za-z'-]+){0,3})(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i,
+    /\bthis is\s+([A-Za-z][A-Za-z'-]+(?:\s+[A-Za-z][A-Za-z'-]+){0,2})(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i,
+    /\b(?:it'?s|it is)\s+([A-Za-z][A-Za-z'-]+(?:\s+[A-Za-z][A-Za-z'-]+){0,2})(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i,
+    /\b(?:i am|i'm)\s+([A-Za-z][A-Za-z'-]+(?:\s+[A-Za-z][A-Za-z'-]+){0,2})(?=\s*,\s*and\b)/i,
+    /\b(?:i am|i'm)\s+([A-Za-z][A-Za-z'-]+(?:\s+[A-Za-z][A-Za-z'-]+)?)(?=\s*,)/i,
+    /\b(?:i am|i'm)\s+([A-Za-z][A-Za-z'-]+)\s+and\b/i,
+    /\b(?:call me)\s+([A-Za-z][A-Za-z'-]+(?:\s+[A-Za-z][A-Za-z'-]+){0,2})(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i
+  ];
+  for (const pattern of positivePatterns) {
+    const match = cleaned.match(pattern);
+    const candidate = match?.[1]?.trim();
+    if (!candidate) {
+      continue;
+    }
+    const refined = refineParsedNameCandidate(candidate);
+    if (refined) {
+      return normalizePersonName(refined);
+    }
+  }
+  const withoutIntro = cleaned.replace(NAME_PREFIX_PATTERN, "").replace(/[.!?]+$/g, "").trim();
+  const directMatch = withoutIntro.match(
+    /^([A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,3})$/
+  );
+  if (directMatch?.[1] && isPlausibleParsedName(directMatch[1])) {
+    return normalizePersonName(directMatch[1]);
+  }
+  return null;
+}
+function refineParsedNameCandidate(candidate) {
+  const words = candidate.trim().split(/\s+/).filter(Boolean);
+  for (let length = words.length; length >= 1; length -= 1) {
+    const prefix = words.slice(0, length).join(" ");
+    if (isPlausibleParsedName(prefix)) {
+      return prefix;
+    }
+  }
+  return null;
+}
+function isPlausibleParsedName(name) {
+  const trimmed = name.trim();
+  if (trimmed.length < 2 || trimmed.length > 60 || /\d/.test(trimmed)) {
+    return false;
+  }
+  const invalidExact = /^(calling|call|calling about|calling for|having|needing|looking|wondering|trying|reporting|asking|roof|roofing|damage|hail|storm|leak|shingles|insurance|claim|pictures|photos|appointment|today|tomorrow|yes|no|yeah|nope|yep|nah|correct|right)$/i;
+  const words = trimmed.split(/\s+/);
+  if (words.length === 0 || words.length > 4) {
+    return false;
+  }
+  if (words.some((word) => invalidExact.test(word.toLowerCase()))) {
+    return false;
+  }
+  if (/\b(hail|storm|roof|damage|leak|insurance|claim|appointment|pictures?|photos?)\b/i.test(
+    trimmed
+  )) {
+    return false;
+  }
+  return /^[A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,3}$/.test(trimmed);
+}
+function shouldConfirmRecognizedName(confidence) {
+  if (confidence === null) {
+    return false;
+  }
+  return confidence < LOW_SPEECH_CONFIDENCE_THRESHOLD;
+}
+function shouldRequestNameConfirmation(input) {
+  if (shouldConfirmRecognizedName(input.confidence)) {
+    return true;
+  }
+  return input.nameNeedsClarification === true;
+}
+function buildNameConfirmationPrompt(name) {
+  return `I heard ${name}. Is that correct?`;
+}
+function buildNameRepeatPrompt() {
+  return "Sorry about that. Please say your first and last name again.";
+}
+function clearNameCaptureState(fields) {
+  return {
+    ...fields,
+    name_pending_confirmation: void 0,
+    name_raw_speech: void 0,
+    name_awaiting_repeat: void 0,
+    name_confirmation_attempts: void 0
+  };
+}
+function acceptPendingName(fields) {
+  const pending = fields.name_pending_confirmation?.trim();
+  if (!pending) {
+    return fields;
+  }
+  return clearNameCaptureState({
+    ...fields,
+    full_name: pending
+  });
+}
+function beginNameConfirmation(fields, rawSpeech, parsedName) {
+  return {
+    ...fields,
+    name_pending_confirmation: parsedName,
+    name_raw_speech: rawSpeech.trim(),
+    name_awaiting_repeat: false
+  };
+}
+function incrementNameConfirmationAttempts(fields) {
+  return {
+    ...fields,
+    name_confirmation_attempts: (fields.name_confirmation_attempts ?? 0) + 1
+  };
+}
+function isNameOnlyCorrection(speech) {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  return /\b(last name|first name|surname|spelling)\b/.test(normalized) || /\bwith an? [a-z]\b/i.test(speech);
+}
+function processNameCaptureTurn(input) {
+  const speech = input.speech.trim();
+  let fields = { ...input.fields };
+  let nameCorrected = false;
+  if (isAwaitingNameConfirmation(fields)) {
+    const pendingName = fields.name_pending_confirmation?.trim() ?? "";
+    if (isConfirmationPhrase(speech) && !hasCorrectionIntent(speech) && !isCorrectionPhrase(speech)) {
+      return {
+        status: "accepted",
+        fields: acceptPendingName(fields),
+        replyText: null,
+        nameConfirmationRequested: false,
+        nameCorrected: false
+      };
+    }
+    const correction = applyTargetedCorrection(
+      fields,
+      speech,
+      "full_name"
+    );
+    if (correction.updated && correction.field === "full_name") {
+      const correctedName = normalizePersonName(
+        correction.fields.full_name ?? pendingName
+      );
+      return {
+        status: "confirm",
+        fields: beginNameConfirmation(fields, speech, correctedName),
+        replyText: buildNameConfirmationPrompt(correctedName),
+        nameConfirmationRequested: true,
+        nameCorrected: true
+      };
+    }
+    const parsedCorrection = parseNameFromSpeech(speech);
+    if (parsedCorrection && (hasCorrectionIntent(speech) || isCorrectionPhrase(speech))) {
+      nameCorrected = true;
+      return {
+        status: "confirm",
+        fields: beginNameConfirmation(fields, speech, parsedCorrection),
+        replyText: buildNameConfirmationPrompt(parsedCorrection),
+        nameConfirmationRequested: true,
+        nameCorrected: true
+      };
+    }
+    if (isCorrectionPhrase(speech) || hasCorrectionIntent(speech) || isNameOnlyCorrection(speech)) {
+      fields = incrementNameConfirmationAttempts({
+        ...clearNameCaptureState(fields),
+        name_awaiting_repeat: true
+      });
+      if ((fields.name_confirmation_attempts ?? 0) >= MAX_NAME_CONFIRMATION_ATTEMPTS) {
+        return {
+          status: "accepted",
+          fields: acceptPendingName({
+            ...fields,
+            name_pending_confirmation: pendingName
+          }),
+          replyText: null,
+          nameConfirmationRequested: false,
+          nameCorrected: false
+        };
+      }
+      return {
+        status: "repeat",
+        fields,
+        replyText: buildNameRepeatPrompt(),
+        nameConfirmationRequested: false,
+        nameCorrected: true
+      };
+    }
+    if (parsedCorrection && parsedCorrection.toLowerCase() !== pendingName.toLowerCase()) {
+      return {
+        status: "confirm",
+        fields: beginNameConfirmation(fields, speech, parsedCorrection),
+        replyText: buildNameConfirmationPrompt(parsedCorrection),
+        nameConfirmationRequested: true,
+        nameCorrected: true
+      };
+    }
+    fields = incrementNameConfirmationAttempts(fields);
+    if ((fields.name_confirmation_attempts ?? 0) >= MAX_NAME_CONFIRMATION_ATTEMPTS) {
+      return {
+        status: "accepted",
+        fields: acceptPendingName({
+          ...fields,
+          name_pending_confirmation: pendingName
+        }),
+        replyText: null,
+        nameConfirmationRequested: false,
+        nameCorrected: false
+      };
+    }
+    return {
+      status: "confirm",
+      fields,
+      replyText: buildNameConfirmationPrompt(pendingName),
+      nameConfirmationRequested: true,
+      nameCorrected: false
+    };
+  }
+  const parsedName = parseNameFromSpeech(speech);
+  if (!parsedName) {
+    fields = incrementNameConfirmationAttempts({
+      ...fields,
+      name_awaiting_repeat: true
+    });
+    if ((fields.name_confirmation_attempts ?? 0) >= MAX_NAME_CONFIRMATION_ATTEMPTS) {
+      const fallbackName = normalizePersonName(speech);
+      return {
+        status: "accepted",
+        fields: clearNameCaptureState({
+          ...fields,
+          full_name: fallbackName
+        }),
+        replyText: null,
+        nameConfirmationRequested: false,
+        nameCorrected: false
+      };
+    }
+    return {
+      status: "repeat",
+      fields: clearNameCaptureState({
+        ...fields,
+        name_awaiting_repeat: true
+      }),
+      replyText: buildNameRepeatPrompt(),
+      nameConfirmationRequested: false,
+      nameCorrected: false
+    };
+  }
+  if (!shouldRequestNameConfirmation({
+    parsedName,
+    confidence: input.confidence,
+    nameNeedsClarification: fields.name_needs_clarification === true
+  })) {
+    return {
+      status: "accepted",
+      fields: clearNameCaptureState({
+        ...fields,
+        full_name: parsedName
+      }),
+      replyText: null,
+      nameConfirmationRequested: false,
+      nameCorrected: false
+    };
+  }
+  fields = beginNameConfirmation(fields, speech, parsedName);
+  return {
+    status: "confirm",
+    fields,
+    replyText: buildNameConfirmationPrompt(parsedName),
+    nameConfirmationRequested: true,
+    nameCorrected: false
+  };
 }
 
 // src/orchestrator/caller-name-intake.ts
@@ -1470,16 +2126,11 @@ function buildLastNameFollowUp(firstName) {
 function buildLastNameSpellingPrompt() {
   return "Could you spell your last name for me so I make sure the roofing team has it correctly?";
 }
+function buildFullNameSpellingPrompt() {
+  return "Could you spell your first and last name for me?";
+}
 function buildFirstNameSpellingPrompt() {
   return "Could you spell your first name as well?";
-}
-function buildNameCompleteAcknowledgment(fields) {
-  const synced = syncFullNameFromParts(fields);
-  const full = synced.full_name?.trim() ?? "";
-  if (full) {
-    return `Thank you. I have ${full}.`;
-  }
-  return "Thank you.";
 }
 function buildCallReasonQuestionAfterName(fields) {
   const firstName = getCallerFirstName(fields);
@@ -1488,9 +2139,61 @@ function buildCallReasonQuestionAfterName(fields) {
   }
   return CALL_REASON_AFTER_NAME_QUESTION;
 }
-function processCallerNameTurn(fields, speech) {
+function mapNameCaptureToOpeningOutcome(capture) {
+  if (capture.status === "accepted") {
+    const synced = syncFullNameFromParts(capture.fields);
+    return {
+      fields: synced,
+      replyText: null,
+      complete: true,
+      needsReasonQuestion: true
+    };
+  }
+  return {
+    fields: capture.fields,
+    replyText: capture.replyText,
+    complete: false,
+    needsReasonQuestion: false
+  };
+}
+function maybeRequestOpeningNameConfirmation(fields, speech, parts, confidence) {
+  const fullName = `${parts.firstName} ${parts.lastName}`;
+  if (!shouldRequestNameConfirmation({
+    parsedName: fullName,
+    confidence,
+    nameNeedsClarification: fields.name_needs_clarification === true
+  })) {
+    return null;
+  }
+  const capture = processNameCaptureTurn({
+    fields: syncFullNameFromParts({
+      ...fields,
+      caller_first_name: parts.firstName,
+      caller_last_name: parts.lastName,
+      name_awaiting_last_name: false,
+      name_needs_clarification: false
+    }),
+    speech,
+    confidence
+  });
+  if (capture.status === "confirm") {
+    return mapNameCaptureToOpeningOutcome(capture);
+  }
+  return null;
+}
+function processCallerNameTurn(fields, speech, options = {}) {
+  const confidence = options.confidence ?? null;
   let updated = { ...fields };
   const trimmed = speech.trim();
+  if (isAwaitingNameConfirmation(updated)) {
+    return mapNameCaptureToOpeningOutcome(
+      processNameCaptureTurn({
+        fields: updated,
+        speech: trimmed,
+        confidence
+      })
+    );
+  }
   if (updated.name_awaiting_first_name_spelling) {
     const spelled = parseSpelledNameSpeech(trimmed);
     if (spelled.firstName && isPlausibleCallerName(spelled.firstName)) {
@@ -1528,10 +2231,9 @@ function processCallerNameTurn(fields, speech) {
         name_spelling_verified: true
       });
       if (hasCompleteCallerName(updated)) {
-        const ack = updated.name_spelling_verified === true ? buildNameCompleteAcknowledgment(updated) : null;
         return {
           fields: updated,
-          replyText: ack,
+          replyText: null,
           complete: true,
           needsReasonQuestion: true
         };
@@ -1540,6 +2242,33 @@ function processCallerNameTurn(fields, speech) {
     return {
       fields: updated,
       replyText: buildLastNameSpellingPrompt(),
+      complete: false,
+      needsReasonQuestion: false
+    };
+  }
+  if (updated.name_awaiting_full_name_spelling) {
+    const spelled = parseSpelledNameSpeech(trimmed);
+    if (spelled.firstName && spelled.lastName) {
+      updated = syncFullNameFromParts({
+        ...updated,
+        caller_first_name: spelled.firstName,
+        caller_last_name: spelled.lastName,
+        name_awaiting_full_name_spelling: false,
+        name_needs_clarification: false,
+        name_spelling_verified: true
+      });
+      if (hasCompleteCallerName(updated)) {
+        return {
+          fields: updated,
+          replyText: null,
+          complete: true,
+          needsReasonQuestion: true
+        };
+      }
+    }
+    return {
+      fields: updated,
+      replyText: buildFullNameSpellingPrompt(),
       complete: false,
       needsReasonQuestion: false
     };
@@ -1562,6 +2291,18 @@ function processCallerNameTurn(fields, speech) {
           complete: false,
           needsReasonQuestion: false
         };
+      }
+      const confirmation = maybeRequestOpeningNameConfirmation(
+        updated,
+        trimmed,
+        {
+          firstName: updated.caller_first_name ?? "",
+          lastName: updated.caller_last_name ?? ""
+        },
+        confidence
+      );
+      if (confirmation) {
+        return confirmation;
       }
       return {
         fields: updated,
@@ -1597,6 +2338,18 @@ function processCallerNameTurn(fields, speech) {
         needsReasonQuestion: false
       };
     }
+    const confirmation = maybeRequestOpeningNameConfirmation(
+      updated,
+      trimmed,
+      {
+        firstName: parts.firstName,
+        lastName: parts.lastName
+      },
+      confidence
+    );
+    if (confirmation) {
+      return confirmation;
+    }
     return {
       fields: updated,
       replyText: null,
@@ -1626,14 +2379,24 @@ function processCallerNameTurn(fields, speech) {
       needsReasonQuestion: false
     };
   }
+  const attempts = (updated.name_clarification_attempts ?? 0) + 1;
   updated = {
     ...updated,
     name_needs_clarification: true,
-    name_clarification_attempts: (updated.name_clarification_attempts ?? 0) + 1
+    name_clarification_attempts: attempts
   };
+  if (attempts >= 2) {
+    updated.name_awaiting_full_name_spelling = true;
+    return {
+      fields: updated,
+      replyText: buildFullNameSpellingPrompt(),
+      complete: false,
+      needsReasonQuestion: false
+    };
+  }
   return {
     fields: updated,
-    replyText: OPENING_CALLER_NAME_QUESTION,
+    replyText: null,
     complete: false,
     needsReasonQuestion: false
   };
@@ -1642,6 +2405,9 @@ function processCallerNameTurn(fields, speech) {
 // src/orchestrator/schedule-normalizer.ts
 var COMPANY_TIMEZONE = process.env.COMPANY_TIMEZONE?.trim() || "America/Chicago";
 var SCHEDULE_PARSE_FALLBACK_PROMPT = "I'm sorry, I had trouble understanding the timing. What specific day and time would work best for you?";
+var SCHEDULE_DAYPART_CLARIFICATION_PROMPT = "Would morning, afternoon, or evening work best?";
+var SCHEDULE_FLEXIBLE_ACCEPT_MESSAGE = "That's okay. I'll note that your timing is flexible.";
+var GENERIC_SCHEDULE_TIME_PROMPT = /^what time works best\?$/i;
 function getLocalParts(date, timeZone) {
   const formatter = new Intl.DateTimeFormat("en-US", {
     timeZone,
@@ -1811,6 +2577,17 @@ function parseColloquialTimeFromSpeech(normalized, daypart) {
     const hour = applyMeridiemToHour(parsedHour, void 0, daypart);
     return { hour, minute: 15 };
   }
+  const hourThirty = normalized.match(
+    new RegExp(`\\b${HOUR_TOKEN}\\s+thirty\\b`, "i")
+  );
+  if (hourThirty) {
+    const parsedHour = parseHourToken(hourThirty[1] ?? "");
+    if (parsedHour === null) {
+      return null;
+    }
+    const hour = applyMeridiemToHour(parsedHour, void 0, daypart);
+    return { hour, minute: 30 };
+  }
   const halfPast = normalized.match(new RegExp(`\\bhalf past ${HOUR_TOKEN}\\b`, "i"));
   if (halfPast) {
     const parsedHour = parseHourToken(halfPast[1] ?? "");
@@ -1830,7 +2607,7 @@ function parseColloquialTimeFromSpeech(normalized, daypart) {
     return { hour, minute: 0 };
   }
   const oClockTime = normalized.match(
-    new RegExp(`\\b(?:at\\s+)?${HOUR_TOKEN}(?::(\\d{2}))?\\s+o\\s+clock\\b`, "i")
+    new RegExp(`\\b(?:at\\s+|around\\s+|about\\s+)?${HOUR_TOKEN}(?::(\\d{2}))?\\s+o\\s+clock\\b`, "i")
   );
   if (oClockTime) {
     const parsedHour = parseHourToken(oClockTime[1] ?? "");
@@ -1911,7 +2688,10 @@ function parseTimeFromSpeech(normalized, daypart) {
     return { hour, minute };
   }
   const betweenTimes = normalized.match(
-    /\bbetween\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(?:am|pm)?\s+and\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(am|pm)?/i
+    new RegExp(
+      `\\bbetween\\s+${HOUR_TOKEN}(?::(\\d{2}))?\\s*(?:am|pm)?\\s+and\\s+${HOUR_TOKEN}(?::(\\d{2}))?\\s*(am|pm)?`,
+      "i"
+    )
   );
   if (betweenTimes) {
     const startHour = parseHourToken(betweenTimes[1] ?? "");
@@ -1938,6 +2718,63 @@ function parseTimeFromSpeech(normalized, daypart) {
       endHour24 += 12;
     }
     return { hour, minute, endHour: endHour24, endMinute };
+  }
+  const fromToTimes = normalized.match(
+    new RegExp(
+      `\\bfrom\\s+${HOUR_TOKEN}(?::(\\d{2}))?\\s*(?:am|pm)?\\s+to\\s+${HOUR_TOKEN}(?::(\\d{2}))?\\s*(am|pm)?`,
+      "i"
+    )
+  );
+  if (fromToTimes) {
+    const startHour = parseHourToken(fromToTimes[1] ?? "");
+    const endHour = parseHourToken(fromToTimes[3] ?? "");
+    if (startHour === null || endHour === null) {
+      return null;
+    }
+    let hour = startHour;
+    const minute = Number.parseInt(fromToTimes[2] ?? "0", 10);
+    const meridiem = fromToTimes[5]?.toLowerCase();
+    let endHour24 = endHour;
+    const endMinute = Number.parseInt(fromToTimes[4] ?? "0", 10);
+    if (meridiem === "pm" && hour < 12) {
+      hour += 12;
+    }
+    if (meridiem === "am" && hour === 12) {
+      hour = 0;
+    }
+    if (!meridiem && daypart) {
+      hour = applyDaypartMeridiem(hour, daypart);
+      endHour24 = applyDaypartMeridiem(endHour, daypart);
+    } else if (!meridiem && hour <= 7) {
+      hour += 12;
+      endHour24 += 12;
+    }
+    return { hour, minute, endHour: endHour24, endMinute };
+  }
+  const afterTime = normalized.match(
+    new RegExp(
+      `\\b(?:any\\s*time|anytime|after)\\s+${HOUR_TOKEN}(?::(\\d{2}))?\\s*(am|pm)?\\b`,
+      "i"
+    )
+  );
+  if (afterTime) {
+    const parsedHour = parseHourToken(afterTime[1] ?? "");
+    if (parsedHour === null) {
+      return null;
+    }
+    const minute = Number.parseInt(afterTime[2] ?? "0", 10);
+    const meridiem = afterTime[3]?.toLowerCase();
+    let hour = parsedHour;
+    if (meridiem === "pm" && hour < 12) {
+      hour += 12;
+    } else if (meridiem === "am" && hour === 12) {
+      hour = 0;
+    } else if (!meridiem && daypart) {
+      hour = applyDaypartMeridiem(hour, daypart);
+    } else if (!meridiem && hour <= 7) {
+      hour += 12;
+    }
+    return { hour, minute };
   }
   const bareTime = normalized.match(
     /^(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(am|pm)?$/i
@@ -2000,6 +2837,57 @@ function weekdayIndex(name) {
   };
   return map[name.toLowerCase()] ?? null;
 }
+function resolveTargetDateFromSpeech(normalized, today, knownScheduleRaw) {
+  let targetDate = { ...today };
+  let useNextWeek = false;
+  if (/\btomorrow\b/.test(normalized)) {
+    return addDays(today, 1);
+  }
+  if (/\bnext week\b/.test(normalized)) {
+    return addDays(today, 7);
+  }
+  const weekdayMatch = normalized.match(
+    /\b(next\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i
+  );
+  if (weekdayMatch) {
+    useNextWeek = Boolean(weekdayMatch[1]);
+    const weekday = weekdayIndex(weekdayMatch[2] ?? "");
+    if (weekday !== null) {
+      return resolveWeekday(today, weekday, useNextWeek);
+    }
+  }
+  const known = (knownScheduleRaw ?? "").toLowerCase().replace(/[^\w\s:]/g, " ").replace(/\s+/g, " ").trim();
+  if (!known) {
+    return targetDate;
+  }
+  if (/\btomorrow\b/.test(known)) {
+    return addDays(today, 1);
+  }
+  if (/\bnext week\b/.test(known)) {
+    return addDays(today, 7);
+  }
+  const knownWeekdayMatch = known.match(
+    /\b(next\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i
+  );
+  if (knownWeekdayMatch) {
+    useNextWeek = Boolean(knownWeekdayMatch[1]);
+    const weekday = weekdayIndex(knownWeekdayMatch[2] ?? "");
+    if (weekday !== null) {
+      return resolveWeekday(today, weekday, useNextWeek);
+    }
+  }
+  return targetDate;
+}
+function buildFlexibleAvailabilitySpoken(raw, targetDate) {
+  const trimmed = raw.trim();
+  if (/\btomorrow\b/i.test(trimmed)) {
+    return trimmed;
+  }
+  if (/\b(morning|afternoon|evening|anytime|whenever|flexible|as soon as possible|before work|after work|during lunch)\b/i.test(trimmed)) {
+    return trimmed;
+  }
+  return `${formatSpokenDate(targetDate)} ${trimmed}`.trim();
+}
 function parseScheduleSpeech(speech, now = /* @__PURE__ */ new Date(), timeZone = COMPANY_TIMEZONE, options = {}) {
   try {
     return parseScheduleSpeechInternal(speech, now, timeZone, options);
@@ -2021,29 +2909,58 @@ function parseScheduleSpeechInternal(speech, now = /* @__PURE__ */ new Date(), t
   if (!normalized) {
     return { status: "nothing_schedulable", raw };
   }
-  if (/\bafter work\b|\bafter i get off\b|\bwhen i get off\b/.test(normalized)) {
+  const today = getLocalParts(now, timeZone);
+  const targetDate = resolveTargetDateFromSpeech(
+    normalized,
+    today,
+    options.knownScheduleRaw
+  );
+  if (/\b(whenever|any time|anytime|as soon as possible|asap|flexible)\b/.test(normalized)) {
     return {
-      status: "needs_time_clarification",
-      prompt: "What time should I put down?",
+      status: "flexible_availability",
+      spoken: buildFlexibleAvailabilitySpoken(raw, targetDate),
       raw
     };
   }
-  const today = getLocalParts(now, timeZone);
-  let targetDate = { ...today };
-  let useNextWeek = false;
-  if (/\btomorrow\b/.test(normalized)) {
-    targetDate = addDays(today, 1);
-  } else if (/\bnext week\b/.test(normalized)) {
-    targetDate = addDays(today, 7);
-  } else {
-    const weekdayMatch = normalized.match(/\b(next\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i);
-    if (weekdayMatch) {
-      useNextWeek = Boolean(weekdayMatch[1]);
-      const weekday = weekdayIndex(weekdayMatch[2] ?? "");
-      if (weekday !== null) {
-        targetDate = resolveWeekday(today, weekday, useNextWeek);
-      }
-    }
+  if (/\bbefore work\b|\bduring lunch\b|\bsometime tomorrow\b/.test(normalized)) {
+    return {
+      status: "flexible_availability",
+      spoken: buildFlexibleAvailabilitySpoken(raw, targetDate),
+      raw
+    };
+  }
+  if (/\blater in the afternoon\b/.test(normalized)) {
+    return {
+      status: "flexible_availability",
+      spoken: buildFlexibleAvailabilitySpoken(raw, targetDate),
+      raw
+    };
+  }
+  if (/\bafter work\b|\bafter i get off\b|\bwhen i get off\b/.test(normalized)) {
+    return {
+      status: "flexible_availability",
+      spoken: buildFlexibleAvailabilitySpoken(raw, targetDate),
+      raw
+    };
+  }
+  if (/\bbefore\s+(noon|midday)\b/.test(normalized)) {
+    const dateLabel = formatSpokenDate(targetDate);
+    return {
+      status: "needs_confirmation",
+      spoken: `${dateLabel} before noon`,
+      isoStart: makeUtcDate(targetDate.year, targetDate.month, targetDate.day, 8, 0, timeZone).toISOString(),
+      isoEnd: makeUtcDate(targetDate.year, targetDate.month, targetDate.day, 12, 0, timeZone).toISOString(),
+      raw
+    };
+  }
+  if (/\b(noon|midday)\b/.test(normalized)) {
+    const dateLabel = formatSpokenDate(targetDate);
+    return {
+      status: "needs_confirmation",
+      spoken: `${dateLabel} at 12:00 PM`,
+      isoStart: makeUtcDate(targetDate.year, targetDate.month, targetDate.day, 12, 0, timeZone).toISOString(),
+      raw
+    };
   }
   const daypart = extractDaypartFromSpeech(normalized) ?? options.knownDaypart;
   const time = parseTimeFromSpeech(normalized, daypart);
@@ -2058,6 +2975,13 @@ function parseScheduleSpeechInternal(speech, now = /* @__PURE__ */ new Date(), t
         spoken: `Would ${dateLabel} between 8:00 and 11:00 AM work?`,
         isoStart: makeUtcDate(targetDate.year, targetDate.month, targetDate.day, 8, 0, timeZone).toISOString(),
         isoEnd: makeUtcDate(targetDate.year, targetDate.month, targetDate.day, 11, 0, timeZone).toISOString(),
+        raw
+      };
+    }
+    if (hasAfternoon && !/\btomorrow\b|\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/.test(normalized)) {
+      return {
+        status: "flexible_availability",
+        spoken: buildFlexibleAvailabilitySpoken(raw, targetDate),
         raw
       };
     }
@@ -2228,6 +3152,17 @@ function applyScheduleParseResult(fields, result) {
   if (result.status === "nothing_schedulable") {
     return fields;
   }
+  if (result.status === "flexible_availability") {
+    return syncLegacyStringFields({
+      ...fields,
+      appointment_preference_raw: result.raw,
+      appointment_preference: result.spoken,
+      schedule_confirmed: true,
+      schedule_pending_clarification: false,
+      schedule_clarification_prompt: void 0,
+      schedule_clarification_attempts: void 0
+    });
+  }
   return syncLegacyStringFields({
     ...fields,
     appointment_preference_raw: result.raw,
@@ -2255,11 +3190,48 @@ function needsScheduleConfirmation(fields) {
 function isScheduleComplete(fields) {
   return typeof fields.appointment_preference === "string" && fields.appointment_preference.trim().length > 0 && fields.schedule_confirmed === true;
 }
+function isScheduleClarificationFailure(result) {
+  return result.status === "needs_time_clarification" || result.status === "needs_date_clarification" || result.status === "nothing_schedulable";
+}
+function isGenericScheduleTimePrompt(prompt) {
+  if (!prompt?.trim()) {
+    return true;
+  }
+  return GENERIC_SCHEDULE_TIME_PROMPT.test(prompt.trim());
+}
+function acceptFlexibleSchedulePreference(fields, preference) {
+  const trimmed = preference.trim();
+  return syncLegacyStringFields({
+    ...fields,
+    appointment_preference: trimmed,
+    appointment_preference_raw: trimmed,
+    schedule_confirmed: true,
+    schedule_pending_clarification: false,
+    schedule_clarification_prompt: void 0,
+    schedule_clarification_attempts: void 0
+  });
+}
+function resolveScheduleClarificationPrompt(parsed, nextAttempts) {
+  if (nextAttempts >= 1) {
+    return SCHEDULE_DAYPART_CLARIFICATION_PROMPT;
+  }
+  if (parsed.status === "needs_time_clarification" || parsed.status === "needs_date_clarification") {
+    if (isGenericScheduleTimePrompt(parsed.prompt)) {
+      return SCHEDULE_DAYPART_CLARIFICATION_PROMPT;
+    }
+    return parsed.prompt;
+  }
+  if (parsed.status === "nothing_schedulable") {
+    return SCHEDULE_PARSE_FALLBACK_PROMPT;
+  }
+  return SCHEDULE_DAYPART_CLARIFICATION_PROMPT;
+}
 function processScheduleCapture(fields, speech, now = /* @__PURE__ */ new Date()) {
   try {
     const combined = `${fields.appointment_preference_raw ?? ""} ${speech}`.trim();
     const parsed = parseScheduleSpeech(combined, now, COMPANY_TIMEZONE, {
-      knownDaypart: fields.schedule_daypart
+      knownDaypart: fields.schedule_daypart,
+      knownScheduleRaw: fields.appointment_preference_raw
     });
     let updated = applyScheduleParseResult(
       {
@@ -2268,38 +3240,46 @@ function processScheduleCapture(fields, speech, now = /* @__PURE__ */ new Date()
       },
       parsed
     );
-    if (parsed.status === "needs_time_clarification") {
-      updated = {
-        ...updated,
-        schedule_pending_clarification: true,
-        schedule_clarification_prompt: parsed.prompt,
-        schedule_daypart: extractDaypartFromSpeech(parsed.raw) ?? fields.schedule_daypart ?? extractDaypartFromSpeech(fields.appointment_preference_raw ?? "")
-      };
-      return { fields: updated, clarificationPrompt: parsed.prompt };
-    }
-    if (parsed.status === "needs_date_clarification") {
-      updated = {
-        ...updated,
-        schedule_pending_clarification: true,
-        schedule_clarification_prompt: parsed.prompt
-      };
-      return { fields: updated, clarificationPrompt: parsed.prompt };
+    if (parsed.status === "flexible_availability") {
+      return { fields: updated };
     }
     if (parsed.status === "needs_confirmation") {
       updated = {
         ...updated,
         schedule_pending_clarification: false,
-        schedule_clarification_prompt: void 0
+        schedule_clarification_prompt: void 0,
+        schedule_clarification_attempts: void 0
       };
       return {
         fields: updated,
         confirmationPrompt: buildScheduleConfirmationQuestion(parsed.spoken)
       };
     }
+    if (isScheduleClarificationFailure(parsed)) {
+      const alreadyClarifying = fields.schedule_pending_clarification === true;
+      const attempts = alreadyClarifying ? fields.schedule_clarification_attempts ?? 0 : 0;
+      if (alreadyClarifying && attempts >= 1) {
+        return {
+          fields: acceptFlexibleSchedulePreference(updated, combined),
+          flexibleAcceptMessage: SCHEDULE_FLEXIBLE_ACCEPT_MESSAGE
+        };
+      }
+      const nextAttempts = alreadyClarifying ? attempts + 1 : 0;
+      const prompt = resolveScheduleClarificationPrompt(parsed, nextAttempts);
+      updated = {
+        ...updated,
+        schedule_pending_clarification: true,
+        schedule_clarification_prompt: prompt,
+        schedule_clarification_attempts: nextAttempts,
+        schedule_daypart: parsed.status === "needs_time_clarification" ? extractDaypartFromSpeech(parsed.raw) ?? fields.schedule_daypart ?? extractDaypartFromSpeech(fields.appointment_preference_raw ?? "") : fields.schedule_daypart
+      };
+      return { fields: updated, clarificationPrompt: prompt };
+    }
     updated = {
       ...updated,
       schedule_pending_clarification: true,
-      schedule_clarification_prompt: SCHEDULE_PARSE_FALLBACK_PROMPT
+      schedule_clarification_prompt: SCHEDULE_PARSE_FALLBACK_PROMPT,
+      schedule_clarification_attempts: (fields.schedule_clarification_attempts ?? 0) + 1
     };
     return {
       fields: updated,
@@ -2308,16 +3288,24 @@ function processScheduleCapture(fields, speech, now = /* @__PURE__ */ new Date()
   } catch (error) {
     logScheduleParseError(error, speech);
     const combined = `${fields.appointment_preference_raw ?? ""} ${speech}`.trim();
+    const attempts = fields.schedule_clarification_attempts ?? 0;
+    if (attempts >= 1) {
+      return {
+        fields: acceptFlexibleSchedulePreference(fields, combined),
+        flexibleAcceptMessage: SCHEDULE_FLEXIBLE_ACCEPT_MESSAGE
+      };
+    }
     const updated = {
       ...fields,
       appointment_preference_raw: combined,
       schedule_pending_clarification: true,
-      schedule_clarification_prompt: SCHEDULE_PARSE_FALLBACK_PROMPT,
-      schedule_confirmed: false
+      schedule_clarification_prompt: SCHEDULE_DAYPART_CLARIFICATION_PROMPT,
+      schedule_confirmed: false,
+      schedule_clarification_attempts: attempts + 1
     };
     return {
       fields: updated,
-      clarificationPrompt: SCHEDULE_PARSE_FALLBACK_PROMPT
+      clarificationPrompt: SCHEDULE_DAYPART_CLARIFICATION_PROMPT
     };
   }
 }
@@ -2401,16 +3389,22 @@ function resolvePendingQuestion(fields, conversationState) {
   if (conversationState === "awaiting_summary_confirmation" || conversationState === "handling_correction" || conversationState === "presenting_summary") {
     return "summary_confirmation";
   }
-  const nextRequired = getNextRequiredField(fields);
-  if (needsCallbackConfirmation(fields) && nextRequired === "callback_phone" && isCallerNameResolved(fields) && !needsImmediateSafetyClarification(fields)) {
+  if (needsCallbackConfirmation(fields) && isCallerNameResolved(fields) && !needsImmediateSafetyClarification(fields)) {
     return "callback_confirmation";
   }
-  if (needsAddressConfirmation(fields) && nextRequired === "address" && isCallbackPhoneResolved(fields) && isCallerNameResolved(fields)) {
+  if (needsAddressConfirmation(fields) && isCallbackPhoneResolved(fields) && isCallerNameResolved(fields)) {
     return "address_confirmation";
   }
   if (needsScheduleClarification(fields) || needsScheduleConfirmation(fields)) {
     return needsScheduleConfirmation(fields) ? "schedule_confirmation" : "preferred_callback_time";
   }
+  if (conversationState === "listening_for_reason") {
+    return "reason_for_call";
+  }
+  if (conversationState === "collecting_intake") {
+    return null;
+  }
+  const nextRequired = getNextRequiredField(fields);
   return nextRequired ? mapRequiredFieldToPending(nextRequired) : null;
 }
 function pendingQuestionForConversationState(conversationState) {
@@ -2637,6 +3631,207 @@ function resolveCallReasonClarificationReply(fields, speech) {
   return buildCallReasonClarificationPrompt();
 }
 
+// src/orchestrator/field-completion.ts
+var MAX_FIELD_CLARIFICATION_ATTEMPTS = 2;
+function hasValue4(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+function resolutionStatus(fields, field) {
+  return fields.field_resolution?.[field];
+}
+function getFieldClarificationAttempts(fields, field) {
+  return fields.field_clarification_attempts?.[field] ?? 0;
+}
+function incrementFieldClarificationAttempt(fields, field) {
+  const attempts = getFieldClarificationAttempts(fields, field) + 1;
+  return {
+    ...fields,
+    field_clarification_attempts: {
+      ...fields.field_clarification_attempts,
+      [field]: attempts
+    }
+  };
+}
+function markFieldUncertain(fields, field, callerWording) {
+  const note = callerWording?.trim();
+  const existingNotes = fields.additional_notes?.trim();
+  const combinedNotes = note && existingNotes && !existingNotes.includes(note) ? `${existingNotes} ${note}` : note ?? existingNotes;
+  return {
+    ...fields,
+    field_resolution: {
+      ...fields.field_resolution,
+      [field]: "uncertain"
+    },
+    additional_notes: combinedNotes ? combinedNotes.slice(0, 500) : fields.additional_notes
+  };
+}
+function markFieldCaptured(fields, field) {
+  return {
+    ...fields,
+    field_resolution: {
+      ...fields.field_resolution,
+      [field]: "captured"
+    }
+  };
+}
+function isCallbackComplete(fields) {
+  return hasValue4(fields.callback_phone) && fields.callback_phone_confirmed === true;
+}
+function getFieldCompletionStatus(field, fields) {
+  const explicit = resolutionStatus(fields, field);
+  if (explicit) {
+    return explicit;
+  }
+  switch (field) {
+    case "full_name":
+      if (fields.caller_name_declined === true || fields.caller_name_unavailable === true) {
+        return "confirmed";
+      }
+      if (hasCompleteCallerName(fields)) {
+        return fields.name_pending_confirmation ? "captured" : "confirmed";
+      }
+      return "missing";
+    case "callback_phone":
+      if (isCallbackComplete(fields)) {
+        return "confirmed";
+      }
+      if (hasValue4(fields.callback_phone)) {
+        return "captured";
+      }
+      return "missing";
+    case "address":
+      if (isAddressConfirmed(fields)) {
+        return "confirmed";
+      }
+      if (hasConfirmableAddress(fields.address)) {
+        return "captured";
+      }
+      return "missing";
+    case "problem_description":
+      return hasValue4(fields.problem_description) ? "captured" : "missing";
+    case "urgency":
+      return hasValue4(fields.urgency) ? "captured" : "missing";
+    case "appointment_preference":
+      if (isScheduleComplete(fields)) {
+        return fields.schedule_confirmed === true ? "confirmed" : "captured";
+      }
+      if (hasValue4(fields.appointment_preference_raw)) {
+        return "captured";
+      }
+      return "missing";
+    case "emergency_or_active_leak":
+    case "insurance_claim_started":
+    case "adjuster_contacted":
+      return booleanFieldStatus(fields[field]);
+    default:
+      return "missing";
+  }
+}
+function booleanFieldStatus(value) {
+  if (value === true || value === false) {
+    return "captured";
+  }
+  return "missing";
+}
+function isFieldResolvedEnoughToSkip(field, fields) {
+  const status = getFieldCompletionStatus(field, fields);
+  if (status === "confirmed" || status === "uncertain") {
+    return true;
+  }
+  if (status === "captured") {
+    switch (field) {
+      case "full_name":
+        return hasCompleteCallerName(fields);
+      case "callback_phone":
+        return isCallbackComplete(fields);
+      case "address":
+        return isAddressConfirmed(fields);
+      case "problem_description":
+      case "urgency":
+        return true;
+      case "appointment_preference":
+        return isScheduleComplete(fields);
+      case "emergency_or_active_leak":
+      case "insurance_claim_started":
+      case "adjuster_contacted":
+        return !isStructuredBooleanUnset(fields[field]);
+      default:
+        return false;
+    }
+  }
+  if (getFieldClarificationAttempts(fields, field) >= MAX_FIELD_CLARIFICATION_ATTEMPTS) {
+    return true;
+  }
+  return false;
+}
+function isFieldAskable(field, fields) {
+  return !isFieldResolvedEnoughToSkip(field, fields);
+}
+function mapPendingQuestionToRequiredField(pending) {
+  switch (pending) {
+    case "caller_name":
+      return "full_name";
+    case "callback_phone":
+    case "callback_confirmation":
+      return "callback_phone";
+    case "service_address":
+    case "address_confirmation":
+      return "address";
+    case "reason_for_call":
+    case "call_reason":
+      return "problem_description";
+    case "insurance_claim":
+      return "insurance_claim_started";
+    case "adjuster_contacted":
+      return "adjuster_contacted";
+    case "active_leak":
+      return "emergency_or_active_leak";
+    case "urgency":
+      return "urgency";
+    case "preferred_callback_time":
+    case "schedule_confirmation":
+      return "appointment_preference";
+    default:
+      return null;
+  }
+}
+function appendContextNote(fields, note) {
+  const trimmed = note.trim();
+  if (!trimmed) {
+    return fields;
+  }
+  const existing = fields.additional_notes?.trim();
+  if (existing?.includes(trimmed)) {
+    return fields;
+  }
+  const combined = existing ? `${existing} ${trimmed}` : trimmed;
+  return {
+    ...fields,
+    additional_notes: combined.slice(0, 500)
+  };
+}
+
+// src/orchestrator/field-normalization.ts
+var LEAK_SIGNAL_PATTERN = /\b(water is leaking|water'?s leaking|is leaking|roof leak|there is a leak|there'?s a leak|active leak|water is coming through|water is coming into|water is getting in|water is pouring|leaking into|leaking inside|ceiling is dripping|water intrusion|moisture is coming in|leaks when it rains|water coming through the ceiling|water getting inside)\b/i;
+function problemDescriptionImpliesActiveLeak(problem) {
+  if (!problem?.trim()) {
+    return false;
+  }
+  return LEAK_SIGNAL_PATTERN.test(problem);
+}
+function inferFieldsFromCapturedContext(fields) {
+  let updated = { ...fields };
+  if (isStructuredBooleanUnset(updated.emergency_or_active_leak) && problemDescriptionImpliesActiveLeak(updated.problem_description)) {
+    updated = syncLegacyStringFields({
+      ...updated,
+      emergency_or_active_leak: true,
+      emergency_acknowledged: updated.emergency_acknowledged ?? true
+    });
+    updated = markFieldCaptured(updated, "emergency_or_active_leak");
+  }
+  return updated;
+}
+
 // src/orchestrator/required-intake.ts
 var BRANCH_FIELD_ORDER = [
   "urgency",
@@ -2652,7 +3847,7 @@ var REQUIRED_FIELD_ORDER = [
   "emergency_or_active_leak",
   ...BRANCH_FIELD_ORDER
 ];
-function hasValue4(value) {
+function hasValue5(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 function isCallerNameResolved(fields) {
@@ -2684,29 +3879,38 @@ function mapRequiredFieldToShared(field) {
       return "issueDetails";
   }
 }
-function isCallbackComplete(fields) {
-  return hasValue4(fields.callback_phone) && fields.callback_phone_confirmed === true;
+function isCallbackComplete2(fields) {
+  return hasValue5(fields.callback_phone) && fields.callback_phone_confirmed === true;
 }
 function isCallbackPhoneResolved(fields) {
-  return isCallbackComplete(fields);
+  return isCallbackComplete2(fields);
 }
 function isFieldComplete(field, fields) {
+  if (isFieldResolvedEnoughToSkip(field, fields)) {
+    return true;
+  }
   switch (field) {
     case "full_name":
       return isCallerNameResolved(fields);
     case "callback_phone":
-      return isCallbackComplete(fields);
+      return isCallbackComplete2(fields);
     case "address":
       return isAddressConfirmed(fields);
     case "problem_description":
-      return hasValue4(fields.problem_description);
+      return hasValue5(fields.problem_description);
     case "urgency":
-      return hasValue4(fields.urgency);
+      return hasValue5(fields.urgency);
     case "emergency_or_active_leak":
       return !isStructuredBooleanUnset(fields.emergency_or_active_leak);
     case "insurance_claim_started":
+      if (fields.insurance_status || fields.field_resolution?.insurance_claim_started === "uncertain") {
+        return true;
+      }
       return !isStructuredBooleanUnset(fields.insurance_claim_started);
     case "adjuster_contacted":
+      if (fields.field_resolution?.adjuster_contacted === "uncertain" || fields.field_resolution?.adjuster_contacted === "captured") {
+        return true;
+      }
       if (fields.insurance_claim_started !== true) {
         return true;
       }
@@ -2718,43 +3922,49 @@ function isFieldComplete(field, fields) {
   }
 }
 function needsImmediateSafetyClarification(fields) {
-  if (!isStructuredBooleanUnset(fields.emergency_or_active_leak)) {
+  const normalized = inferFieldsFromCapturedContext(fields);
+  if (!isStructuredBooleanUnset(normalized.emergency_or_active_leak)) {
     return false;
   }
-  if (fields.emergency_acknowledged === true) {
+  if (normalized.emergency_acknowledged === true) {
     return true;
   }
-  const problem = fields.problem_description?.toLowerCase() ?? "";
-  return /\b(active leak|water (is )?((getting )?in|inside|pouring)|pouring in|flooding|emergency|collapse|structural damage|someone (is )?hurt|injured)\b/i.test(
+  const problem = normalized.problem_description?.toLowerCase() ?? "";
+  return problemDescriptionImpliesActiveLeak(problem) || /\b(active leak|water (is )?((getting )?in|inside|pouring|leaking)|pouring in|flooding|emergency|collapse|structural damage|someone (is )?hurt|injured)\b/i.test(
     problem
   );
 }
 function collectMissingFieldsInPriorityOrder(fields) {
+  const normalized = inferFieldsFromCapturedContext(fields);
   const missing = [];
-  if (needsImmediateSafetyClarification(fields)) {
+  if (needsImmediateSafetyClarification(normalized)) {
     missing.push("emergency_or_active_leak");
   }
-  if (!isCallerNameResolved(fields)) {
+  if (!isCallerNameResolved(normalized)) {
     missing.push("full_name");
   }
-  if (!hasValue4(fields.problem_description)) {
+  if (!hasValue5(normalized.problem_description)) {
     missing.push("problem_description");
   }
-  if (!isCallbackComplete(fields)) {
-    missing.push("callback_phone");
+  if (!isCallbackComplete2(normalized)) {
+    if (!hasValue5(normalized.callback_phone)) {
+      missing.push("callback_phone");
+    }
   }
-  if (!isAddressConfirmed(fields)) {
-    missing.push("address");
+  if (!isAddressConfirmed(normalized)) {
+    if (!hasConfirmableAddress(normalized.address)) {
+      missing.push("address");
+    }
   }
-  if (!isFieldComplete("emergency_or_active_leak", fields) && !missing.includes("emergency_or_active_leak")) {
+  if (!isFieldComplete("emergency_or_active_leak", normalized) && !missing.includes("emergency_or_active_leak")) {
     missing.push("emergency_or_active_leak");
   }
   for (const field of BRANCH_FIELD_ORDER) {
-    if (!isFieldComplete(field, fields)) {
+    if (!isFieldComplete(field, normalized)) {
       missing.push(field);
     }
   }
-  return missing;
+  return missing.filter((field) => isFieldAskable(field, normalized));
 }
 function getMissingRequiredFields(fields) {
   return collectMissingFieldsInPriorityOrder(fields);
@@ -2782,6 +3992,10 @@ function hasValidMissingFieldLists(fields) {
   const missing = getMissingRequiredFields(fields);
   const sharedMissing = getSharedMissingFields(fields);
   return Array.isArray(missing) && Array.isArray(sharedMissing);
+}
+function shouldPresentFullSummaryConfirmation(fields) {
+  const resolution = fields.field_resolution ?? {};
+  return Object.values(resolution).some((status) => status === "uncertain");
 }
 function canPresentSummary(fields) {
   if (!hasValidMissingFieldLists(fields)) {
@@ -2877,13 +4091,13 @@ function applyDirectAnswerToMissingField(fields, answer, callerPhone, pendingQue
       break;
     }
     case "address":
-      if (!hasValue4(updated.address) && isPlausibleServiceAddress(trimmed)) {
+      if (!hasValue5(updated.address) && isPlausibleServiceAddress(trimmed)) {
         updated.address = trimmed.slice(0, 500);
         updated.address_confirmed = false;
       }
       break;
     case "problem_description":
-      if (!hasValue4(updated.problem_description)) {
+      if (!hasValue5(updated.problem_description)) {
         const reason = normalizeCallReasonFromSpeech(trimmed);
         if (reason) {
           updated.problem_description = reason;
@@ -2891,12 +4105,12 @@ function applyDirectAnswerToMissingField(fields, answer, callerPhone, pendingQue
       }
       break;
     case "urgency":
-      if (!hasValue4(updated.urgency)) {
+      if (!hasValue5(updated.urgency)) {
         updated.urgency = trimmed.slice(0, 200);
       }
       break;
     case "appointment_preference":
-      if (!hasValue4(updated.appointment_preference_raw)) {
+      if (!hasValue5(updated.appointment_preference_raw)) {
         updated.appointment_preference_raw = trimmed.slice(0, 200);
         updated.schedule_confirmed = false;
       }
@@ -3101,13 +4315,13 @@ function explainPostIntakeBranch(fields, options) {
       reason: `first caller turn with nextRequired=${nextRequired}`
     };
   }
-  if (isCallerNameResolved(fields) && needsCallbackConfirmation(fields) && nextRequired === "callback_phone" && !needsImmediateSafetyClarification(fields)) {
+  if (isCallerNameResolved(fields) && needsCallbackConfirmation(fields) && !needsImmediateSafetyClarification(fields)) {
     return {
       action: "callback_confirmation_readback",
       reason: `needsCallbackConfirmation=true callbackPhoneConfirmed=${String(fields.callback_phone_confirmed)} nextRequired=${nextRequired}`
     };
   }
-  if (isCallerNameResolved(fields) && isCallbackPhoneResolved(fields) && needsAddressReadback(fields) && nextRequired === "address") {
+  if (isCallerNameResolved(fields) && isCallbackPhoneResolved(fields) && needsAddressReadback(fields)) {
     return {
       action: "address_confirmation_readback",
       reason: `needsAddressReadback=true addressConfirmed=${String(fields.address_confirmed)} nextRequired=${nextRequired}`
@@ -3140,6 +4354,24 @@ function logFirstAssistantAudioReceived() {
     firstAssistantAudioReceived: true
   });
 }
+function logTurnBridgeEvent(event, payload) {
+  logTurnDiagnostic(event, payload);
+}
+function logStallDetected(input) {
+  logWarn("turn_diag_stall_detected", {
+    stallCategory: input.category,
+    turnId: input.turnId,
+    callSid: input.callSid
+  });
+}
+function logRecoveryTriggered(input) {
+  logWarn("turn_diag_recovery_triggered", {
+    stallCategory: input.category,
+    recoveryAttempt: input.attempt,
+    turnId: input.turnId,
+    callSid: input.callSid
+  });
+}
 function logCallDisconnect(input) {
   if (!isTurnDiagnosticsEnabled()) {
     logInfo("call_bridge_cleanup", { reason: input.reason, callSid: input.callId });
@@ -3160,6 +4392,72 @@ function logCallDisconnect(input) {
 function getLastTurnDiagnosticSnapshot() {
   return lastTurnSnapshot;
 }
+
+// src/bridge/stall-recovery.ts
+var EXTRACTION_STALL_MS = 5e3;
+var AUDIO_COMPLETION_STALL_MS = 15e3;
+var MAX_STALL_RECOVERY_ATTEMPTS = 3;
+var STALL_RECOVERY_PROMPT = "Sorry about that\u2014I'm still here.";
+var STALL_REPEAT_PROMPT = "Thanks for your patience. Could you repeat that last answer for me?";
+function buildStallRecoveryReply(fields, callerPhone, attempt) {
+  const prefix = attempt <= 1 ? STALL_RECOVERY_PROMPT : STALL_REPEAT_PROMPT;
+  const next = getNextRequiredField(fields);
+  if (!next) {
+    return `${prefix} ${REALTIME_ANYTHING_ELSE_QUESTION}`;
+  }
+  const question = getNaturalTransitionQuestion(next, fields, callerPhone);
+  return `${prefix} ${question}`;
+}
+var StallRecoveryController = class {
+  recoveryAttempts = 0;
+  extractionTimer = null;
+  audioCompletionTimer = null;
+  watchedTurnId = null;
+  getRecoveryAttempts() {
+    return this.recoveryAttempts;
+  }
+  canAttemptRecovery() {
+    return this.recoveryAttempts < MAX_STALL_RECOVERY_ATTEMPTS;
+  }
+  recordRecoveryAttempt() {
+    this.recoveryAttempts += 1;
+    return this.recoveryAttempts;
+  }
+  resetRecoveryAttempts() {
+    this.recoveryAttempts = 0;
+  }
+  beginExtractionWatch(turnId, onStall) {
+    this.clearExtractionWatch();
+    this.watchedTurnId = turnId;
+    this.extractionTimer = setTimeout(() => {
+      if (this.watchedTurnId === turnId) {
+        onStall("transcript_extraction_stalled");
+      }
+    }, EXTRACTION_STALL_MS);
+  }
+  completeExtraction() {
+    this.clearExtractionWatch();
+  }
+  clearExtractionWatch() {
+    if (this.extractionTimer) {
+      clearTimeout(this.extractionTimer);
+      this.extractionTimer = null;
+    }
+    this.watchedTurnId = null;
+  }
+  beginAudioCompletionWatch(turnId, onStall) {
+    this.clearAudioCompletionWatch();
+    this.audioCompletionTimer = setTimeout(() => {
+      onStall("response_audio_incomplete");
+    }, AUDIO_COMPLETION_STALL_MS);
+  }
+  clearAudioCompletionWatch() {
+    if (this.audioCompletionTimer) {
+      clearTimeout(this.audioCompletionTimer);
+      this.audioCompletionTimer = null;
+    }
+  }
+};
 
 // src/bridge/playback-tracker.ts
 var PlaybackTracker = class {
@@ -3187,6 +4485,7 @@ var ResponseStateGuard = class {
   awaitingClosingMark = false;
   assistantAudioPending = false;
   listeningForOpeningReason = false;
+  openingNameListenStarted = false;
   lastTriggerReason = null;
   lastTranscriptItemId = null;
   activeTurnId = 0;
@@ -3215,6 +4514,10 @@ var ResponseStateGuard = class {
     return true;
   }
   beginOpeningNameListen() {
+    if (this.openingNameListenStarted) {
+      return;
+    }
+    this.openingNameListenStarted = true;
     this.listeningForOpeningReason = true;
     this.waitingForCaller = true;
     this.callerTurnReady = false;
@@ -3225,6 +4528,7 @@ var ResponseStateGuard = class {
   }
   completeOpeningReasonListen() {
     this.listeningForOpeningReason = false;
+    this.openingNameListenStarted = false;
     this.lastTriggerReason = null;
   }
   isListeningForOpeningReason() {
@@ -3388,6 +4692,7 @@ var ResponseStateGuard = class {
 
 // src/bridge/opening-listening.ts
 var OPENING_SILENCE_FIRST_REPROMPT_MS = 6e3;
+var OPENING_NAME_SILENCE_FIRST_REPROMPT_MS = 1e4;
 var OPENING_SILENCE_SECOND_REPROMPT_MS = 6e3;
 var OPENING_SILENCE_HANGUP_MS = 8e3;
 var OPENING_STILL_THERE_PROMPT = "Are you still there?";
@@ -3452,7 +4757,9 @@ function isMeaningfulOpeningCallerTranscript(speech, options = {}) {
 }
 var OpeningSilenceController = class {
   listeningForReason = false;
+  awaitingCallerName = false;
   meaningfulTranscriptReceived = false;
+  callerSpeechActive = false;
   silenceStage = 0;
   silenceTimer = null;
   isListeningForReason() {
@@ -3465,18 +4772,47 @@ var OpeningSilenceController = class {
     return this.silenceStage;
   }
   beginListeningForReason() {
+    this.awaitingCallerName = false;
     this.listeningForReason = true;
     this.meaningfulTranscriptReceived = false;
     this.silenceStage = 0;
     this.clearSilenceTimer();
   }
+  beginListeningForCallerName() {
+    this.awaitingCallerName = true;
+    this.listeningForReason = true;
+    this.meaningfulTranscriptReceived = false;
+    this.silenceStage = 0;
+    this.clearSilenceTimer();
+  }
+  isAwaitingCallerName() {
+    return this.awaitingCallerName;
+  }
   onMeaningfulCallerTranscript() {
     this.meaningfulTranscriptReceived = true;
     this.listeningForReason = false;
+    this.callerSpeechActive = false;
     this.clearSilenceTimer();
+  }
+  onCallerSpeechStarted() {
+    if (!this.listeningForReason) {
+      return;
+    }
+    this.callerSpeechActive = true;
+    this.clearSilenceTimer();
+  }
+  onCallerSpeechStopped() {
+    this.callerSpeechActive = false;
+  }
+  isCallerSpeechActive() {
+    return this.callerSpeechActive;
+  }
+  completeOpeningListen() {
+    this.onMeaningfulCallerTranscript();
   }
   reset() {
     this.listeningForReason = false;
+    this.awaitingCallerName = false;
     this.meaningfulTranscriptReceived = false;
     this.silenceStage = 0;
     this.clearSilenceTimer();
@@ -3486,13 +4822,18 @@ var OpeningSilenceController = class {
       return;
     }
     this.clearSilenceTimer();
-    const delayMs = this.silenceStage === 0 ? OPENING_SILENCE_FIRST_REPROMPT_MS : this.silenceStage === 1 ? OPENING_SILENCE_SECOND_REPROMPT_MS : OPENING_SILENCE_HANGUP_MS;
+    const firstRepromptMs = this.awaitingCallerName ? OPENING_NAME_SILENCE_FIRST_REPROMPT_MS : OPENING_SILENCE_FIRST_REPROMPT_MS;
+    const delayMs = this.silenceStage === 0 ? firstRepromptMs : this.silenceStage === 1 ? OPENING_SILENCE_SECOND_REPROMPT_MS : OPENING_SILENCE_HANGUP_MS;
     this.silenceTimer = setTimeout(() => {
       this.handleSilenceTimeout(onPrompt);
     }, delayMs);
   }
   handleSilenceTimeout(onPrompt) {
     if (!this.isListeningForReason()) {
+      return;
+    }
+    if (this.callerSpeechActive) {
+      this.scheduleSilenceCheck(onPrompt);
       return;
     }
     if (this.silenceStage === 0) {
@@ -3853,219 +5194,6 @@ var OpenAiRealtimeSession = class {
   }
 };
 
-// ../../lib/call-summary.ts
-var FILLER_WORDS = /\b(uh+|um+|uh huh|you know|i mean|kind of|sort of|like|basically|literally|anyway)\b/gi;
-var OPENING_FILLER = /^(hey|hi|hello|yeah|yep|so|well|okay|ok|thanks|thank you)[,.]?\s+/i;
-var CALL_PREFIX = /^(i'?m calling because|calling because|i wanted to (call|see|ask)|i need to (report|tell you about|let you know))\s+/i;
-var UNCERTAIN_PHRASES = /\b(i think|hopefully|maybe|probably|it sounds like|sounds like|i guess|i believe|i feel like)\b/gi;
-function hasText(value) {
-  return typeof value === "string" && value.trim().length > 0;
-}
-function isYes(value) {
-  return hasText(value) && /^(yes|yeah|yep|yup|true|correct|sure)$/i.test(value.trim());
-}
-function isNo(value) {
-  return hasText(value) && /^(no|nope|nah|false|none|not|negative)$/i.test(value.trim());
-}
-function capitalize(text) {
-  if (!text) {
-    return text;
-  }
-  return text.charAt(0).toUpperCase() + text.slice(1);
-}
-function stripConversationalFiller(text) {
-  let cleaned = text.trim();
-  for (let pass = 0; pass < 3; pass += 1) {
-    cleaned = cleaned.replace(OPENING_FILLER, "").replace(CALL_PREFIX, "").replace(UNCERTAIN_PHRASES, "").replace(FILLER_WORDS, " ").replace(/\s{2,}/g, " ").trim();
-  }
-  return cleaned.replace(/[,.]$/, "").trim();
-}
-function extractDamageTiming(text) {
-  const lower = text.toLowerCase();
-  if (/\byesterday\b/.test(lower)) {
-    return "yesterday";
-  }
-  if (/\blast night\b/.test(lower)) {
-    return "last night";
-  }
-  if (/\bthis morning\b/.test(lower)) {
-    return "this morning";
-  }
-  if (/\btoday\b/.test(lower)) {
-    return "today";
-  }
-  if (/\blast week\b/.test(lower)) {
-    return "last week";
-  }
-  if (/\brecent(ly)?\b/.test(lower)) {
-    return "recently";
-  }
-  return null;
-}
-function extractLeakLocation(text) {
-  const match = text.match(
-    /\b(?:into|in|affecting)\s+(?:the\s+)?([a-z]+(?:\s+[a-z]+)?)\b/i
-  );
-  if (match?.[1] && !/home|house|property|inside/.test(match[1])) {
-    return match[1].trim();
-  }
-  const roomMatch = text.match(
-    /\b(kitchen|bathroom|bedroom|living room|garage|basement|attic|dining room)\b/i
-  );
-  return roomMatch?.[1]?.trim() ?? null;
-}
-function professionalizeFreeText(text) {
-  const cleaned = stripConversationalFiller(text);
-  if (!cleaned) {
-    return "";
-  }
-  return cleaned.replace(/\bmessed up\b/gi, "damaged").replace(/\bgot hit really bad\b/gi, "sustained significant damage").replace(/\bhit really bad\b/gi, "sustained significant damage").replace(/\bstarted leaking\b/gi, "water intrusion began").replace(/\bleaking\b/gi, "water intrusion").replace(/\bfiled an insurance claim\b/gi, "insurance claim started").replace(/\btalked to insurance\b/gi, "insurance claim initiated").replace(/\bspoken to insurance\b/gi, "insurance claim initiated").replace(/\bshingles everywhere\b/gi, "loose shingles reported").replace(/\bshingles all over\b/gi, "loose shingles reported").replace(/\bneed someone to come\b/gi, "inspection requested").replace(/\bjust need\b/gi, "requested").trim();
-}
-function summarizeDamageReason(fields) {
-  const problem = hasText(fields.problem_description) ? stripConversationalFiller(fields.problem_description) : "";
-  const projectType = fields.project_type?.trim().toLowerCase() ?? "";
-  const lower = problem.toLowerCase();
-  const timing = extractDamageTiming(problem);
-  if (/shingles everywhere|shingles all over|missing shingles|loose shingles/i.test(lower)) {
-    return /storm|hail|wind|tornado|hurricane/i.test(lower) || fields.storm_damage === "yes" ? "Loose shingles reported following the storm" : "Loose shingles reported on the roof system";
-  }
-  if (/hail/.test(lower) || projectType === "storm damage") {
-    return timing ? `Suspected hail damage that occurred ${timing}` : "Suspected hail damage";
-  }
-  if (/wind/.test(lower) || projectType === "wind damage") {
-    return timing ? `Suspected wind damage that occurred ${timing}` : "Suspected wind damage";
-  }
-  if (/tree|through the roof|collapse|caved/.test(lower)) {
-    return "Structural roof damage requiring urgent attention";
-  }
-  if (/tornado|hurricane|storm/.test(lower) || fields.storm_damage === "yes") {
-    return timing ? `Storm-related roof damage reported ${timing}` : "Storm-related roof damage";
-  }
-  if (projectType === "replacement") {
-    return "Roof replacement inquiry";
-  }
-  if (projectType === "repair") {
-    return "Roof repair request";
-  }
-  if (projectType === "inspection") {
-    return "Roof inspection request";
-  }
-  if (problem) {
-    const professional = professionalizeFreeText(problem);
-    if (professional) {
-      return capitalize(professional);
-    }
-  }
-  if (projectType) {
-    return capitalize(`${projectType} inquiry`);
-  }
-  return null;
-}
-function summarizeLeak(fields) {
-  const problem = fields.problem_description ?? "";
-  const notes = fields.additional_notes ?? "";
-  const combined = `${problem} ${notes}`.toLowerCase();
-  if (!isYes(fields.active_leak) && !/leak|water|pouring|drip/.test(combined)) {
-    if (isNo(fields.active_leak)) {
-      return "No active interior water intrusion reported";
-    }
-    return null;
-  }
-  const location = extractLeakLocation(`${problem} ${notes}`);
-  if (location) {
-    return `Interior water intrusion affecting the ${location}`;
-  }
-  return "Active interior water intrusion reported";
-}
-function summarizeInsurance(fields) {
-  if (isYes(fields.insurance_claim)) {
-    return "Insurance claim has already been initiated";
-  }
-  if (isNo(fields.insurance_claim)) {
-    return "Insurance claim has not been initiated";
-  }
-  return null;
-}
-function summarizeAppointment(fields) {
-  const raw = fields.appointment_preference;
-  if (!hasText(raw) || raw.toLowerCase() === "none") {
-    return null;
-  }
-  let cleaned = stripConversationalFiller(raw).replace(/^i just need someone to come\b/i, "").replace(/^i need someone (out|to come)\b/i, "").replace(/^someone to come\b/i, "").replace(/^please come\b/i, "").trim();
-  if (!cleaned) {
-    cleaned = raw.trim();
-  }
-  if (/^(tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i.test(cleaned)) {
-    return `Requested inspection ${cleaned.toLowerCase()}`;
-  }
-  return `Requested inspection: ${cleaned}`;
-}
-function summarizeUrgency(fields) {
-  const urgency = fields.urgency?.trim().toLowerCase();
-  if (!urgency) {
-    return null;
-  }
-  if (urgency === "emergency") {
-    return "Marked as urgent priority";
-  }
-  if (urgency === "flexible") {
-    return "Flexible scheduling noted";
-  }
-  return "Standard scheduling requested";
-}
-function summarizeAdditionalNotes(fields) {
-  const notes = fields.additional_notes;
-  if (!hasText(notes) || notes.toLowerCase() === "none") {
-    return null;
-  }
-  const professional = professionalizeFreeText(notes);
-  return professional ? capitalize(professional) : null;
-}
-function buildProfessionalSummaryContent(fields) {
-  return {
-    reason: summarizeDamageReason(fields),
-    contactName: hasText(fields.full_name) ? fields.full_name.trim() : null,
-    location: hasText(fields.address) ? fields.address.trim() : null,
-    leak: summarizeLeak(fields),
-    insurance: summarizeInsurance(fields),
-    urgency: summarizeUrgency(fields),
-    appointment: summarizeAppointment(fields),
-    additionalNotes: summarizeAdditionalNotes(fields)
-  };
-}
-function buildCrmCallSummary(fields) {
-  const content = buildProfessionalSummaryContent(fields);
-  const lines = [];
-  if (content.reason) {
-    lines.push(`Reason: ${content.reason}`);
-  }
-  if (content.contactName) {
-    lines.push(`Contact: ${content.contactName}`);
-  }
-  if (hasText(fields.callback_phone)) {
-    lines.push(`Phone: ${fields.callback_phone.trim()}`);
-  }
-  if (content.location) {
-    lines.push(`Property: ${content.location}`);
-  }
-  if (content.leak) {
-    lines.push(`Water intrusion: ${content.leak}`);
-  }
-  if (content.insurance) {
-    lines.push(`Insurance: ${content.insurance}`);
-  }
-  if (content.urgency) {
-    lines.push(`Priority: ${content.urgency}`);
-  }
-  if (content.appointment) {
-    lines.push(`Scheduling: ${content.appointment}`);
-  }
-  if (content.additionalNotes) {
-    lines.push(`Notes: ${content.additionalNotes}`);
-  }
-  return lines.join("\n");
-}
-
 // ../../lib/activity.ts
 async function createActivity(supabase, {
   companyId,
@@ -4165,14 +5293,14 @@ function createServiceClient() {
 
 // ../../lib/employee-lead-notification-content.ts
 var EMPLOYEE_PHONE_AI_LEAD_KIND = "employee_phone_ai_lead";
-function hasText2(value) {
+function hasText3(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 function displayValue(value, fallback = "Not provided") {
-  return hasText2(value) ? value.trim() : fallback;
+  return hasText3(value) ? value.trim() : fallback;
 }
 function isAffirmative(value) {
-  return hasText2(value) && /^(yes|yeah|yep|yup|true|correct|started|filed|active)/i.test(value.trim());
+  return hasText3(value) && /^(yes|yeah|yep|yup|true|correct|started|filed|active)/i.test(value.trim());
 }
 function resolveEmployeeNotificationStyle(priorityLabel) {
   return priorityLabel === "Emergency" || priorityLabel === "High" ? "urgent" : "normal";
@@ -4255,7 +5383,7 @@ async function resolveEmployeeNotificationRecipients(company) {
   const settings = supabase ? await getBusinessSettingsByCompanyId(supabase, company.id) : null;
   const smsEnabled = settings?.sms_follow_up_enabled ?? false;
   const emailEnabled = settings?.email_follow_up_enabled ?? false;
-  const smsRecipient = hasText2(company.business_phone) ? company.business_phone.trim() : null;
+  const smsRecipient = hasText3(company.business_phone) ? company.business_phone.trim() : null;
   const emailRecipient = settings?.notification_email?.trim() || company.business_email?.trim() || null;
   return {
     smsRecipient,
@@ -4754,7 +5882,7 @@ function isValidIntakePhone(phone) {
 }
 
 // ../../lib/customer-confirmation-content.ts
-function hasText3(value) {
+function hasText4(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 function formatPhoneForTwilioSms(phone) {
@@ -4775,7 +5903,7 @@ function resolveCustomerPhone(lead, fields, callerPhone) {
     lead.phone,
     fields.callback_phone,
     callerPhone
-  ].filter(hasText3);
+  ].filter(hasText4);
   for (const candidate of candidates) {
     if (!isValidIntakePhone(candidate)) {
       continue;
@@ -4807,7 +5935,7 @@ function buildCustomerConfirmationSms(input) {
     "",
     "If this is an emergency involving active water intrusion or immediate safety concerns, please call us immediately."
   ];
-  if (hasText3(input.fields.appointment_preference)) {
+  if (hasText4(input.fields.appointment_preference)) {
     lines.push(
       "",
       "Requested appointment:",
@@ -5123,11 +6251,11 @@ var RETRY_DELAYS_MS3 = [0, 500, 1500];
 function sleep3(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
-function hasText4(value) {
+function hasText5(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 function isAffirmative2(value) {
-  return hasText4(value) && /^(yes|yeah|yep|yup|true|correct|started|filed|active)/i.test(value.trim());
+  return hasText5(value) && /^(yes|yeah|yep|yup|true|correct|started|filed|active)/i.test(value.trim());
 }
 function shouldCreateCrmLeadFromSession(session) {
   if (session.status !== "completed") {
@@ -5153,7 +6281,7 @@ function derivePhoneLeadPriorityLabel(fields) {
   return "Low";
 }
 function mapCallProjectType(value) {
-  if (!hasText4(value)) {
+  if (!hasText5(value)) {
     return null;
   }
   const normalized = value.trim().toLowerCase();
@@ -5175,7 +6303,7 @@ function mapCallProjectType(value) {
   return "other";
 }
 function parseCallInsuranceClaim(value) {
-  if (!hasText4(value)) {
+  if (!hasText5(value)) {
     return false;
   }
   return isAffirmative2(value);
@@ -5184,7 +6312,7 @@ function buildPhoneLeadDescription(session, fields) {
   const summary = buildCrmCallSummary(fields);
   const priorityLabel = derivePhoneLeadPriorityLabel(fields);
   const lines = [summary];
-  if (hasText4(fields.appointment_preference)) {
+  if (hasText5(fields.appointment_preference)) {
     lines.push(`Requested appointment: ${fields.appointment_preference.trim()}`);
   }
   lines.push(
@@ -5335,7 +6463,7 @@ async function createLeadViaDirectInsert(session) {
       }
     }
   ];
-  if (hasText4(fields.appointment_preference)) {
+  if (hasText5(fields.appointment_preference)) {
     activityRows.push({
       company_id: session.company_id,
       lead_id: lead.id,
@@ -5467,143 +6595,6 @@ async function createCrmLeadFromCallSession(session) {
     error: lastError,
     attempts: startingAttempts + MAX_CRM_LEAD_ATTEMPTS
   };
-}
-
-// ../../lib/twilio/voice-phrases.ts
-var OPENING_QUESTION = "What's going on with the roof?";
-var OPENING_GREETING = "Hi, thanks for calling Beau's Roofing. I'm the AI assistant here to help. " + OPENING_QUESTION;
-var OPENING_RETRY_PROMPT = `I didn't catch that. ${OPENING_QUESTION}`;
-function isExplicitCallerHangupDuringIntake(speech) {
-  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
-  return /^(goodbye|good bye|bye|bye bye)\b/.test(normalized);
-}
-function isConfirmationPhrase(speech) {
-  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
-  return /^(yes|yeah|yep|yup|correct|right|exactly|sure|absolutely|sounds good|sound good|that'?s right|thats right|that is correct|all good|perfect|ok(?:ay)?)\b/.test(
-    normalized
-  ) || normalized === "uh huh";
-}
-function isCorrectionPhrase(speech) {
-  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
-  return /^(no|nope|nah|not quite|incorrect|wrong|that'?s wrong|thats wrong|not right|actually)\b/.test(
-    normalized
-  );
-}
-
-// ../../lib/call-intelligence.ts
-var STAGE_FIELD_KEYS = {
-  problem: "problem_description",
-  full_name: "full_name",
-  callback_phone: "callback_phone",
-  address: "address",
-  project_type: "project_type",
-  active_leak: "active_leak",
-  storm_damage: "storm_damage",
-  insurance_claim: "insurance_claim",
-  urgency: "urgency",
-  appointment: "appointment_preference",
-  additional_notes: "additional_notes"
-};
-var INTERRUPTION_PREFIX_PATTERN = /^(actually|wait|hold on|hang on|one second|one sec|sorry)[,.]?\s+/i;
-var CORRECTION_PREFIX_PATTERN = /^(no|actually|wait|not|correction)[,.]?\s+/i;
-var EMERGENCY_PATTERN = /\b(tree through|through the roof|roof collapse|collapsed|caved in|water pouring|pouring in|ceiling leaking badly|electrical hazard|spark|storm happening now|active storm|emergency|urgent|asap)\b/i;
-function stripInterruptionPrefix(speech) {
-  return speech.replace(INTERRUPTION_PREFIX_PATTERN, "").trim();
-}
-function hasCorrectionIntent(speech) {
-  const normalized = speech.trim().toLowerCase();
-  return CORRECTION_PREFIX_PATTERN.test(normalized) || /\b(not|actually|instead|rather|meant|correction|wrong)\b/.test(normalized);
-}
-function detectEmergency(speech) {
-  return EMERGENCY_PATTERN.test(speech.toLowerCase()) || /water.*(inside|coming in|pouring)|ceiling.*leak/i.test(speech.toLowerCase());
-}
-function applyTargetedCorrection(fields, speech, currentStage, callerPhone) {
-  const cleaned = stripInterruptionPrefix(speech).replace(CORRECTION_PREFIX_PATTERN, "").trim();
-  const text = cleaned || speech.trim();
-  const lower = text.toLowerCase();
-  const updated = { ...fields };
-  const nameMatch = text.match(
-    /(?:name is|my name is|i'?m|this is|it's|it is|call me)\s+([A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,3})/i
-  );
-  if (nameMatch?.[1]) {
-    updated.full_name = nameMatch[1].trim();
-    return { fields: updated, updated: true, field: "full_name" };
-  }
-  const firstNameMatch = text.match(
-    /\b(?:my )?first name is\s+([A-Za-z][A-Za-z'-]+)/i
-  );
-  if (firstNameMatch?.[1]) {
-    const lastName = updated.full_name?.trim().split(/\s+/).slice(1).join(" ");
-    updated.full_name = lastName ? `${firstNameMatch[1].trim()} ${lastName}` : firstNameMatch[1].trim();
-    return { fields: updated, updated: true, field: "full_name" };
-  }
-  const lastNameMatch = text.match(
-    /\b(?:my )?last name is\s+([A-Za-z][A-Za-z'-]+)/i
-  );
-  if (lastNameMatch?.[1]) {
-    const firstName = updated.full_name?.trim().split(/\s+/)[0] ?? "";
-    updated.full_name = firstName ? `${firstName} ${lastNameMatch[1].trim()}` : lastNameMatch[1].trim();
-    return { fields: updated, updated: true, field: "full_name" };
-  }
-  if (/\b(last name|surname)\b.*\b(wrong|incorrect)\b/i.test(lower)) {
-    updated.name_pending_confirmation = void 0;
-    updated.full_name = void 0;
-    updated.name_awaiting_repeat = true;
-    return { fields: updated, updated: true, field: "full_name" };
-  }
-  const addressMatch = text.match(
-    /\b(?:address is|at|to)\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80})/i
-  ) ?? text.match(
-    /(?:change|update|correct|fix).*?(?:address|location|property).*?(?:to|is)\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80})/i
-  );
-  if (addressMatch?.[1]) {
-    updated.address = addressMatch[1].trim();
-    return { fields: updated, updated: true, field: "address" };
-  }
-  const phone = text.match(
-    /(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/
-  );
-  if (phone) {
-    const digits = phone[0].replace(/\D/g, "").slice(-10);
-    updated.callback_phone = digits;
-    return { fields: updated, updated: true, field: "callback_phone" };
-  }
-  if (/wind damage|\bwind\b/i.test(lower)) {
-    updated.project_type = "wind damage";
-    updated.storm_damage = "yes";
-    if (!updated.problem_description?.toLowerCase().includes("wind")) {
-      updated.problem_description = text;
-    }
-    return { fields: updated, updated: true, field: "project_type" };
-  }
-  if (/hail/i.test(lower)) {
-    updated.project_type = "storm damage";
-    updated.storm_damage = "yes";
-    return { fields: updated, updated: true, field: "project_type" };
-  }
-  if (/appointment|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d\s*(am|pm)/i.test(
-    text
-  )) {
-    updated.appointment_preference = text;
-    return { fields: updated, updated: true, field: "appointment_preference" };
-  }
-  if (/^(yes|yeah|yep|no|nope|nah)\b/i.test(lower) && fields.insurance_claim) {
-    updated.insurance_claim = /^(yes|yeah|yep)\b/i.test(lower) ? "yes" : "no";
-    return { fields: updated, updated: true, field: "insurance_claim" };
-  }
-  if (hasCorrectionIntent(speech) && text.length > 0) {
-    if (currentStage === "wrap_up" || fields.summary_delivered) {
-      return { fields, updated: false };
-    }
-    const fieldKey = STAGE_FIELD_KEYS[currentStage];
-    updated[fieldKey] = text;
-    return { fields: updated, updated: true, field: fieldKey };
-  }
-  if (callerPhone && /same number|this number/i.test(lower)) {
-    updated.callback_phone = callerPhone;
-    return { fields: updated, updated: true, field: "callback_phone" };
-  }
-  return { fields, updated: false };
 }
 
 // ../../lib/twilio/company.ts
@@ -5846,260 +6837,74 @@ async function completeCallSession(callSid, status = "completed") {
   return session;
 }
 
-// ../../lib/call-name-capture.ts
-var MAX_NAME_CONFIRMATION_ATTEMPTS = 3;
-var NAME_PREFIX_PATTERN = /^(?:my name is|name is|this is|i am|i'm|it's|it is|call me)\s+/i;
-var CORRECTION_PREFIX_PATTERN2 = /^(no|actually|wait|not|correction)[,.]?\s+/i;
-function hasText5(value) {
-  return typeof value === "string" && value.trim().length > 0;
+// src/orchestrator/contextual-acknowledgment.ts
+function formatAckList(items) {
+  if (items.length === 1) {
+    return items[0];
+  }
+  if (items.length === 2) {
+    return `${items[0]} and ${items[1]}`;
+  }
+  return `${items.slice(0, -1).join(", ")}, and ${items.at(-1)}`;
 }
-function isAwaitingNameConfirmation(fields) {
-  return hasText5(fields.name_pending_confirmation) && !hasText5(fields.full_name);
-}
-function normalizePersonName(name) {
-  return name.trim().split(/\s+/).map(
-    (part) => part.split("-").map((segment) => {
-      if (!segment) {
-        return segment;
-      }
-      return segment.charAt(0).toUpperCase() + segment.slice(1).toLowerCase();
-    }).join("-")
-  ).join(" ");
-}
-function parseNameFromSpeech(text) {
-  const cleaned = stripInterruptionPrefix(text.trim()).replace(CORRECTION_PREFIX_PATTERN2, "").trim();
-  if (!cleaned) {
+function describeDamage(fields) {
+  const damage = fields.problem_description?.trim();
+  if (!damage) {
     return null;
   }
-  const nonNameLeadIn = /^(?:i'?m|i am)\s+(?:calling(?:\s+(?:about|for|regarding))?|call(?:ing)?\s+(?:about|for|regarding)|having|needing|looking(?:\s+for)?|wondering(?:\s+(?:about|if))?|trying(?:\s+to)?|reporting|asking(?:\s+about)?)\b/i;
-  if (nonNameLeadIn.test(cleaned)) {
+  if (/\bhail\b/i.test(damage)) {
+    return "the hail damage";
+  }
+  if (/\bleak|water\b/i.test(damage)) {
+    if (/kitchen/i.test(damage)) {
+      return "the kitchen leak";
+    }
+    if (/bedroom/i.test(damage)) {
+      return "the bedroom leak";
+    }
+    return "the leak";
+  }
+  if (/\bstorm\b/i.test(damage)) {
+    return "the storm damage";
+  }
+  return "the roof issue";
+}
+function buildContextualMultiFieldAcknowledgment(before, after, speech) {
+  const trimmed = speech.trim();
+  if (trimmed.length < 12) {
     return null;
   }
-  const positivePatterns = [
-    /\b(?:my name is|name is)\s+([A-Za-z][A-Za-z'-]+(?:\s+[A-Za-z][A-Za-z'-]+){0,3})(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i,
-    /\bthis is\s+([A-Za-z][A-Za-z'-]+(?:\s+[A-Za-z][A-Za-z'-]+){0,2})(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i,
-    /\b(?:it'?s|it is)\s+([A-Za-z][A-Za-z'-]+(?:\s+[A-Za-z][A-Za-z'-]+){0,2})(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i,
-    /\b(?:i am|i'm)\s+([A-Za-z][A-Za-z'-]+(?:\s+[A-Za-z][A-Za-z'-]+){0,2})(?=\s*,\s*and\b)/i,
-    /\b(?:i am|i'm)\s+([A-Za-z][A-Za-z'-]+(?:\s+[A-Za-z][A-Za-z'-]+)?)(?=\s*,)/i,
-    /\b(?:i am|i'm)\s+([A-Za-z][A-Za-z'-]+)\s+and\b/i,
-    /\b(?:call me)\s+([A-Za-z][A-Za-z'-]+(?:\s+[A-Za-z][A-Za-z'-]+){0,2})(?=\s+(?:and|with|from|at|who|calling|about|for)\b|[,.]|$)/i
-  ];
-  for (const pattern of positivePatterns) {
-    const match = cleaned.match(pattern);
-    const candidate = match?.[1]?.trim();
-    if (!candidate) {
-      continue;
-    }
-    const refined = refineParsedNameCandidate(candidate);
-    if (refined) {
-      return normalizePersonName(refined);
+  if (/^(yes|no|yeah|nope|yep|yup|correct|right)\.?$/i.test(trimmed)) {
+    return null;
+  }
+  const notes = [];
+  if (!before.problem_description?.trim() && after.problem_description?.trim()) {
+    const damageNote = describeDamage(after);
+    if (damageNote) {
+      notes.push(damageNote);
     }
   }
-  const withoutIntro = cleaned.replace(NAME_PREFIX_PATTERN, "").replace(/[.!?]+$/g, "").trim();
-  const directMatch = withoutIntro.match(
-    /^([A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,3})$/
-  );
-  if (directMatch?.[1] && isPlausibleParsedName(directMatch[1])) {
-    return normalizePersonName(directMatch[1]);
+  if (before.emergency_or_active_leak !== true && after.emergency_or_active_leak === true) {
+    notes.push("the active leak");
   }
-  return null;
-}
-function refineParsedNameCandidate(candidate) {
-  const words = candidate.trim().split(/\s+/).filter(Boolean);
-  for (let length = words.length; length >= 1; length -= 1) {
-    const prefix = words.slice(0, length).join(" ");
-    if (isPlausibleParsedName(prefix)) {
-      return prefix;
-    }
+  if (before.insurance_claim_started === void 0 && after.insurance_claim_started === false) {
+    notes.push("that insurance hasn't been contacted");
+  } else if (before.insurance_claim_started === void 0 && after.insurance_claim_started === true) {
+    notes.push("that insurance is involved");
   }
-  return null;
-}
-function isPlausibleParsedName(name) {
-  const trimmed = name.trim();
-  if (trimmed.length < 2 || trimmed.length > 60 || /\d/.test(trimmed)) {
-    return false;
+  if (!before.address?.trim() && after.address?.trim()) {
+    notes.push("the service address");
   }
-  const invalidExact = /^(calling|call|calling about|calling for|having|needing|looking|wondering|trying|reporting|asking|roof|roofing|damage|hail|storm|leak|shingles|insurance|claim|pictures|photos|appointment|today|tomorrow|yes|no|yeah|nope|yep|nah|correct|right)$/i;
-  const words = trimmed.split(/\s+/);
-  if (words.length === 0 || words.length > 4) {
-    return false;
+  if (!before.callback_phone?.trim() && after.callback_phone?.trim()) {
+    notes.push("your callback number");
   }
-  if (words.some((word) => invalidExact.test(word.toLowerCase()))) {
-    return false;
+  if (!before.appointment_preference_raw?.trim() && !before.appointment_preference?.trim() && (after.appointment_preference_raw?.trim() || after.appointment_preference?.trim())) {
+    notes.push("your availability");
   }
-  if (/\b(hail|storm|roof|damage|leak|insurance|claim|appointment|pictures?|photos?)\b/i.test(
-    trimmed
-  )) {
-    return false;
+  if (notes.length < 2) {
+    return null;
   }
-  return /^[A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,3}$/.test(trimmed);
-}
-function buildNameConfirmationPrompt(name) {
-  return `I heard ${name}. Is that correct?`;
-}
-function buildNameRepeatPrompt() {
-  return "Sorry about that. Please say your first and last name again.";
-}
-function clearNameCaptureState(fields) {
-  return {
-    ...fields,
-    name_pending_confirmation: void 0,
-    name_raw_speech: void 0,
-    name_awaiting_repeat: void 0,
-    name_confirmation_attempts: void 0
-  };
-}
-function acceptPendingName(fields) {
-  const pending = fields.name_pending_confirmation?.trim();
-  if (!pending) {
-    return fields;
-  }
-  return clearNameCaptureState({
-    ...fields,
-    full_name: pending
-  });
-}
-function beginNameConfirmation(fields, rawSpeech, parsedName) {
-  return {
-    ...fields,
-    name_pending_confirmation: parsedName,
-    name_raw_speech: rawSpeech.trim(),
-    name_awaiting_repeat: false
-  };
-}
-function incrementNameConfirmationAttempts(fields) {
-  return {
-    ...fields,
-    name_confirmation_attempts: (fields.name_confirmation_attempts ?? 0) + 1
-  };
-}
-function isNameOnlyCorrection(speech) {
-  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
-  return /\b(last name|first name|surname|spelling)\b/.test(normalized) || /\bwith an? [a-z]\b/i.test(speech);
-}
-function processNameCaptureTurn(input) {
-  const speech = input.speech.trim();
-  let fields = { ...input.fields };
-  let nameCorrected = false;
-  if (isAwaitingNameConfirmation(fields)) {
-    const pendingName = fields.name_pending_confirmation?.trim() ?? "";
-    if (isConfirmationPhrase(speech) && !hasCorrectionIntent(speech) && !isCorrectionPhrase(speech)) {
-      return {
-        status: "accepted",
-        fields: acceptPendingName(fields),
-        replyText: null,
-        nameConfirmationRequested: false,
-        nameCorrected: false
-      };
-    }
-    const correction = applyTargetedCorrection(
-      fields,
-      speech,
-      "full_name"
-    );
-    if (correction.updated && correction.field === "full_name") {
-      const correctedName = normalizePersonName(
-        correction.fields.full_name ?? pendingName
-      );
-      return {
-        status: "confirm",
-        fields: beginNameConfirmation(fields, speech, correctedName),
-        replyText: buildNameConfirmationPrompt(correctedName),
-        nameConfirmationRequested: true,
-        nameCorrected: true
-      };
-    }
-    const parsedCorrection = parseNameFromSpeech(speech);
-    if (parsedCorrection && (hasCorrectionIntent(speech) || isCorrectionPhrase(speech))) {
-      nameCorrected = true;
-      return {
-        status: "confirm",
-        fields: beginNameConfirmation(fields, speech, parsedCorrection),
-        replyText: buildNameConfirmationPrompt(parsedCorrection),
-        nameConfirmationRequested: true,
-        nameCorrected: true
-      };
-    }
-    if (isCorrectionPhrase(speech) || hasCorrectionIntent(speech) || isNameOnlyCorrection(speech)) {
-      fields = incrementNameConfirmationAttempts({
-        ...clearNameCaptureState(fields),
-        name_awaiting_repeat: true
-      });
-      if ((fields.name_confirmation_attempts ?? 0) >= MAX_NAME_CONFIRMATION_ATTEMPTS) {
-        return {
-          status: "accepted",
-          fields: acceptPendingName({
-            ...fields,
-            name_pending_confirmation: pendingName
-          }),
-          replyText: null,
-          nameConfirmationRequested: false,
-          nameCorrected: false
-        };
-      }
-      return {
-        status: "repeat",
-        fields,
-        replyText: buildNameRepeatPrompt(),
-        nameConfirmationRequested: false,
-        nameCorrected: true
-      };
-    }
-    if (parsedCorrection && parsedCorrection.toLowerCase() !== pendingName.toLowerCase()) {
-      return {
-        status: "confirm",
-        fields: beginNameConfirmation(fields, speech, parsedCorrection),
-        replyText: buildNameConfirmationPrompt(parsedCorrection),
-        nameConfirmationRequested: true,
-        nameCorrected: true
-      };
-    }
-    return {
-      status: "confirm",
-      fields,
-      replyText: buildNameConfirmationPrompt(pendingName),
-      nameConfirmationRequested: true,
-      nameCorrected: false
-    };
-  }
-  const parsedName = parseNameFromSpeech(speech);
-  if (!parsedName) {
-    fields = incrementNameConfirmationAttempts({
-      ...fields,
-      name_awaiting_repeat: true
-    });
-    if ((fields.name_confirmation_attempts ?? 0) >= MAX_NAME_CONFIRMATION_ATTEMPTS) {
-      const fallbackName = normalizePersonName(speech);
-      return {
-        status: "accepted",
-        fields: clearNameCaptureState({
-          ...fields,
-          full_name: fallbackName
-        }),
-        replyText: null,
-        nameConfirmationRequested: false,
-        nameCorrected: false
-      };
-    }
-    return {
-      status: "repeat",
-      fields: clearNameCaptureState({
-        ...fields,
-        name_awaiting_repeat: true
-      }),
-      replyText: buildNameRepeatPrompt(),
-      nameConfirmationRequested: false,
-      nameCorrected: false
-    };
-  }
-  fields = beginNameConfirmation(fields, speech, parsedName);
-  return {
-    status: "confirm",
-    fields,
-    replyText: buildNameConfirmationPrompt(parsedName),
-    nameConfirmationRequested: true,
-    nameCorrected: false
-  };
+  return `Thanks. I've noted ${formatAckList(notes.slice(0, 3))}.`;
 }
 
 // src/orchestrator/safe-field-merge.ts
@@ -6118,7 +6923,7 @@ function preserveConfirmedFieldState(before, after) {
 }
 
 // src/orchestrator/multi-field-extraction.ts
-function hasValue5(value) {
+function hasValue6(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 function isShortPendingStyleAnswer(speech) {
@@ -6134,15 +6939,43 @@ function shouldExtractCallbackPhone(pendingQuestion, speech) {
   return !isShortPendingStyleAnswer(speech);
 }
 function extractInsuranceClaim(speech, pending) {
+  const longAnswer = parseInsuranceLongAnswer(speech);
+  if (longAnswer?.resolved && longAnswer.insurance_claim_started !== void 0 && longAnswer.insurance_claim_started !== null) {
+    return longAnswer.insurance_claim_started;
+  }
   if (allowsBooleanDirectAnswer(pending, "insurance_claim")) {
+    const parsed = parseInsuranceLongAnswer(speech);
+    if (parsed?.resolved) {
+      return parsed.insurance_claim_started ?? null;
+    }
     return parseExplicitBoolean(speech);
   }
-  if (/\b(insurance|claim)\b/i.test(speech)) {
-    return parseExplicitBoolean(speech);
+  if (/\b(insurance|claim|adjuster|out of pocket|estimate)\b/i.test(speech)) {
+    const parsed = parseInsuranceLongAnswer(speech);
+    if (parsed?.resolved && parsed.insurance_claim_started !== void 0 && parsed.insurance_claim_started !== null) {
+      return parsed.insurance_claim_started;
+    }
+    if (speech.trim().split(/\s+/).length <= 8) {
+      return parseExplicitBoolean(speech);
+    }
   }
   return null;
 }
 function extractAdjusterContact(speech, pending) {
+  const longAnswer = parseInsuranceLongAnswer(speech);
+  if (longAnswer?.resolved && longAnswer.adjuster_contacted !== void 0 && longAnswer.adjuster_contacted !== null) {
+    return longAnswer.adjuster_contacted;
+  }
+  if (/\b(insurance|adjuster|inspection)\b.*\b(haven't|hasn't|have not|has not|not yet|no one|nobody)\b.*\b(come out|been out|visited|shown up|contacted|called)\b/i.test(
+    speech
+  )) {
+    return false;
+  }
+  if (/\b(haven't|hasn't|have not|has not|not yet)\b.*\b(adjuster|insurance)\b.*\b(come out|been out|visited|contacted|called)\b/i.test(
+    speech
+  )) {
+    return false;
+  }
   if (allowsBooleanDirectAnswer(pending, "adjuster_contacted")) {
     return parseExplicitBoolean(speech);
   }
@@ -6151,25 +6984,181 @@ function extractAdjusterContact(speech, pending) {
   }
   return null;
 }
+function parseInsuranceLongAnswer(speech) {
+  const trimmed = speech.trim();
+  const lower = trimmed.toLowerCase();
+  if (!trimmed || !/\b(insurance|claim|adjuster|estimate|out of pocket|came out|approved|paying)\b/i.test(
+    trimmed
+  ) && !/^(i'm not sure yet|not sure yet|unsure|i don't know yet)\.?$/i.test(lower)) {
+    return null;
+  }
+  const result = {
+    contextNote: trimmed.length > 12 ? trimmed : void 0
+  };
+  if (/^(i'm not sure yet|not sure yet|unsure|i don't know yet)\.?$/i.test(lower)) {
+    result.uncertainClaim = true;
+    result.resolved = true;
+    return result;
+  }
+  if (/\b(paying out of pocket|pay out of pocket|paying cash|out of pocket|self[- ]?pay|no insurance)\b/i.test(
+    trimmed
+  )) {
+    result.insurance_claim_started = false;
+    result.insuranceStatus = "out_of_pocket";
+    result.resolved = true;
+  }
+  if (/\b(just want an estimate|estimate first|want an estimate|not filing|no claim|not a claim)\b/i.test(
+    trimmed
+  )) {
+    result.insurance_claim_started = false;
+    result.insuranceStatus = "estimate_only";
+    result.resolved = true;
+  }
+  if (/\b(haven't|have not|didn't|did not|hasn't|has not)\s+(been\s+)?(called|contacted|reached|spoken to|filed with)\b/i.test(
+    trimmed
+  ) && /\b(insurance|claim|adjuster|them)\b/i.test(trimmed)) {
+    result.insurance_claim_started = false;
+    result.resolved = true;
+  }
+  if (/\b(haven't|have not|didn't|did not)\s+(called|contacted|reached|spoken to|filed with)\s+(the\s+)?(insurance|my insurance|insurance company|them|a claim)\b/i.test(
+    trimmed
+  ) || /\b(haven't|have not|didn't|did not)\s+(contacted|called|spoken to|reached|filed with)\s+(the\s+)?(insurance|my insurance|insurance company|a claim)/i.test(
+    trimmed
+  ) || /\bno claim yet\b/i.test(lower)) {
+    result.insurance_claim_started = false;
+    result.resolved = true;
+  }
+  if (/\binsurance is involved\b/i.test(trimmed)) {
+    result.insurance_claim_started = result.insurance_claim_started ?? true;
+    result.uncertainClaim = result.uncertainClaim ?? true;
+    result.resolved = true;
+  }
+  if (/\b(might be|could be|think it is|maybe)\b.*\b(insurance claim|an insurance claim|a claim)\b/i.test(
+    trimmed
+  ) && /\b(haven't|have not|didn't|did not)\s+(contacted|called|reached)\b/i.test(trimmed)) {
+    result.uncertainClaim = true;
+    result.insurance_claim_started = result.insurance_claim_started ?? false;
+    result.resolved = true;
+  }
+  if (/\b(wasn't sure|was not sure|not sure|unsure|don't know|do not know)\b.*\b(claim|insurance|damage|bad enough|warrant|estimate)\b/i.test(
+    trimmed
+  )) {
+    result.uncertainClaim = true;
+    result.resolved = true;
+  }
+  if (/\b(came out|been out|visited|was here|inspection)\b.*\b(yesterday|today|last week|adjuster|insurance)\b/i.test(
+    trimmed
+  ) || /\b(adjuster|insurance)\b.*\b(came out|been out|visited|was here|inspection)\b/i.test(trimmed) || /\b(insurance|adjuster)\s+came out\b/i.test(trimmed)) {
+    result.adjuster_contacted = true;
+    result.insurance_claim_started = result.insurance_claim_started ?? true;
+    if (/\b(nothing has been approved|not approved|not been approved|pending|unresolved|no decision|waiting on)\b/i.test(
+      trimmed
+    )) {
+      result.insuranceStatus = "adjuster_visited_unresolved";
+      result.uncertainClaim = true;
+    }
+    result.resolved = true;
+  }
+  if (/\b(no adjuster|adjuster hasn't|adjuster has not|no one has come|nobody has come)\b/i.test(trimmed) || /\b(insurance|adjuster)\b.*\b(haven't|hasn't|have not|has not|not yet|no one)\b.*\b(come out|been out|visited|shown up|contacted)\b/i.test(
+    trimmed
+  ) || /\b(haven't|hasn't|have not|has not|not yet)\b.*\b(adjuster|insurance)\b.*\b(come out|been out|visited|contacted)\b/i.test(
+    trimmed
+  )) {
+    result.adjuster_contacted = false;
+    result.resolved = true;
+  }
+  if (trimmed.split(/\s+/).length <= 6) {
+    const explicit = parseExplicitBoolean(trimmed);
+    if (explicit !== null && /\b(insurance|claim|adjuster)\b/i.test(trimmed)) {
+      if (/\badjuster\b/i.test(trimmed)) {
+        result.adjuster_contacted = explicit;
+      } else {
+        result.insurance_claim_started = explicit;
+      }
+      result.resolved = true;
+    }
+  }
+  if (result.insurance_claim_started === void 0 && result.adjuster_contacted === void 0 && !result.uncertainClaim && !result.insuranceStatus) {
+    return null;
+  }
+  result.resolved = result.resolved ?? true;
+  return result;
+}
+function applyInsuranceLongAnswerToFields(fields, speech) {
+  const parsed = parseInsuranceLongAnswer(speech);
+  if (!parsed) {
+    return fields;
+  }
+  let updated = { ...fields };
+  if (parsed.insurance_claim_started !== void 0 && parsed.insurance_claim_started !== null) {
+    updated.insurance_claim_started = parsed.insurance_claim_started;
+  }
+  if (parsed.adjuster_contacted !== void 0 && parsed.adjuster_contacted !== null) {
+    updated.adjuster_contacted = parsed.adjuster_contacted;
+  }
+  if (parsed.insuranceStatus) {
+    updated.insurance_status = parsed.insuranceStatus.slice(0, 120);
+  }
+  if (parsed.contextNote) {
+    updated = appendContextNote(updated, parsed.contextNote);
+  }
+  if (parsed.uncertainClaim) {
+    updated = markFieldUncertain(
+      updated,
+      "insurance_claim_started",
+      parsed.contextNote ?? speech.trim()
+    );
+  } else if (parsed.resolved) {
+    updated = markFieldCaptured(updated, "insurance_claim_started");
+  }
+  if (parsed.adjuster_contacted !== void 0 && parsed.adjuster_contacted !== null) {
+    updated = markFieldCaptured(updated, "adjuster_contacted");
+  } else if (parsed.resolved && updated.insurance_claim_started === false) {
+    updated = markFieldCaptured(updated, "adjuster_contacted");
+  }
+  return syncLegacyStringFields(updated);
+}
 function extractActiveLeak(speech, pending) {
   if (allowsBooleanDirectAnswer(pending, "active_leak")) {
     return parseExplicitBoolean(speech);
   }
-  if (/\b(leak|water|drip|flooding|getting inside|active leak)\b/i.test(speech)) {
-    const parsed = parseExplicitBoolean(speech);
-    if (parsed !== null) {
-      return parsed;
-    }
-    if (/no.*(leak|water)|isn't.*(leak|water)|not.*(leak|water)/i.test(speech)) {
+  const leakSignal = /\b(leak|water|drip|flooding|getting inside|active leak|leaking|intrusion|moisture|dripping)\b/i;
+  if (leakSignal.test(speech)) {
+    if (/\b(no|not|none)\s+(active\s+)?(leak|water)\b|\b(no leak|not leaking|no water damage)\b/i.test(
+      speech
+    )) {
       return false;
     }
-    if (/water.*(inside|getting in)|active leak|leaking inside/i.test(speech)) {
+    if (/water.*(inside|getting in|coming into|leaking into|pouring)|active leak|leaking inside|pouring into|coming into the|leaking into|ceiling is dripping|water intrusion|moisture is coming in|leaks when it rains|roof leak|there is a leak|there'?s a leak/i.test(
+      speech
+    )) {
       return true;
+    }
+    if (/\b(is leaking|water is leaking|water'?s leaking)\b/i.test(speech)) {
+      return true;
+    }
+    if (speech.trim().split(/\s+/).length <= 8) {
+      const parsed = parseExplicitBoolean(speech);
+      if (parsed !== null) {
+        return parsed;
+      }
     }
   }
   return null;
 }
 function extractAddressFromSpeech(speech) {
+  const correctionMatch = speech.match(
+    /(?:no,?|actually|instead|rather|correction).*?(?:address is|it's|it is)\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80})/i
+  );
+  if (correctionMatch?.[1] && isPlausibleServiceAddress(correctionMatch[1])) {
+    return correctionMatch[1].trim();
+  }
+  const addressIsMatch = speech.match(
+    /\b(?:the )?address is\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80})/i
+  );
+  if (addressIsMatch?.[1] && isPlausibleServiceAddress(addressIsMatch[1])) {
+    return addressIsMatch[1].trim();
+  }
   const streetMatch = speech.match(
     /\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80}(?:\b(?:street|st|avenue|ave|road|rd|drive|dr|lane|ln|boulevard|blvd|way|court|ct|circle|place|pl)\b)?/i
   );
@@ -6183,31 +7172,101 @@ function extractAddressFromSpeech(speech) {
   }
   return null;
 }
+function extractScheduleHint(speech) {
+  const patterns = [
+    /\b(?:i'?m |i am )?(?:available|free|good)\s+(?:after|from|around|at)\s+[^,.;]+/i,
+    /\b(?:available|free)\s+(?:tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?:\s+(?:morning|afternoon|evening))?/i,
+    /\b(?:anytime|whenever)\s+(?:after|before|around)\s+[^,.;]+/i,
+    /\b(?:after|before)\s+(?:work|five|5|noon|morning|afternoon|evening)\b[^,.;]*/i,
+    /\b(?:morning|afternoon|evening)\s+(?:works|would work|is fine|is good)\b/i
+  ];
+  for (const pattern of patterns) {
+    const match = speech.match(pattern);
+    if (match?.[0]) {
+      return match[0].trim().slice(0, 200);
+    }
+  }
+  return null;
+}
+function extractDamageCause(speech) {
+  const lower = speech.toLowerCase();
+  const extracted = {};
+  if (/\bhail\b/i.test(lower)) {
+    extracted.project_type = "storm damage";
+    extracted.storm_damage = "yes";
+  } else if (/\bwind damage|\bwind\b/i.test(lower)) {
+    extracted.project_type = "wind damage";
+    extracted.storm_damage = "yes";
+  } else if (/\b(storm|tornado|hurricane)\b/i.test(lower)) {
+    extracted.project_type = "storm damage";
+    extracted.storm_damage = "yes";
+  }
+  return extracted;
+}
+function extractPhotosAvailable(speech) {
+  if (!/\b(photo|picture|image|video)s?\b/i.test(speech)) {
+    return null;
+  }
+  const normalized = speech.trim().toLowerCase();
+  if (/\b(no|don't|do not|haven't|have not)\b.*\b(photo|picture|image)s?\b/i.test(normalized)) {
+    return false;
+  }
+  if (/\b(i have (some )?(photos|pictures|images)|i've got (some )?(photos|pictures|images)|got (some )?(photos|pictures|images))\b/i.test(
+    normalized
+  )) {
+    return true;
+  }
+  if (/\b(photo|picture|image)s?\b.*\b(on my phone|on my cell|ready|available)\b/i.test(normalized)) {
+    return true;
+  }
+  if (normalized.split(/\s+/).length <= 6) {
+    return parseExplicitBoolean(speech);
+  }
+  return null;
+}
+function applyAdaptiveCorrections(fields, speech) {
+  if (!hasCorrectionIntent(speech)) {
+    return fields;
+  }
+  let updated = { ...fields };
+  const address = extractAddressFromSpeech(speech);
+  if (address) {
+    updated.address = sanitizeAddressValue(address).slice(0, 500);
+    updated.address_confirmed = false;
+  }
+  const explicitName = extractExplicitCallerName(speech);
+  if (explicitName && isPlausibleCallerName(explicitName)) {
+    updated.full_name = explicitName.slice(0, 100);
+    updated.name_pending_confirmation = void 0;
+  }
+  const callbackPhone = extractCallbackPhoneFromSpeech(speech);
+  if (callbackPhone && !isCompanyPhoneNumber(normalizeCallbackPhoneE164(callbackPhone))) {
+    updated.callback_phone = normalizeCallbackPhoneE164(callbackPhone);
+    updated.callback_phone_confirmed = false;
+  }
+  return preserveConfirmedFieldState(fields, syncLegacyStringFields(updated));
+}
 function extractAllFieldsFromTranscript(speech, callerPhone, pendingQuestion = null) {
   const trimmed = speech.trim();
   if (!trimmed) {
     return {};
   }
   const extracted = {};
+  const explicitName = extractExplicitCallerName(trimmed);
+  if (explicitName) {
+    extracted.full_name = explicitName;
+  }
+  const damage = extractDamageOrCallReason(trimmed);
+  if (damage) {
+    extracted.problem_description = damage;
+  }
   if (isPendingCallReasonQuestion(pendingQuestion)) {
     const reason = normalizeCallReasonFromSpeech(trimmed);
     if (reason) {
       extracted.problem_description = reason;
     }
-    const volunteeredName = extractExplicitCallerName(trimmed);
-    if (volunteeredName) {
-      extracted.full_name = volunteeredName;
-    }
-  } else {
-    const explicitName = extractExplicitCallerName(trimmed);
-    if (explicitName) {
-      extracted.full_name = explicitName;
-    }
-    const damage = extractDamageOrCallReason(trimmed);
-    if (damage) {
-      extracted.problem_description = damage;
-    }
   }
+  Object.assign(extracted, extractDamageCause(trimmed));
   const address = extractAddressFromSpeech(trimmed);
   if (address) {
     extracted.address = address;
@@ -6218,6 +7277,13 @@ function extractAllFieldsFromTranscript(speech, callerPhone, pendingQuestion = n
   if (callbackPhone) {
     extracted.callback_phone = callbackPhone;
   }
+  const insuranceLong = parseInsuranceLongAnswer(trimmed);
+  if (insuranceLong?.contextNote) {
+    extracted.additional_notes = insuranceLong.contextNote.slice(0, 500);
+  }
+  if (insuranceLong?.insuranceStatus) {
+    extracted.insurance_status = insuranceLong.insuranceStatus.slice(0, 120);
+  }
   const insurance = extractInsuranceClaim(trimmed, pendingQuestion);
   if (insurance !== null) {
     extracted.insurance_claim_started = insurance;
@@ -6226,32 +7292,59 @@ function extractAllFieldsFromTranscript(speech, callerPhone, pendingQuestion = n
   if (adjuster !== null) {
     extracted.adjuster_contacted = adjuster;
   }
+  const scheduleHint = extractScheduleHint(trimmed);
+  if (scheduleHint) {
+    extracted.appointment_preference_raw = scheduleHint;
+  }
+  const photos = extractPhotosAvailable(trimmed);
+  if (photos !== null) {
+    extracted.photos_available = photos;
+  }
   const leak = extractActiveLeak(trimmed, pendingQuestion);
   if (leak !== null) {
     extracted.emergency_or_active_leak = leak;
   }
   if (detectEmergency(trimmed)) {
     extracted.urgency = extracted.urgency ?? "emergency";
-    if (/water.*(inside|getting in|coming into)|active leak|leaking inside|flooding/i.test(trimmed)) {
+    if (/water.*(inside|getting in|coming into|leaking into)|active leak|leaking inside|flooding|pouring into|leaking into|ceiling is dripping|water intrusion|moisture is coming in|leaks when it rains|roof leak|there is a leak|there'?s a leak|\b(is leaking|water is leaking|water'?s leaking)\b/i.test(
+      trimmed
+    )) {
       extracted.emergency_or_active_leak = extracted.emergency_or_active_leak ?? true;
       extracted.emergency_acknowledged = true;
     }
+  } else if (/\burgent\b/i.test(trimmed) && !hasValue6(extracted.urgency)) {
+    extracted.urgency = "urgent";
   }
   return extracted;
 }
-function mergeExtractedFields(fields, extracted) {
+function mergeExtractedFields(fields, extracted, speech = "") {
   let updated = { ...fields };
-  if (hasValue5(extracted.full_name) && isPlausibleCallerName(extracted.full_name) && !hasValue5(updated.full_name)) {
+  const allowOverwrite = hasCorrectionIntent(speech);
+  const insuranceLong = speech ? parseInsuranceLongAnswer(speech) : null;
+  if (hasValue6(extracted.full_name) && isPlausibleCallerName(extracted.full_name) && (!hasValue6(updated.full_name) || allowOverwrite)) {
     updated.full_name = extracted.full_name.trim().slice(0, 100);
   }
-  if (hasValue5(extracted.problem_description) && !hasValue5(updated.problem_description)) {
+  if (hasValue6(extracted.problem_description) && (!hasValue6(updated.problem_description) || allowOverwrite)) {
     updated.problem_description = extracted.problem_description.trim().slice(0, 500);
   }
-  if (hasValue5(extracted.address) && isPlausibleServiceAddress(extracted.address) && !hasValue5(updated.address)) {
-    updated.address = extracted.address.trim().slice(0, 500);
+  if (hasValue6(extracted.address) && isPlausibleServiceAddress(extracted.address) && (!hasValue6(updated.address) || allowOverwrite)) {
+    updated.address = sanitizeAddressValue(extracted.address.trim()).slice(0, 500);
     updated.address_confirmed = false;
   }
-  if (hasValue5(extracted.callback_phone)) {
+  if (hasValue6(extracted.project_type) && (!hasValue6(updated.project_type) || allowOverwrite)) {
+    updated.project_type = extracted.project_type;
+  }
+  if (hasValue6(extracted.storm_damage) && (!hasValue6(updated.storm_damage) || allowOverwrite)) {
+    updated.storm_damage = extracted.storm_damage;
+  }
+  if (hasValue6(extracted.appointment_preference_raw) && !hasValue6(updated.appointment_preference_raw)) {
+    updated.appointment_preference_raw = extracted.appointment_preference_raw.trim().slice(0, 200);
+    updated.schedule_confirmed = false;
+  }
+  if (hasValue6(extracted.additional_notes)) {
+    updated = appendContextNote(updated, extracted.additional_notes);
+  }
+  if (hasValue6(extracted.callback_phone)) {
     const normalized = normalizeCallbackPhoneE164(extracted.callback_phone);
     if (!isCompanyPhoneNumber(normalized)) {
       const sameNumber = updated.callback_phone === normalized;
@@ -6263,15 +7356,42 @@ function mergeExtractedFields(fields, extracted) {
   }
   if (extracted.insurance_claim_started !== void 0 && extracted.insurance_claim_started !== null) {
     updated.insurance_claim_started = extracted.insurance_claim_started;
+    if (insuranceLong?.uncertainClaim) {
+      updated = markFieldUncertain(updated, "insurance_claim_started", insuranceLong.contextNote);
+    } else if (insuranceLong?.resolved || updated.field_resolution?.insurance_claim_started !== "uncertain") {
+      updated = markFieldCaptured(updated, "insurance_claim_started");
+    }
+  } else if (insuranceLong?.uncertainClaim || insuranceLong?.resolved) {
+    updated = applyInsuranceLongAnswerToFields(updated, speech);
+  }
+  if (hasValue6(extracted.insurance_status)) {
+    updated.insurance_status = extracted.insurance_status;
   }
   if (extracted.adjuster_contacted !== void 0 && extracted.adjuster_contacted !== null) {
     updated.adjuster_contacted = extracted.adjuster_contacted;
+    updated = markFieldCaptured(updated, "adjuster_contacted");
+  } else if (insuranceLong?.adjuster_contacted !== void 0 && insuranceLong.adjuster_contacted !== null) {
+    updated.adjuster_contacted = insuranceLong.adjuster_contacted;
+    updated = markFieldCaptured(updated, "adjuster_contacted");
   }
   if (extracted.emergency_or_active_leak !== void 0 && extracted.emergency_or_active_leak !== null) {
     updated.emergency_or_active_leak = extracted.emergency_or_active_leak;
+    updated = markFieldCaptured(updated, "emergency_or_active_leak");
+  }
+  if (extracted.photos_available !== void 0 && extracted.photos_available !== null) {
+    updated.photos_available = extracted.photos_available;
+  }
+  if (hasValue6(extracted.urgency) && !hasValue6(updated.urgency)) {
+    updated.urgency = extracted.urgency.trim().slice(0, 200);
   }
   if (extracted.emergency_acknowledged) {
     updated.emergency_acknowledged = true;
+  }
+  if (hasValue6(updated.full_name)) {
+    updated = syncFullNameFromParts(updated);
+    if (hasCompleteCallerName(updated)) {
+      updated.opening_name_complete = true;
+    }
   }
   return preserveConfirmedFieldState(fields, syncLegacyStringFields(updated));
 }
@@ -6297,7 +7417,7 @@ function applyAnswerForPendingQuestion(fields, answer, callerPhone, pendingQuest
       }
       if (isLikelyCallReasonSpeech(trimmed) && !extractExplicitCallerName(trimmed)) {
         const reason = normalizeCallReasonFromSpeech(trimmed);
-        if (reason && !hasValue5(updated.problem_description)) {
+        if (reason && !hasValue6(updated.problem_description)) {
           updated.problem_description = reason;
         }
         break;
@@ -6309,7 +7429,7 @@ function applyAnswerForPendingQuestion(fields, answer, callerPhone, pendingQuest
     }
     case "reason_for_call":
     case "call_reason":
-      if (!hasValue5(updated.problem_description)) {
+      if (!hasValue6(updated.problem_description)) {
         if (isShortYesNoReasonAnswer(trimmed)) {
           updated.call_reason_awaiting_clarification = true;
           updated.call_reason_clarification_attempts = (updated.call_reason_clarification_attempts ?? 0) + 1;
@@ -6322,7 +7442,7 @@ function applyAnswerForPendingQuestion(fields, answer, callerPhone, pendingQuest
           updated.name_pending_confirmation = void 0;
           updated.name_awaiting_repeat = void 0;
           const volunteeredName = extractExplicitCallerName(trimmed);
-          if (volunteeredName && !hasValue5(updated.full_name)) {
+          if (volunteeredName && !hasValue6(updated.full_name)) {
             updated.full_name = volunteeredName;
           }
         } else if (trimmed.length > 0) {
@@ -6370,9 +7490,9 @@ function applyAnswerForPendingQuestion(fields, answer, callerPhone, pendingQuest
       }
       break;
     case "service_address":
-      if (!hasValue5(updated.address)) {
+      if (!hasValue6(updated.address)) {
         if (isPlausibleServiceAddress(trimmed)) {
-          updated.address = trimmed.slice(0, 500);
+          updated.address = sanitizeAddressValue(trimmed).slice(0, 500);
           updated.address_confirmed = false;
         }
       }
@@ -6380,19 +7500,34 @@ function applyAnswerForPendingQuestion(fields, answer, callerPhone, pendingQuest
     case "insurance_claim":
     case "adjuster_contacted":
     case "active_leak": {
+      if (pendingQuestion === "insurance_claim" || pendingQuestion === "adjuster_contacted") {
+        const beforeResolution = updated.field_resolution?.insurance_claim_started;
+        updated = applyInsuranceLongAnswerToFields(updated, trimmed);
+        if (updated.field_resolution?.insurance_claim_started !== beforeResolution || updated.insurance_status || updated.field_resolution?.adjuster_contacted) {
+          break;
+        }
+      }
       const parsed = parseExplicitBoolean(trimmed);
-      if (parsed !== null) {
+      if (parsed !== null && pendingQuestion !== "insurance_claim" && pendingQuestion !== "adjuster_contacted") {
         const fieldMap = {
           insurance_claim: "insurance_claim_started",
           adjuster_contacted: "adjuster_contacted",
           active_leak: "emergency_or_active_leak"
         };
         updated[fieldMap[pendingQuestion]] = parsed;
+      } else if (parsed !== null && trimmed.split(/\s+/).length <= 6) {
+        const fieldMap = {
+          insurance_claim: "insurance_claim_started",
+          adjuster_contacted: "adjuster_contacted",
+          active_leak: "emergency_or_active_leak"
+        };
+        updated[fieldMap[pendingQuestion]] = parsed;
+        updated = markFieldCaptured(updated, fieldMap[pendingQuestion]);
       }
       break;
     }
     case "urgency":
-      if (!hasValue5(updated.urgency)) {
+      if (!hasValue6(updated.urgency)) {
         updated.urgency = trimmed.slice(0, 200);
       }
       break;
@@ -6407,8 +7542,621 @@ function applyAnswerForPendingQuestion(fields, answer, callerPhone, pendingQuest
   return preserveConfirmedFieldState(fields, syncLegacyStringFields(updated));
 }
 
+// src/orchestrator/confirmation-builders.ts
+function buildPhoneConfirmationReply(fields) {
+  return buildCallbackReadbackConfirmation(fields.callback_phone ?? "");
+}
+function buildAddressConfirmationReply(fields) {
+  const address = sanitizeAddressValue(fields.address ?? "");
+  return buildAddressReadbackConfirmation(address);
+}
+
+// src/orchestrator/field-scoped-correction.ts
+var CONVERSATIONAL_PREFIXES = [
+  /^everything is correct except\s+/i,
+  /^everything is right except\s+/i,
+  /^you got everything right but\s+/i,
+  /^you got it right but\s+/i,
+  /^the only thing is\s+/i,
+  /^just change\s+/i,
+  /^just add\s+/i,
+  /^just to change\s+/i,
+  /^actually,?\s+/i,
+  /^no,?\s*i meant\s+/i,
+  /^no,?\s*it should be\s+/i,
+  /^correction,?\s+/i,
+  /^what i meant was\s+/i
+];
+var MAX_CONFIRMATION_CLARIFICATION_ATTEMPTS = 1;
+function hasValue7(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+function stripConversationalCorrectionFraming(speech) {
+  let trimmed = speech.trim();
+  for (const pattern of CONVERSATIONAL_PREFIXES) {
+    trimmed = trimmed.replace(pattern, "").trim();
+  }
+  trimmed = trimmed.replace(/\s+to the (?:service )?(?:address|phone(?: number)?)\.?$/i, "").replace(/[.!?]+$/, "").trim();
+  return trimmed;
+}
+function resolveCorrectionTargetField(activeField, speech) {
+  const lower = speech.toLowerCase();
+  if (/\b(phone|number|callback)\b/i.test(lower) && /\b(last digit|ends in|area code|middle three|cell|mobile)\b/i.test(lower)) {
+    return "callback_phone";
+  }
+  if (/\b(address|street|apartment|apt\.?|unit|zip)\b/i.test(lower)) {
+    return "address";
+  }
+  return activeField;
+}
+function insertUnitIntoAddress(current, unitText) {
+  const unit = unitText.replace(/^(apartment|apt\.?|unit|suite|#)\s+/i, "").trim();
+  const formattedUnit = /^(apartment|apt\.?|unit|suite|#)/i.test(unitText) ? unitText.replace(/\s+/g, " ").trim() : `Apartment ${unit}`;
+  const parts = current.split(",").map((part) => part.trim()).filter(Boolean);
+  if (parts.length >= 2) {
+    return [parts[0], formattedUnit, ...parts.slice(1)].join(", ");
+  }
+  return appendToAddress(current, formattedUnit);
+}
+function attachFieldConfirmationContext(fields, field, value) {
+  return {
+    ...fields,
+    field_being_confirmed: field,
+    activeConfirmationField: field,
+    current_field_value: value,
+    activeConfirmationValue: value,
+    confirmation_attempt_count: fields.confirmation_attempt_count ?? 0,
+    correctionAttemptCount: fields.correctionAttemptCount ?? fields.confirmation_attempt_count ?? 0,
+    confirmationStatus: fields.confirmationStatus ?? "pending"
+  };
+}
+function clearFieldConfirmationContext(fields) {
+  return {
+    ...fields,
+    field_being_confirmed: void 0,
+    activeConfirmationField: void 0,
+    current_field_value: void 0,
+    activeConfirmationValue: void 0,
+    confirmation_attempt_count: void 0,
+    correctionAttemptCount: void 0,
+    confirmationStatus: void 0,
+    confirmation_last_outcome: void 0,
+    pending_correction_hint: void 0
+  };
+}
+function getConfirmationClarificationAttempts(fields, field) {
+  return fields.field_clarification_attempts?.[field] ?? 0;
+}
+function incrementConfirmationClarificationAttempts(fields, field) {
+  const attempts = getConfirmationClarificationAttempts(fields, field) + 1;
+  return {
+    ...fields,
+    field_clarification_attempts: {
+      ...fields.field_clarification_attempts ?? {},
+      [field]: attempts
+    }
+  };
+}
+function buildCorrectedFieldReadback(field, value) {
+  switch (field) {
+    case "callback_phone":
+      return `Got it. I now have your callback number as ${formatCallbackForSpeech(value)}. Is that correct?`;
+    case "address":
+      return `Got it. I now have your service address as ${formatAddressForSpeech(sanitizeAddressValue(value))}. Is that correct?`;
+    case "full_name":
+      return `Got it. I now have your name as ${value.trim()}. Is that correct?`;
+    case "appointment_preference":
+      return `Got it. I now have ${value.trim()}. Is that correct?`;
+  }
+}
+function buildAmbiguousCorrectionPrompt(field, hint) {
+  switch (field) {
+    case "address":
+      return `Just to make sure, should I ${hint}?`;
+    case "callback_phone":
+      return `Just to make sure, should I ${hint}?`;
+    default:
+      return `Just to make sure, ${hint}?`;
+  }
+}
+function phoneDigits(phone) {
+  return phone.replace(/\D/g, "").slice(-10);
+}
+function spokenDigitToChar(token) {
+  const normalized = token.trim().toLowerCase();
+  if (/^\d$/.test(normalized)) {
+    return normalized;
+  }
+  const map = {
+    zero: "0",
+    one: "1",
+    two: "2",
+    three: "3",
+    four: "4",
+    five: "5",
+    six: "6",
+    seven: "7",
+    eight: "8",
+    nine: "9"
+  };
+  return map[normalized] ?? null;
+}
+function appendToAddress(current, suffix) {
+  const trimmedSuffix = suffix.trim();
+  if (!trimmedSuffix) {
+    return current;
+  }
+  if (/^[,.\s]/.test(trimmedSuffix) || /^(apartment|apt\.?|unit|suite|#)\b/i.test(trimmedSuffix)) {
+    return `${current.replace(/[,\s]+$/, "")}, ${trimmedSuffix.replace(/^,+\s*/, "")}`.trim();
+  }
+  return `${current.replace(/[,\s]+$/, "")} ${trimmedSuffix}`.replace(/\s+/g, " ").trim();
+}
+function applyAddressPartialEdit(currentAddress, speech) {
+  const structured = parseAddressStructuredCorrection(currentAddress, speech);
+  if (structured?.requiresClarification) {
+    return null;
+  }
+  if (structured) {
+    return applyStructuredCorrectionToAddress(currentAddress, structured);
+  }
+  return null;
+}
+function parseAddressStructuredCorrection(currentAddress, speech) {
+  const cleaned = stripConversationalCorrectionFraming(speech);
+  const current = sanitizeAddressValue(currentAddress);
+  const extracted = extractAddressFromSpeech(cleaned);
+  if (extracted && isPlausibleServiceAddress(extracted) && !/^add\b/i.test(cleaned) && extracted.replace(/\s+/g, " ").trim() !== current.replace(/\s+/g, " ").trim()) {
+    return {
+      targetField: "address",
+      operation: "replace_full_value",
+      replacementValue: sanitizeAddressValue(extracted),
+      confidence: "high",
+      requiresClarification: false
+    };
+  }
+  const apartmentMatch = cleaned.match(/\badd (?:apartment|apt\.?|unit)\s+([A-Za-z0-9-]+)\b/i);
+  if (apartmentMatch?.[1]) {
+    return {
+      targetField: "address",
+      operation: "replace_unit",
+      fragmentToAdd: `Apartment ${apartmentMatch[1]}`,
+      confidence: "high",
+      requiresClarification: false
+    };
+  }
+  const appendEndMatch = cleaned.match(/\badd (?:an? )?(.+?) (?:at )?(?:the )?end\b/i);
+  if (appendEndMatch?.[1]) {
+    const suffix = appendEndMatch[1].trim();
+    if (/^i$/i.test(suffix)) {
+      return {
+        targetField: "address",
+        operation: "append",
+        fragmentToAdd: "I",
+        confidence: "low",
+        requiresClarification: true,
+        clarificationHint: "add the letter I to the end of the address"
+      };
+    }
+    return {
+      targetField: "address",
+      operation: "append",
+      fragmentToAdd: suffix,
+      confidence: "high",
+      requiresClarification: false
+    };
+  }
+  const genericAddMatch = cleaned.match(/^add (.+)$/i);
+  if (genericAddMatch?.[1] && !/\b(at|to) the end\b/i.test(cleaned)) {
+    const fragment = genericAddMatch[1].trim();
+    if (/^(apartment|apt\.?|unit)\s+[A-Za-z0-9-]+$/i.test(fragment)) {
+      return {
+        targetField: "address",
+        operation: "replace_unit",
+        fragmentToAdd: fragment.replace(/^(apartment|apt\.?|unit)\s+/i, "Apartment "),
+        confidence: "high",
+        requiresClarification: false
+      };
+    }
+    return {
+      targetField: "address",
+      operation: "append",
+      fragmentToAdd: fragment,
+      confidence: "high",
+      requiresClarification: false
+    };
+  }
+  if (/\bremove (?:the )?(?:apartment|apt\.?|unit)(?:\s+number)?\b/i.test(cleaned)) {
+    return {
+      targetField: "address",
+      operation: "remove",
+      fragmentToRemove: "unit",
+      confidence: "high",
+      requiresClarification: false
+    };
+  }
+  const directionMatch = cleaned.match(/\b(north|south|east|west)\b.+?\bnot\b\s+(north|south|east|west)\b/i);
+  if (directionMatch?.[1] && directionMatch?.[2]) {
+    return {
+      targetField: "address",
+      operation: "replace_street_direction",
+      fragmentToReplace: directionMatch[2],
+      replacementValue: directionMatch[1],
+      confidence: "high",
+      requiresClarification: false
+    };
+  }
+  const replaceMatch = cleaned.match(/\b([A-Za-z0-9][A-Za-z0-9\s-]{1,30}), not ([A-Za-z0-9][A-Za-z0-9\s-]{1,30})\b/i);
+  if (replaceMatch?.[1] && replaceMatch?.[2]) {
+    return {
+      targetField: "address",
+      operation: "replace_fragment",
+      fragmentToReplace: replaceMatch[2].trim(),
+      replacementValue: replaceMatch[1].trim(),
+      confidence: "high",
+      requiresClarification: false
+    };
+  }
+  const zipMatch = cleaned.match(/\b(?:zip|zip code) (?:is )?(\d{5}(?:-\d{4})?)\b/i);
+  if (zipMatch?.[1]) {
+    return {
+      targetField: "address",
+      operation: "replace_zip",
+      replacementValue: zipMatch[1],
+      confidence: "high",
+      requiresClarification: false
+    };
+  }
+  return null;
+}
+function applyStructuredCorrectionToAddress(currentAddress, correction) {
+  const current = sanitizeAddressValue(currentAddress);
+  switch (correction.operation) {
+    case "replace_full_value":
+      return sanitizeAddressValue(correction.replacementValue ?? current);
+    case "replace_unit":
+      return sanitizeAddressValue(
+        insertUnitIntoAddress(current, correction.fragmentToAdd ?? correction.replacementValue ?? "")
+      );
+    case "append":
+      if (correction.fragmentToAdd && /^(apartment|apt\.?|unit)\s+/i.test(correction.fragmentToAdd)) {
+        return sanitizeAddressValue(insertUnitIntoAddress(current, correction.fragmentToAdd));
+      }
+      return sanitizeAddressValue(appendToAddress(current, correction.fragmentToAdd ?? ""));
+    case "remove":
+      return current.replace(/,?\s*(?:apartment|apt\.?|unit|suite|#)\s*[A-Za-z0-9-]+/i, "").replace(/\s+/g, " ").trim();
+    case "replace_street_direction":
+      return current.replace(
+        new RegExp(correction.fragmentToReplace ?? "", "i"),
+        correction.replacementValue ?? ""
+      );
+    case "replace_fragment":
+      return current.replace(
+        new RegExp(correction.fragmentToReplace ?? "", "i"),
+        correction.replacementValue ?? ""
+      );
+    case "replace_zip": {
+      const withoutZip = current.replace(/,?\s*\b\d{5}(?:-\d{4})?\b/, "").trim();
+      return `${withoutZip}, ${correction.replacementValue}`.replace(/\s+/g, " ").trim();
+    }
+    default:
+      return current;
+  }
+}
+function parsePhoneStructuredCorrection(currentPhone, speech, callerPhone) {
+  const cleaned = stripConversationalCorrectionFraming(speech);
+  const digits = phoneDigits(currentPhone);
+  const extracted = extractCallbackPhoneFromSpeech(cleaned, callerPhone);
+  if (extracted && !isCompanyPhoneNumber(extracted) && phoneDigits(extracted) !== digits) {
+    return {
+      targetField: "callback_phone",
+      operation: "replace_full_value",
+      replacementValue: normalizeCallbackPhoneE164(extracted),
+      confidence: "high",
+      requiresClarification: false
+    };
+  }
+  const lastDigitMatch = cleaned.match(
+    /\b(?:the )?last digit (?:should be|is)\s+(\d|zero|one|two|three|four|five|six|seven|eight|nine)\b/i
+  );
+  if (lastDigitMatch?.[1] && digits.length === 10) {
+    const digit = spokenDigitToChar(lastDigitMatch[1]);
+    if (digit) {
+      return {
+        targetField: "callback_phone",
+        operation: "replace_digit",
+        replacementValue: digit,
+        confidence: "high",
+        requiresClarification: false
+      };
+    }
+  }
+  const endsInMatch = cleaned.match(
+    /\b(?:phone|number)?\s*(?:ends in|end in)\s+(\d|zero|one|two|three|four|five|six|seven|eight|nine)\b/i
+  );
+  if (endsInMatch?.[1] && digits.length === 10) {
+    const digit = spokenDigitToChar(endsInMatch[1]);
+    if (digit) {
+      return {
+        targetField: "callback_phone",
+        operation: "replace_digit",
+        replacementValue: digit,
+        confidence: "high",
+        requiresClarification: false
+      };
+    }
+  }
+  const areaCodeMatch = cleaned.match(/\bstarts with (\d{3}), not (\d{3})\b/i);
+  if (areaCodeMatch?.[1] && digits.length === 10) {
+    return {
+      targetField: "callback_phone",
+      operation: "replace_fragment",
+      fragmentToReplace: digits.slice(0, 3),
+      replacementValue: areaCodeMatch[1],
+      confidence: "high",
+      requiresClarification: false
+    };
+  }
+  const middleMatch = cleaned.match(/\bmiddle three digits are (\d{3})\b/i);
+  if (middleMatch?.[1] && digits.length === 10) {
+    return {
+      targetField: "callback_phone",
+      operation: "replace_fragment",
+      fragmentToReplace: digits.slice(3, 6),
+      replacementValue: middleMatch[1],
+      confidence: "high",
+      requiresClarification: false
+    };
+  }
+  if (/\b(use my cell|use my mobile|different number|another number)\b/i.test(cleaned) && callerPhone) {
+    return {
+      targetField: "callback_phone",
+      operation: "replace_full_value",
+      replacementValue: normalizeCallbackPhoneE164(callerPhone),
+      confidence: "medium",
+      requiresClarification: false
+    };
+  }
+  return null;
+}
+function applyStructuredCorrectionToPhone(currentPhone, correction) {
+  const digits = phoneDigits(currentPhone);
+  switch (correction.operation) {
+    case "replace_full_value":
+      return normalizeCallbackPhoneE164(correction.replacementValue ?? currentPhone);
+    case "replace_digit":
+      if (digits.length === 10 && correction.replacementValue) {
+        return normalizeCallbackPhoneE164(`${digits.slice(0, 9)}${correction.replacementValue}`);
+      }
+      return currentPhone;
+    case "replace_fragment":
+      if (digits.length === 10 && correction.fragmentToReplace && correction.replacementValue) {
+        return normalizeCallbackPhoneE164(
+          digits.replace(correction.fragmentToReplace, correction.replacementValue)
+        );
+      }
+      return currentPhone;
+    default:
+      return currentPhone;
+  }
+}
+function applyScopedCorrectionToField(fields, speech, activeField, callerPhone) {
+  const targetField = resolveCorrectionTargetField(activeField, speech);
+  const cleaned = stripConversationalCorrectionFraming(speech);
+  let updated = { ...fields };
+  let valueChanged = false;
+  let ambiguousHint;
+  switch (targetField) {
+    case "callback_phone": {
+      const current = fields.callback_phone ?? fields.current_field_value ?? "";
+      const structured = parsePhoneStructuredCorrection(current, cleaned, callerPhone);
+      if (structured?.requiresClarification) {
+        ambiguousHint = structured.clarificationHint;
+        break;
+      }
+      if (structured) {
+        const nextPhone = applyStructuredCorrectionToPhone(current, structured);
+        if (nextPhone && nextPhone !== current) {
+          updated = syncLegacyStringFields({
+            ...updated,
+            callback_phone: nextPhone,
+            callback_phone_confirmed: false
+          });
+          valueChanged = true;
+        }
+      }
+      break;
+    }
+    case "address": {
+      const current = fields.address ?? fields.current_field_value ?? "";
+      const structured = parseAddressStructuredCorrection(current, cleaned);
+      if (structured?.requiresClarification) {
+        ambiguousHint = structured.clarificationHint;
+        break;
+      }
+      if (structured) {
+        const nextAddress = applyStructuredCorrectionToAddress(current, structured);
+        if (nextAddress && nextAddress !== sanitizeAddressValue(current)) {
+          updated = syncLegacyStringFields({
+            ...updated,
+            address: sanitizeAddressValue(nextAddress).slice(0, 500),
+            address_confirmed: false
+          });
+          valueChanged = true;
+        }
+      }
+      break;
+    }
+    case "full_name": {
+      const nameMatch = cleaned.match(
+        /(?:name is|call me|it's|it is)\s+([A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,3})/i
+      );
+      if (nameMatch?.[1]) {
+        updated = syncLegacyStringFields({
+          ...updated,
+          full_name: nameMatch[1].trim()
+        });
+        valueChanged = true;
+      }
+      break;
+    }
+    case "appointment_preference": {
+      if (hasValue7(cleaned) && cleaned.length >= 3) {
+        updated = syncLegacyStringFields({
+          ...updated,
+          appointment_preference_raw: cleaned.slice(0, 200),
+          schedule_confirmed: false
+        });
+        valueChanged = true;
+      }
+      break;
+    }
+  }
+  if (valueChanged) {
+    updated = attachFieldConfirmationContext(
+      updated,
+      targetField,
+      readFieldValue(updated, targetField)
+    );
+    updated.confirmation_last_outcome = "corrected";
+  }
+  return { updated, valueChanged, ambiguousHint };
+}
+function readFieldValue(fields, field) {
+  switch (field) {
+    case "callback_phone":
+      return fields.callback_phone ?? "";
+    case "address":
+      return fields.address ?? "";
+    case "full_name":
+      return fields.full_name ?? "";
+    case "appointment_preference":
+      return fields.appointment_preference_raw ?? fields.appointment_preference ?? "";
+  }
+}
+function processFieldConfirmationResponse(input) {
+  const { fields, speech, activeField, callerPhone, isConfirmed, isRejected } = input;
+  const trimmed = speech.trim();
+  if (activeField === "address" && fields.pending_correction_hint && /^(yes|yeah|yep|yup|correct|right)\b/i.test(trimmed)) {
+    const current = readFieldValue(fields, activeField);
+    const nextAddress = fields.pending_correction_hint === "append_i" ? `${current}I` : applyAddressPartialEdit(current, fields.pending_correction_hint) ?? current;
+    if (nextAddress !== current) {
+      const updated = syncLegacyStringFields({
+        ...attachFieldConfirmationContext(fields, activeField, nextAddress),
+        address: sanitizeAddressValue(nextAddress).slice(0, 500),
+        address_confirmed: false,
+        pending_correction_hint: void 0,
+        confirmation_last_outcome: "corrected"
+      });
+      return {
+        fields: updated,
+        outcome: "corrected",
+        replyText: buildCorrectedFieldReadback(activeField, nextAddress),
+        updated: true
+      };
+    }
+  }
+  if (isConfirmed) {
+    return {
+      fields: clearFieldConfirmationContext({
+        ...fields,
+        confirmation_last_outcome: "accepted"
+      }),
+      outcome: "accepted",
+      updated: false
+    };
+  }
+  if (!trimmed || isRejected) {
+    return {
+      fields: attachFieldConfirmationContext(
+        { ...fields, confirmation_last_outcome: "rejected" },
+        activeField,
+        readFieldValue(fields, activeField)
+      ),
+      outcome: "rejected",
+      updated: false
+    };
+  }
+  const correction = applyScopedCorrectionToField(fields, trimmed, activeField, callerPhone);
+  if (correction.valueChanged) {
+    const value = readFieldValue(correction.updated, activeField);
+    return {
+      fields: correction.updated,
+      outcome: "corrected",
+      replyText: buildCorrectedFieldReadback(activeField, value),
+      updated: true
+    };
+  }
+  if (correction.ambiguousHint) {
+    const attempts = getConfirmationClarificationAttempts(fields, activeField);
+    if (attempts >= MAX_CONFIRMATION_CLARIFICATION_ATTEMPTS) {
+      const notes = fields.additional_notes?.trim();
+      const combined = notes ? `${notes} Unresolved ${activeField} correction: ${trimmed.slice(0, 120)}` : `Unresolved ${activeField} correction: ${trimmed.slice(0, 120)}`;
+      return {
+        fields: syncLegacyStringFields({
+          ...attachFieldConfirmationContext(fields, activeField, readFieldValue(fields, activeField)),
+          additional_notes: combined.slice(0, 500),
+          confirmation_last_outcome: "unchanged"
+        }),
+        outcome: "unchanged",
+        replyText: activeField === "address" ? buildAddressConfirmationReply({
+          ...fields,
+          address: readFieldValue(fields, activeField)
+        }) : buildPhoneConfirmationReply({
+          ...fields,
+          callback_phone: readFieldValue(fields, activeField)
+        }),
+        updated: false
+      };
+    }
+    return {
+      fields: incrementConfirmationClarificationAttempts(
+        {
+          ...attachFieldConfirmationContext(fields, activeField, readFieldValue(fields, activeField)),
+          pending_correction_hint: correction.ambiguousHint === "add the letter I to the end of the address" ? "append_i" : correction.ambiguousHint
+        },
+        activeField
+      ),
+      outcome: "needs_clarification",
+      replyText: buildAmbiguousCorrectionPrompt(activeField, correction.ambiguousHint),
+      updated: false
+    };
+  }
+  return {
+    fields: attachFieldConfirmationContext(fields, activeField, readFieldValue(fields, activeField)),
+    outcome: "unchanged",
+    updated: false
+  };
+}
+function applyAddressScopedCorrection(fields, speech) {
+  return processFieldConfirmationResponse({
+    fields: attachFieldConfirmationContext(
+      fields,
+      "address",
+      fields.address ?? ""
+    ),
+    speech,
+    activeField: "address",
+    isConfirmed: false,
+    isRejected: false
+  });
+}
+function applyCallbackScopedCorrection(fields, speech, callerPhone) {
+  return processFieldConfirmationResponse({
+    fields: attachFieldConfirmationContext(
+      fields,
+      "callback_phone",
+      fields.callback_phone ?? ""
+    ),
+    speech,
+    activeField: "callback_phone",
+    callerPhone,
+    isConfirmed: false,
+    isRejected: false
+  });
+}
+
 // src/orchestrator/realtime-intake.ts
-function hasValue6(value) {
+function hasValue8(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 function mergeRealtimeCallerAnswer(fields, answer, callerPhone, options = {}) {
@@ -6423,16 +8171,17 @@ function mergeRealtimeCallerAnswer(fields, answer, callerPhone, options = {}) {
     options.pendingQuestion
   );
   const fieldsBeforeMerge = sanitizedFields;
-  let updated = applyAnswerForPendingQuestion(sanitizedFields, answer, callerPhone, pendingQuestion);
+  let updated = applyAdaptiveCorrections(sanitizedFields, answer);
+  updated = applyAnswerForPendingQuestion(updated, answer, callerPhone, pendingQuestion);
   updated = {
     ...updated,
     pending_question: void 0
   };
   const shortAnswer = isShortPendingStyleAnswer(answer);
   const afterPendingOnly = updated;
+  const extracted = extractAllFieldsFromTranscript(answer, callerPhone, pendingQuestion);
+  updated = mergeExtractedFields(updated, extracted, answer);
   if (!shortAnswer) {
-    const extracted = extractAllFieldsFromTranscript(answer, callerPhone, pendingQuestion);
-    updated = mergeExtractedFields(updated, extracted);
     const missingBeforeDirect = getMissingRequiredFields(updated);
     const openingReasonTurn = isOpeningReasonCaptureContext(updated, {
       isFirstCallerTurn: options.isFirstCallerTurn
@@ -6442,10 +8191,21 @@ function mergeRealtimeCallerAnswer(fields, answer, callerPhone, options = {}) {
       updated = applyDirectAnswerToMissingField(updated, answer, callerPhone, null);
     }
   }
-  if (hasValue6(updated.appointment_preference_raw) && updated.schedule_confirmed !== true) {
+  const pendingField = mapPendingQuestionToRequiredField(pendingQuestion ?? void 0);
+  if (pendingField && (pendingField === "insurance_claim_started" || pendingField === "adjuster_contacted" || pendingField === "emergency_or_active_leak")) {
+    const beforeValue = afterPendingOnly[pendingField];
+    const afterValue = updated[pendingField];
+    if (isStructuredBooleanUnset(beforeValue) && isStructuredBooleanUnset(afterValue) && answer.trim().length > 0) {
+      updated = incrementFieldClarificationAttempt(updated, pendingField);
+      if (getFieldClarificationAttempts(updated, pendingField) >= MAX_FIELD_CLARIFICATION_ATTEMPTS) {
+        updated = markFieldUncertain(updated, pendingField, answer.trim());
+      }
+    }
+  }
+  if (hasValue8(updated.appointment_preference_raw) && updated.schedule_confirmed !== true) {
     updated = processScheduleCapture(updated, answer).fields;
   }
-  const merged = preserveConfirmedFieldState(fields, updated);
+  const merged = preserveConfirmedFieldState(fields, inferFieldsFromCapturedContext(updated));
   if (isTurnDiagnosticsEnabled()) {
     logAnswerHandler({
       handler: pendingQuestion ? `applyAnswerForPendingQuestion:${pendingQuestion}` : shortAnswer ? "short_answer_without_pending" : "mergeExtractedFields",
@@ -6458,17 +8218,6 @@ function mergeRealtimeCallerAnswer(fields, answer, callerPhone, options = {}) {
     });
   }
   return merged;
-}
-function applyCallbackCorrection(fields, speech, callerPhone) {
-  const phone = extractCallbackPhoneFromSpeech(speech, callerPhone);
-  if (!phone || isCompanyPhoneNumber(phone)) {
-    return fields;
-  }
-  return syncLegacyStringFields({
-    ...fields,
-    callback_phone: normalizeCallbackPhoneE164(phone),
-    callback_phone_confirmed: false
-  });
 }
 function confirmCallbackPhone(fields) {
   return syncLegacyStringFields({
@@ -6486,13 +8235,14 @@ function buildRealtimeAcknowledgment(policy, answer, fields, filledCount, nextFi
     afterConfirmation
   });
 }
-function buildIntakeReply(policy, fields, answer, callerPhone, filledCount, afterConfirmation = false) {
+function buildIntakeReply(policy, fields, answer, callerPhone, filledCount, afterConfirmation = false, fieldsBefore) {
   const nextField = getNextRequiredField(fields);
   if (!nextField) {
     return REALTIME_ANYTHING_ELSE_QUESTION;
   }
   const question = getNaturalTransitionQuestion(nextField, fields, callerPhone);
-  const ack = buildRealtimeAcknowledgment(
+  const contextualAck = fieldsBefore && !afterConfirmation ? buildContextualMultiFieldAcknowledgment(fieldsBefore, fields, answer) : null;
+  const ack = contextualAck ?? buildRealtimeAcknowledgment(
     policy,
     answer,
     fields,
@@ -6504,17 +8254,20 @@ function buildIntakeReply(policy, fields, answer, callerPhone, filledCount, afte
   const combined = joinAcknowledgmentAndQuestion(ack, question);
   return guardIntakeReply(combined, fallback);
 }
-function appendAnythingElseNotes(fields, speech) {
+function appendAnythingElseNotes(fields, speech, callerPhone) {
   const trimmed = speech.trim();
   if (!trimmed || isAnythingElseDeclined2(trimmed)) {
     return fields;
   }
   const existing = fields.additional_notes?.trim();
   const combined = existing ? `${existing} ${trimmed}` : trimmed;
-  return syncLegacyStringFields({
+  let updated = syncLegacyStringFields({
     ...fields,
     additional_notes: combined.slice(0, 500)
   });
+  const extracted = extractAllFieldsFromTranscript(trimmed, callerPhone, null);
+  updated = mergeExtractedFields(updated, extracted, trimmed);
+  return updated;
 }
 function isAnythingElseDeclined2(speech) {
   const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
@@ -6534,13 +8287,15 @@ function countNewlyFilledFields(before, after) {
   return count;
 }
 function normalizeRealtimeFields(fields) {
-  return sanitizeInvalidStoredCallerName({
-    ...fields,
-    insurance_claim_started: fields.insurance_claim_started ?? normalizeTriStateField(fields.insurance_claim),
-    adjuster_contacted: normalizeTriStateField(fields.adjuster_contacted),
-    photos_available: normalizePhotosValue(fields.photos_available),
-    emergency_or_active_leak: fields.emergency_or_active_leak ?? normalizeTriStateField(fields.active_leak)
-  });
+  return inferFieldsFromCapturedContext(
+    sanitizeInvalidStoredCallerName({
+      ...fields,
+      insurance_claim_started: fields.insurance_claim_started ?? normalizeTriStateField(fields.insurance_claim),
+      adjuster_contacted: normalizeTriStateField(fields.adjuster_contacted),
+      photos_available: normalizePhotosValue(fields.photos_available),
+      emergency_or_active_leak: fields.emergency_or_active_leak ?? normalizeTriStateField(fields.active_leak)
+    })
+  );
 }
 function toPersistedFields(fields) {
   return toCollectedFields(normalizeRealtimeFields(fields));
@@ -6627,7 +8382,7 @@ function processValidatedNameCaptureTurn(input) {
   const outcome = processNameCaptureTurn({
     fields: input.fields,
     speech: input.speech,
-    confidence: null
+    confidence: input.confidence ?? null
   });
   if (outcome.status === "confirm") {
     const pendingName = outcome.fields.name_pending_confirmation?.trim();
@@ -6646,14 +8401,20 @@ function processValidatedNameCaptureTurn(input) {
   return buildInvalidNameCaptureRepeatOutcome(input);
 }
 function buildCallbackConfirmationReply(fields) {
-  return ensureSingleIntakeQuestion(
-    buildCallbackReadbackConfirmation(fields.callback_phone ?? "")
+  return ensureSingleIntakeQuestion(buildPhoneConfirmationReply(fields));
+}
+function buildAddressConfirmationReply2(fields) {
+  return ensureSingleIntakeQuestion(buildAddressConfirmationReply(fields));
+}
+function prepareCallbackConfirmationFields(fields) {
+  return attachFieldConfirmationContext(
+    fields,
+    "callback_phone",
+    fields.callback_phone ?? ""
   );
 }
-function buildAddressConfirmationReply(fields) {
-  return ensureSingleIntakeQuestion(
-    buildAddressReadbackConfirmation(fields.address ?? "")
-  );
+function prepareAddressConfirmationFields(fields) {
+  return attachFieldConfirmationContext(fields, "address", fields.address ?? "");
 }
 function buildScheduleConfirmationReply(fields) {
   const spoken = fields.appointment_preference?.trim();
@@ -6698,18 +8459,18 @@ function buildPostIntakeReply(policy, fieldsBefore, updatedFields, trimmedSpeech
       options
     );
   }
-  if (isCallerNameResolved(updatedFields) && !needsImmediateSafetyClarification(updatedFields) && needsCallbackReadback(updatedFields) && nextRequired === "callback_phone") {
+  if (isCallerNameResolved(updatedFields) && !needsImmediateSafetyClarification(updatedFields) && needsCallbackReadback(updatedFields)) {
     return packagePostIntakeResult(
-      updatedFields,
+      prepareCallbackConfirmationFields(updatedFields),
       buildCallbackConfirmationReply(updatedFields),
       "awaiting_callback_confirmation",
       options
     );
   }
-  if (isCallerNameResolved(updatedFields) && isCallbackPhoneResolved(updatedFields) && needsAddressReadback(updatedFields) && nextRequired === "address") {
+  if (isCallerNameResolved(updatedFields) && isCallbackPhoneResolved(updatedFields) && needsAddressReadback(updatedFields)) {
     return packagePostIntakeResult(
-      updatedFields,
-      buildAddressConfirmationReply(updatedFields),
+      prepareAddressConfirmationFields(updatedFields),
+      buildAddressConfirmationReply2(updatedFields),
       "awaiting_address_confirmation",
       options
     );
@@ -6746,7 +8507,8 @@ function buildPostIntakeReply(policy, fieldsBefore, updatedFields, trimmedSpeech
     trimmedSpeech,
     callerPhone,
     filledCount,
-    options.afterConfirmation === true
+    options.afterConfirmation === true,
+    fieldsBefore
   );
   const combinedReply = ensureSingleIntakeQuestion(intakeReply);
   return packagePostIntakeResult(updatedFields, combinedReply, "collecting_intake", options);
@@ -6838,7 +8600,7 @@ async function processRealtimeCallerTurn(input) {
       };
     }
     if (isCallbackConfirmed(trimmedSpeech)) {
-      const confirmedFields = confirmCallbackPhone(fieldsBefore);
+      const confirmedFields = clearFieldConfirmationContext(confirmCallbackPhone(fieldsBefore));
       const filledCount2 = countNewlyFilledFields(fieldsBefore, confirmedFields);
       const post2 = buildPostIntakeReply(
         acknowledgmentPolicy,
@@ -6867,27 +8629,45 @@ async function processRealtimeCallerTurn(input) {
         nextConversationState: post2.nextState
       });
     }
-    if (isCallbackRejected(trimmedSpeech) || trimmedSpeech.length > 0) {
-      const correctedFields = applyCallbackCorrection(fieldsBefore, trimmedSpeech, callerPhone);
-      const reply = buildCallbackConfirmationReply(correctedFields);
+    const correction = applyCallbackScopedCorrection(fieldsBefore, trimmedSpeech, callerPhone);
+    if (correction.outcome === "needs_clarification" && correction.replyText) {
       session = applyLocalSessionUpdate(session, {
-        collectedFields: correctedFields,
-        currentQuestion: reply
+        collectedFields: correction.fields,
+        currentQuestion: correction.replyText
       });
       persistTurnAsync(callSid, {
-        collectedFields: correctedFields,
-        currentQuestion: reply,
+        collectedFields: correction.fields,
+        currentQuestion: correction.replyText,
         callerSpeech: trimmedSpeech,
-        assistantReply: reply
+        assistantReply: correction.replyText
       });
       return finishTurn(input, {
-        replyText: reply,
+        replyText: ensureSingleIntakeQuestion(correction.replyText),
         hangup: false,
         hangupAfterMark: false,
         session,
         nextConversationState: "awaiting_callback_confirmation"
       });
     }
+    const correctedFields = correction.fields;
+    const reply = correction.replyText ?? (correction.updated ? buildCallbackConfirmationReply(correctedFields) : buildCallbackConfirmationReply(fieldsBefore));
+    session = applyLocalSessionUpdate(session, {
+      collectedFields: correctedFields,
+      currentQuestion: reply
+    });
+    persistTurnAsync(callSid, {
+      collectedFields: correctedFields,
+      currentQuestion: reply,
+      callerSpeech: trimmedSpeech,
+      assistantReply: reply
+    });
+    return finishTurn(input, {
+      replyText: reply,
+      hangup: false,
+      hangupAfterMark: false,
+      session,
+      nextConversationState: "awaiting_callback_confirmation"
+    });
   }
   if (conversationState === "awaiting_address_confirmation") {
     if (!trimmedSpeech) {
@@ -6900,7 +8680,7 @@ async function processRealtimeCallerTurn(input) {
       };
     }
     if (isAddressConfirmedSpeech(trimmedSpeech)) {
-      const confirmedFields = confirmAddress(fieldsBefore);
+      const confirmedFields = clearFieldConfirmationContext(confirmAddress(fieldsBefore));
       const filledCount2 = countNewlyFilledFields(fieldsBefore, confirmedFields);
       const post2 = buildPostIntakeReply(
         acknowledgmentPolicy,
@@ -6929,27 +8709,45 @@ async function processRealtimeCallerTurn(input) {
         nextConversationState: post2.nextState
       });
     }
-    if (isAddressRejectedSpeech(trimmedSpeech) || trimmedSpeech.length > 0) {
-      const correctedFields = applyAddressCorrection(fieldsBefore, trimmedSpeech);
-      const reply = buildAddressConfirmationReply(correctedFields);
+    const correction = applyAddressScopedCorrection(fieldsBefore, trimmedSpeech);
+    if (correction.outcome === "needs_clarification" && correction.replyText) {
       session = applyLocalSessionUpdate(session, {
-        collectedFields: correctedFields,
-        currentQuestion: reply
+        collectedFields: correction.fields,
+        currentQuestion: correction.replyText
       });
       persistTurnAsync(callSid, {
-        collectedFields: correctedFields,
-        currentQuestion: reply,
+        collectedFields: correction.fields,
+        currentQuestion: correction.replyText,
         callerSpeech: trimmedSpeech,
-        assistantReply: reply
+        assistantReply: correction.replyText
       });
       return finishTurn(input, {
-        replyText: reply,
+        replyText: ensureSingleIntakeQuestion(correction.replyText),
         hangup: false,
         hangupAfterMark: false,
         session,
         nextConversationState: "awaiting_address_confirmation"
       });
     }
+    const correctedFields = correction.fields;
+    const reply = correction.replyText ?? (correction.updated ? buildAddressConfirmationReply2(correctedFields) : buildAddressConfirmationReply2(fieldsBefore));
+    session = applyLocalSessionUpdate(session, {
+      collectedFields: correctedFields,
+      currentQuestion: reply
+    });
+    persistTurnAsync(callSid, {
+      collectedFields: correctedFields,
+      currentQuestion: reply,
+      callerSpeech: trimmedSpeech,
+      assistantReply: reply
+    });
+    return finishTurn(input, {
+      replyText: reply,
+      hangup: false,
+      hangupAfterMark: false,
+      session,
+      nextConversationState: "awaiting_address_confirmation"
+    });
   }
   if (conversationState === "awaiting_schedule_clarification") {
     if (!trimmedSpeech) {
@@ -6963,6 +8761,37 @@ async function processRealtimeCallerTurn(input) {
     }
     const capture = processScheduleCapture(fieldsBefore, trimmedSpeech);
     let nextFields = capture.fields;
+    if (capture.flexibleAcceptMessage) {
+      const filledCount3 = countNewlyFilledFields(fieldsBefore, nextFields);
+      const post3 = buildPostIntakeReply(
+        acknowledgmentPolicy,
+        fieldsBefore,
+        nextFields,
+        trimmedSpeech,
+        callerPhone,
+        filledCount3
+      );
+      const reply = ensureSingleIntakeQuestion(
+        `${capture.flexibleAcceptMessage} ${post3.replyText}`.trim()
+      );
+      session = applyLocalSessionUpdate(session, {
+        collectedFields: post3.fields,
+        currentQuestion: reply
+      });
+      persistTurnAsync(callSid, {
+        collectedFields: post3.fields,
+        currentQuestion: reply,
+        callerSpeech: trimmedSpeech,
+        assistantReply: reply
+      });
+      return finishTurn(input, {
+        replyText: reply,
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: post3.nextState
+      });
+    }
     if (capture.clarificationPrompt) {
       const reply = ensureSingleIntakeQuestion(capture.clarificationPrompt);
       session = applyLocalSessionUpdate(session, {
@@ -7163,23 +8992,52 @@ async function processRealtimeCallerTurn(input) {
         nextConversationState: "collecting_intake"
       });
     }
-    const reply = ensureSingleIntakeQuestion(buildSummaryWithConfirmation(updatedFields2));
+    if (shouldPresentFullSummaryConfirmation(updatedFields2)) {
+      const reply2 = ensureSingleIntakeQuestion(buildSummaryWithConfirmation(updatedFields2));
+      session = applyLocalSessionUpdate(session, {
+        collectedFields: updatedFields2,
+        currentQuestion: reply2
+      });
+      persistTurnAsync(callSid, {
+        collectedFields: updatedFields2,
+        currentQuestion: reply2,
+        callerSpeech: trimmedSpeech,
+        assistantReply: reply2
+      });
+      return finishTurn(input, {
+        replyText: reply2,
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: "presenting_summary"
+      });
+    }
+    const confirmedFields = syncLegacyStringFields({
+      ...updatedFields2,
+      summary_confirmed: true
+    });
+    const reply = ensureSingleIntakeQuestion(
+      buildClosingMessage({ informationSent: confirmedFields.intake_information_sent === true })
+    );
     session = applyLocalSessionUpdate(session, {
-      collectedFields: updatedFields2,
-      currentQuestion: reply
+      collectedFields: confirmedFields,
+      currentQuestion: null
+    });
+    void completeCallSession(callSid, "completed").catch((error) => {
+      logError("complete_call_session_failed", { callSid }, error);
     });
     persistTurnAsync(callSid, {
-      collectedFields: updatedFields2,
-      currentQuestion: reply,
+      collectedFields: confirmedFields,
+      currentQuestion: null,
       callerSpeech: trimmedSpeech,
       assistantReply: reply
     });
     return finishTurn(input, {
       replyText: reply,
-      hangup: false,
-      hangupAfterMark: false,
+      hangup: true,
+      hangupAfterMark: true,
       session,
-      nextConversationState: "presenting_summary"
+      nextConversationState: "delivering_closing"
     });
   }
   if (conversationState === "awaiting_summary_confirmation" || conversationState === "handling_correction") {
@@ -7209,7 +9067,9 @@ async function processRealtimeCallerTurn(input) {
         ...fieldsBefore,
         summary_confirmed: true
       });
-      const reply = buildClosingMessage();
+      const reply = buildClosingMessage({
+        informationSent: confirmedFields.intake_information_sent === true
+      });
       session = applyLocalSessionUpdate(session, {
         collectedFields: confirmedFields,
         currentQuestion: null
@@ -7263,38 +9123,72 @@ async function processRealtimeCallerTurn(input) {
     };
   }
   if (conversationState === "awaiting_opening_name") {
-    const nameOutcome = processCallerNameTurn(fieldsBefore, trimmedSpeech);
-    let updatedFields2 = nameOutcome.fields;
+    const nameOutcome = processCallerNameTurn(fieldsBefore, trimmedSpeech, {
+      confidence: input.speechConfidence ?? null
+    });
+    const extracted = extractAllFieldsFromTranscript(trimmedSpeech, callerPhone, "caller_name");
+    let updatedFields2 = mergeExtractedFields(nameOutcome.fields, extracted, trimmedSpeech);
+    const pendingQuestionText = nameOutcome.replyText?.trim() || OPENING_CALLER_NAME_QUESTION;
     if (!nameOutcome.complete) {
       updatedFields2 = attachPendingQuestion(updatedFields2, "caller_name");
       session = applyLocalSessionUpdate(session, {
         collectedFields: updatedFields2,
-        currentQuestion: nameOutcome.replyText ?? OPENING_CALLER_NAME_QUESTION
+        currentQuestion: pendingQuestionText
       });
       persistTurnAsync(callSid, {
         collectedFields: updatedFields2,
-        currentQuestion: nameOutcome.replyText ?? OPENING_CALLER_NAME_QUESTION,
+        currentQuestion: pendingQuestionText,
         callerSpeech: trimmedSpeech,
-        assistantReply: nameOutcome.replyText ?? OPENING_CALLER_NAME_QUESTION
+        assistantReply: nameOutcome.replyText?.trim() || ""
       });
       return finishTurn(input, {
-        replyText: ensureSingleIntakeQuestion(
-          nameOutcome.replyText ?? OPENING_CALLER_NAME_QUESTION
-        ),
+        replyText: nameOutcome.replyText?.trim() ? ensureSingleIntakeQuestion(nameOutcome.replyText) : "",
         hangup: false,
         hangupAfterMark: false,
         session,
-        nextConversationState: "awaiting_opening_name"
+        nextConversationState: "awaiting_opening_name",
+        structuredStateUpdated: true
       });
     }
-    updatedFields2 = attachPendingQuestion(
-      {
+    updatedFields2 = {
+      ...updatedFields2,
+      opening_name_complete: true,
+      intake_intro_delivered: true
+    };
+    if (detectEmergency(trimmedSpeech) && !updatedFields2.emergency_acknowledged) {
+      updatedFields2 = {
         ...updatedFields2,
-        opening_name_complete: true,
-        intake_intro_delivered: true
-      },
-      "reason_for_call"
-    );
+        urgency: updatedFields2.urgency ?? "emergency",
+        emergency_acknowledged: true
+      };
+    }
+    if (updatedFields2.problem_description?.trim()) {
+      updatedFields2 = syncLegacyStringFields({
+        ...updatedFields2,
+        call_reason_awaiting_clarification: false,
+        pending_question: void 0
+      });
+      const post2 = buildCallReasonResolvedReply(updatedFields2, callerPhone);
+      session = applyLocalSessionUpdate(session, {
+        collectedFields: post2.fields,
+        currentQuestion: post2.replyText
+      });
+      persistTurnAsync(callSid, {
+        collectedFields: post2.fields,
+        currentQuestion: post2.replyText,
+        callerSpeech: trimmedSpeech,
+        assistantReply: post2.replyText
+      });
+      return finishTurn(input, {
+        replyText: ensureNonEmptyReply(post2.replyText, SAFE_INTAKE_REPROMPT),
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: post2.nextState,
+        structuredStateUpdated: true
+      });
+    }
+    updatedFields2 = attachPendingQuestion(updatedFields2, "reason_for_call");
     const reasonQuestion = nameOutcome.replyText ? `${nameOutcome.replyText} What can the roofing team help you with today?` : buildCallReasonQuestionAfterName(updatedFields2);
     session = applyLocalSessionUpdate(session, {
       collectedFields: updatedFields2,
@@ -7311,7 +9205,8 @@ async function processRealtimeCallerTurn(input) {
       hangup: false,
       hangupAfterMark: false,
       session,
-      nextConversationState: "listening_for_reason"
+      nextConversationState: "listening_for_reason",
+      structuredStateUpdated: true
     });
   }
   if (shouldHandlePendingCallReason(fieldsBefore, conversationState)) {
@@ -7385,7 +9280,8 @@ async function processRealtimeCallerTurn(input) {
   })) {
     const nameOutcome = processValidatedNameCaptureTurn({
       fields: fieldsBefore,
-      speech: trimmedSpeech
+      speech: trimmedSpeech,
+      confidence: input.speechConfidence ?? null
     });
     if (nameOutcome.status === "confirm" || nameOutcome.status === "repeat") {
       session = applyLocalSessionUpdate(session, {
@@ -7674,7 +9570,7 @@ var SessionOrchestrator = class {
       }
     };
   }
-  async handleCallerTranscript(transcript, turnId) {
+  async handleCallerTranscript(transcript, turnId, speechConfidence = null) {
     const trimmed = transcript.trim();
     if (!trimmed) {
       return null;
@@ -7704,6 +9600,7 @@ var SessionOrchestrator = class {
         callSid: this.context.callSid,
         callerPhone: this.context.callerPhone,
         speechResult: trimmed,
+        speechConfidence,
         conversationState: this.conversationState,
         acknowledgmentPolicy: this.acknowledgmentPolicy,
         isFirstCallerTurn: this.awaitingFirstCallerTurn,
@@ -7783,11 +9680,15 @@ var CallBridge = class {
   openingSilence = new OpeningSilenceController();
   openingGreetingPlaybackComplete = false;
   openingNameQuestionSent = false;
+  openingNameListenStarted = false;
   queuedOpeningTranscript = null;
   responseCreateCount = 0;
   openingResponseCreateCount = 0;
   postOpeningResponseCreateCount = 0;
   audioDiagnostics = new CallAudioDiagnostics();
+  stallRecovery = new StallRecoveryController();
+  bargeInCancelledResponse = false;
+  callerSpeechActive = false;
   start() {
     logInfo("twilio_stream_connected");
     this.audioDiagnostics.recordTwilioStreamConnected();
@@ -7891,6 +9792,16 @@ var CallBridge = class {
       },
       onBargeIn: () => {
         this.audioDiagnostics.recordBargeIn(this.activeTurnId);
+        this.bargeInCancelledResponse = true;
+        this.pendingSpeech = null;
+        this.clearResponseWatchdog();
+        this.stallRecovery.clearAudioCompletionWatch();
+        this.responseGuard.onResponseCancelled();
+        this.pendingClientResponse = false;
+        logTurnBridgeEvent("turn_diag_barge_in", {
+          turnId: this.activeTurnId,
+          callSid: this.callSid ?? void 0
+        });
       },
       onTruncation: () => {
         this.audioDiagnostics.recordTruncation(this.activeTurnId);
@@ -7949,8 +9860,12 @@ var CallBridge = class {
     }
   }
   beginOpeningNameListen() {
+    if (this.openingNameListenStarted) {
+      return;
+    }
+    this.openingNameListenStarted = true;
     this.openingGreetingPlaybackComplete = true;
-    this.openingSilence.beginListeningForReason();
+    this.openingSilence.beginListeningForCallerName();
     this.orchestrator?.onOpeningNameQuestionComplete();
     this.scheduleOpeningSilenceReprompt();
     const queued = this.queuedOpeningTranscript;
@@ -7981,6 +9896,7 @@ var CallBridge = class {
     if (isMeaningfulOpeningCallerTranscript(transcript, { awaitingName: true })) {
       this.openingSilence.onMeaningfulCallerTranscript();
       this.responseGuard.completeOpeningReasonListen();
+      this.openingNameListenStarted = false;
     }
     this.processCallerTurnReply(transcript);
   }
@@ -7991,6 +9907,10 @@ var CallBridge = class {
   }
   handleOpeningSilencePrompt(prompt) {
     if (this.closed || !this.openingSilence.isListeningForReason()) {
+      return;
+    }
+    if (this.callerSpeechActive || this.openingSilence.isCallerSpeechActive()) {
+      this.scheduleOpeningSilenceReprompt();
       return;
     }
     if (prompt === OPENING_SILENCE_GOODBYE) {
@@ -8110,16 +10030,31 @@ var CallBridge = class {
         logInfo("openai_session_ready", { type: event.type });
         break;
       case "input_audio_buffer.speech_started":
+        this.callerSpeechActive = true;
+        this.openingSilence.onCallerSpeechStarted();
+        logTurnBridgeEvent("turn_diag_caller_speech_started", {
+          turnId: this.activeTurnId,
+          callSid: this.callSid ?? void 0
+        });
         this.responseGuard.onCallerSpeechStarted();
         this.bargeIn?.handleCallerSpeechStarted();
         break;
       case "input_audio_buffer.speech_stopped":
+        this.callerSpeechActive = false;
+        this.openingSilence.onCallerSpeechStopped();
+        logTurnBridgeEvent("turn_diag_caller_speech_stopped", {
+          turnId: this.activeTurnId + 1,
+          callSid: this.callSid ?? void 0
+        });
         this.activeTurnId += 1;
         this.responseGuard.beginCallerTurn(this.activeTurnId);
         this.turnTiming.beginTurn(this.callSid ?? void 0, this.activeTurnId);
         this.turnTiming.record("speech_stopped", this.callSid ?? void 0, {
           turnId: this.activeTurnId
         });
+        if (this.openingSilence.isListeningForReason()) {
+          this.scheduleOpeningSilenceReprompt();
+        }
         break;
       case "conversation.item.input_audio_transcription.completed":
         void this.handleTranscriptionCompleted(event);
@@ -8161,6 +10096,9 @@ var CallBridge = class {
           turnId: this.activeTurnId
         });
         logFirstAssistantAudioReceived();
+        this.stallRecovery.beginAudioCompletionWatch(this.activeTurnId, (category) => {
+          this.handleStallRecovery(category, this.activeTurnId);
+        });
         this.responseGuard.onAssistantAudioDelta();
         this.audioDiagnostics.recordOpenAiAudioDelta(
           this.activeTurnId,
@@ -8180,6 +10118,7 @@ var CallBridge = class {
         }
         break;
       case "response.done":
+        this.stallRecovery.clearAudioCompletionWatch();
         this.bargeIn?.handleResponseCompleted();
         this.responseGuard.onResponseDone();
         this.audioDiagnostics.recordOpenAiResponseEvent("response.done", this.activeTurnId);
@@ -8224,12 +10163,29 @@ var CallBridge = class {
         this.pendingClientResponse = false;
         this.awaitingClosingMark = false;
         this.clearResponseWatchdog();
-        this.flushPendingSpeech();
+        this.stallRecovery.clearAudioCompletionWatch();
+        logTurnBridgeEvent("turn_diag_response_cancelled", {
+          turnId: this.activeTurnId,
+          callSid: this.callSid ?? void 0,
+          bargeIn: this.bargeInCancelledResponse
+        });
+        {
+          const skipReplay = this.bargeInCancelledResponse;
+          this.bargeInCancelledResponse = false;
+          if (!skipReplay) {
+            this.flushPendingSpeech();
+          }
+        }
         void this.processQueuedCallerTranscript();
         break;
       case "error":
         logError("openai_event_error", {
           errorType: String(event.error ?? "unknown")
+        });
+        logStallDetected({
+          category: "websocket_interrupted",
+          turnId: this.activeTurnId,
+          callSid: this.callSid ?? void 0
         });
         this.responseGuard.onOpenAiError();
         this.pendingClientResponse = false;
@@ -8278,11 +10234,28 @@ var CallBridge = class {
       turnId: this.activeTurnId
     });
     beginTurnDiagnostic(this.callSid ?? "unknown", this.activeTurnId);
-    if (isMeaningfulOpeningCallerTranscript(transcript, { awaitingName: true })) {
-      this.openingSilence.onMeaningfulCallerTranscript();
-      this.responseGuard.completeOpeningReasonListen();
+    logTurnBridgeEvent("turn_diag_transcript_received", {
+      turnId: this.activeTurnId,
+      callSid: this.callSid ?? void 0,
+      transcriptLength: transcript.length
+    });
+    void this.processCallerTurnReply(transcript, this.extractTranscriptConfidence(event));
+  }
+  extractTranscriptConfidence(event) {
+    const item = event.item;
+    const candidates = [event.confidence, item?.confidence];
+    for (const candidate of candidates) {
+      if (typeof candidate === "number" && Number.isFinite(candidate)) {
+        return candidate;
+      }
+      if (typeof candidate === "string") {
+        const parsed = Number.parseFloat(candidate);
+        if (Number.isFinite(parsed)) {
+          return parsed;
+        }
+      }
     }
-    void this.processCallerTurnReply(transcript);
+    return null;
   }
   scheduleResponseWatchdog(turnId, request) {
     if (this.openingSilence.isListeningForReason()) {
@@ -8315,12 +10288,10 @@ var CallBridge = class {
     if (this.responseWatchdogRetryUsed) {
       logWarn("response_watchdog_exhausted", {
         callSid: this.callSid ?? void 0,
-        turnId
+        turnId,
+        cause: "stalled_response_generation"
       });
-      this.responseGuard.releaseActiveResponse({
-        waitingForCaller: true,
-        preserveCallerTurnReady: true
-      });
+      this.handleStallRecovery("response_audio_stalled", turnId);
       return;
     }
     const request = this.responseWatchdogRequest;
@@ -8348,30 +10319,94 @@ var CallBridge = class {
       reason: "caller_turn_reply"
     });
   }
-  processCallerTurnReply(transcript) {
+  handleStallRecovery(category, turnId) {
+    if (this.closed || this.callerSpeechActive || this.openingSilence.isCallerSpeechActive()) {
+      return;
+    }
+    if (!this.stallRecovery.canAttemptRecovery()) {
+      logStallDetected({
+        category: `${category}_recovery_exhausted`,
+        turnId,
+        callSid: this.callSid ?? void 0
+      });
+      return;
+    }
+    logStallDetected({
+      category,
+      turnId,
+      callSid: this.callSid ?? void 0
+    });
+    const attempt = this.stallRecovery.recordRecoveryAttempt();
+    logRecoveryTriggered({
+      category,
+      attempt,
+      turnId,
+      callSid: this.callSid ?? void 0
+    });
+    this.responseGuard.prepareCallerTurnRecovery();
+    this.pendingClientResponse = false;
+    this.clearResponseWatchdog();
+    this.stallRecovery.clearExtractionWatch();
+    this.stallRecovery.clearAudioCompletionWatch();
+    const fields = this.orchestrator?.getSession()?.collected_fields ?? {};
+    const reply = buildStallRecoveryReply(fields, this.callerPhone, attempt);
+    this.enqueueOrSpeakSpeech(
+      {
+        text: reply,
+        reason: "caller_turn_reply"
+      },
+      { turnId }
+    );
+  }
+  completeOpeningListenIfNeeded(transcript) {
+    if (!this.openingSilence.isListeningForReason() && !this.openingNameListenStarted) {
+      return;
+    }
+    if (isMeaningfulOpeningCallerTranscript(transcript, { awaitingName: true })) {
+      this.openingSilence.completeOpeningListen();
+      this.responseGuard.completeOpeningReasonListen();
+      this.openingNameListenStarted = false;
+    }
+  }
+  processCallerTurnReply(transcript, speechConfidence = null) {
     if (!this.orchestrator || !this.openAi) {
       return;
     }
     const turnId = this.activeTurnId;
-    void this.orchestrator.handleCallerTranscript(transcript, this.activeTurnId).then((result) => {
+    logTurnBridgeEvent("turn_diag_extraction_started", {
+      turnId,
+      callSid: this.callSid ?? void 0
+    });
+    this.stallRecovery.beginExtractionWatch(turnId, (category) => {
+      this.handleStallRecovery(category, turnId);
+    });
+    void this.orchestrator.handleCallerTranscript(transcript, this.activeTurnId, speechConfidence).then((result) => {
       if (this.turnTiming.isStaleTurn(turnId)) {
+        this.stallRecovery.completeExtraction();
         return;
       }
+      this.stallRecovery.completeExtraction();
+      logTurnBridgeEvent("turn_diag_extraction_completed", {
+        turnId,
+        callSid: this.callSid ?? void 0
+      });
       this.turnTiming.record("caller_turn_processed", this.callSid ?? void 0, { turnId });
       if (!result?.replyText) {
         if (this.openingSilence.isListeningForReason()) {
+          this.scheduleOpeningSilenceReprompt();
           return;
         }
-        this.attemptEmptyReplyRecovery(transcript);
+        this.handleStallRecovery("extraction_no_response_requested", turnId);
         return;
       }
+      this.completeOpeningListenIfNeeded(transcript);
       if (result.structuredStateUpdated) {
         this.turnTiming.record("structured_state_updated", this.callSid ?? void 0, { turnId });
       }
       this.turnTiming.record("next_question_selected", this.callSid ?? void 0, { turnId });
       this.turnTiming.record("response_requested", this.callSid ?? void 0, { turnId });
       const reason = result.hangupAfterMark ? "closing_message" : "caller_turn_reply";
-      this.enqueueOrSpeakSpeech(
+      const sent = this.enqueueOrSpeakSpeech(
         {
           text: result.replyText,
           reason,
@@ -8380,16 +10415,13 @@ var CallBridge = class {
         },
         { turnId }
       );
+      if (!sent && reason === "caller_turn_reply") {
+        this.handleStallRecovery("extraction_no_response_requested", turnId);
+      }
     }).catch((error) => {
+      this.stallRecovery.completeExtraction();
       logError("caller_turn_processing_failed", { callSid: this.callSid ?? void 0, turnId }, error);
-      this.responseGuard.prepareCallerTurnRecovery();
-      this.enqueueOrSpeakSpeech(
-        {
-          text: "Thanks for your patience. Could you repeat that last answer for me?",
-          reason: "caller_turn_reply"
-        },
-        { turnId }
-      );
+      this.handleStallRecovery("transcript_extraction_stalled", turnId);
     });
   }
   async processQueuedCallerTranscript() {

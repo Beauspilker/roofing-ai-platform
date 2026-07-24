@@ -19,8 +19,7 @@ export const SUMMARY_CONFIRMATION_QUESTION = "Does all of that sound correct?";
 export const SUMMARY_RECONFIRMATION_QUESTION = "Does that sound correct now?";
 
 export const CLOSING_MESSAGE =
-  "Great. I'll send this information to the roofing team, and someone will follow up with you by call or text. " +
-  "Thanks for calling Beau's Roofing. Have a great day.";
+  "Perfect, I have everything I need. I'll send this information to the roofing company, and someone will reach out using the callback information you provided. Thanks for calling, and have a great day.";
 
 export function isAwaitingCallerInput(state: ConversationState): boolean {
   return (

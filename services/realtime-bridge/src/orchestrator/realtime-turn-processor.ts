@@ -20,8 +20,6 @@ import {
 import type { ConversationState } from "./conversation-state.js";
 import {
   appendAnythingElseNotes,
-  applyCallbackCorrection,
-  buildCallbackReadbackConfirmation,
   buildIntakeReply,
   confirmCallbackPhone,
   countNewlyFilledFields,
@@ -37,12 +35,19 @@ import {
   toPersistedFields,
 } from "./realtime-intake.js";
 import {
-  applyAddressCorrection,
-  buildAddressReadbackConfirmation,
+  buildAddressConfirmationReply as buildAddressConfirmationReplyFromFields,
+  buildPhoneConfirmationReply as buildPhoneConfirmationReplyFromFields,
+} from "./confirmation-builders.js";
+import {
   confirmAddress,
   isAddressConfirmedSpeech,
-  isAddressRejectedSpeech,
 } from "./address-confirmation.js";
+import {
+  applyAddressScopedCorrection,
+  applyCallbackScopedCorrection,
+  attachFieldConfirmationContext,
+  clearFieldConfirmationContext,
+} from "./field-scoped-correction.js";
 import {
   buildScheduleConfirmationQuestion,
   confirmSchedule,
@@ -111,6 +116,7 @@ import {
   needsImmediateSafetyClarification,
   canCloseCall,
   canPresentSummary,
+  shouldPresentFullSummaryConfirmation,
 } from "./required-intake.js";
 import { applyCorrectionToStructuredField, syncLegacyStringFields } from "./structured-intake.js";
 import { logError } from "../logger.js";
@@ -314,15 +320,23 @@ function processValidatedNameCaptureTurn(input: {
 }
 
 function buildCallbackConfirmationReply(fields: RealtimeFields): string {
-  return ensureSingleIntakeQuestion(
-    buildCallbackReadbackConfirmation(fields.callback_phone ?? ""),
-  );
+  return ensureSingleIntakeQuestion(buildPhoneConfirmationReplyFromFields(fields));
 }
 
 function buildAddressConfirmationReply(fields: RealtimeFields): string {
-  return ensureSingleIntakeQuestion(
-    buildAddressReadbackConfirmation(fields.address ?? ""),
+  return ensureSingleIntakeQuestion(buildAddressConfirmationReplyFromFields(fields));
+}
+
+function prepareCallbackConfirmationFields(fields: RealtimeFields): RealtimeFields {
+  return attachFieldConfirmationContext(
+    fields,
+    "callback_phone",
+    fields.callback_phone ?? "",
   );
+}
+
+function prepareAddressConfirmationFields(fields: RealtimeFields): RealtimeFields {
+  return attachFieldConfirmationContext(fields, "address", fields.address ?? "");
 }
 
 function buildScheduleConfirmationReply(fields: RealtimeFields): string {
@@ -407,7 +421,7 @@ function buildPostIntakeReply(
     needsCallbackReadback(updatedFields)
   ) {
     return packagePostIntakeResult(
-      updatedFields,
+      prepareCallbackConfirmationFields(updatedFields),
       buildCallbackConfirmationReply(updatedFields),
       "awaiting_callback_confirmation",
       options,
@@ -420,7 +434,7 @@ function buildPostIntakeReply(
     needsAddressReadback(updatedFields)
   ) {
     return packagePostIntakeResult(
-      updatedFields,
+      prepareAddressConfirmationFields(updatedFields),
       buildAddressConfirmationReply(updatedFields),
       "awaiting_address_confirmation",
       options,
@@ -467,6 +481,7 @@ function buildPostIntakeReply(
     callerPhone,
     filledCount,
     options.afterConfirmation === true,
+    fieldsBefore,
   );
   const combinedReply = ensureSingleIntakeQuestion(intakeReply);
 
@@ -589,7 +604,7 @@ export async function processRealtimeCallerTurn(
     }
 
     if (isCallbackConfirmed(trimmedSpeech)) {
-      const confirmedFields = confirmCallbackPhone(fieldsBefore);
+      const confirmedFields = clearFieldConfirmationContext(confirmCallbackPhone(fieldsBefore));
       const filledCount = countNewlyFilledFields(fieldsBefore, confirmedFields);
       const post = buildPostIntakeReply(
         acknowledgmentPolicy,
@@ -622,30 +637,56 @@ export async function processRealtimeCallerTurn(
       });
     }
 
-    if (isCallbackRejected(trimmedSpeech) || trimmedSpeech.length > 0) {
-      const correctedFields = applyCallbackCorrection(fieldsBefore, trimmedSpeech, callerPhone);
-      const reply = buildCallbackConfirmationReply(correctedFields);
+    const correction = applyCallbackScopedCorrection(fieldsBefore, trimmedSpeech, callerPhone);
 
+    if (correction.outcome === "needs_clarification" && correction.replyText) {
       session = applyLocalSessionUpdate(session, {
-        collectedFields: correctedFields,
-        currentQuestion: reply,
+        collectedFields: correction.fields,
+        currentQuestion: correction.replyText,
       });
 
       persistTurnAsync(callSid, {
-        collectedFields: correctedFields,
-        currentQuestion: reply,
+        collectedFields: correction.fields,
+        currentQuestion: correction.replyText,
         callerSpeech: trimmedSpeech,
-        assistantReply: reply,
+        assistantReply: correction.replyText,
       });
 
       return finishTurn(input, {
-        replyText: reply,
+        replyText: ensureSingleIntakeQuestion(correction.replyText),
         hangup: false,
         hangupAfterMark: false,
         session,
         nextConversationState: "awaiting_callback_confirmation",
       });
     }
+
+    const correctedFields = correction.fields;
+    const reply =
+      correction.replyText ??
+      (correction.updated
+        ? buildCallbackConfirmationReply(correctedFields)
+        : buildCallbackConfirmationReply(fieldsBefore));
+
+    session = applyLocalSessionUpdate(session, {
+      collectedFields: correctedFields,
+      currentQuestion: reply,
+    });
+
+    persistTurnAsync(callSid, {
+      collectedFields: correctedFields,
+      currentQuestion: reply,
+      callerSpeech: trimmedSpeech,
+      assistantReply: reply,
+    });
+
+    return finishTurn(input, {
+      replyText: reply,
+      hangup: false,
+      hangupAfterMark: false,
+      session,
+      nextConversationState: "awaiting_callback_confirmation",
+    });
   }
 
   if (conversationState === "awaiting_address_confirmation") {
@@ -660,7 +701,7 @@ export async function processRealtimeCallerTurn(
     }
 
     if (isAddressConfirmedSpeech(trimmedSpeech)) {
-      const confirmedFields = confirmAddress(fieldsBefore);
+      const confirmedFields = clearFieldConfirmationContext(confirmAddress(fieldsBefore));
       const filledCount = countNewlyFilledFields(fieldsBefore, confirmedFields);
       const post = buildPostIntakeReply(
         acknowledgmentPolicy,
@@ -693,30 +734,56 @@ export async function processRealtimeCallerTurn(
       });
     }
 
-    if (isAddressRejectedSpeech(trimmedSpeech) || trimmedSpeech.length > 0) {
-      const correctedFields = applyAddressCorrection(fieldsBefore, trimmedSpeech);
-      const reply = buildAddressConfirmationReply(correctedFields);
+    const correction = applyAddressScopedCorrection(fieldsBefore, trimmedSpeech);
 
+    if (correction.outcome === "needs_clarification" && correction.replyText) {
       session = applyLocalSessionUpdate(session, {
-        collectedFields: correctedFields,
-        currentQuestion: reply,
+        collectedFields: correction.fields,
+        currentQuestion: correction.replyText,
       });
 
       persistTurnAsync(callSid, {
-        collectedFields: correctedFields,
-        currentQuestion: reply,
+        collectedFields: correction.fields,
+        currentQuestion: correction.replyText,
         callerSpeech: trimmedSpeech,
-        assistantReply: reply,
+        assistantReply: correction.replyText,
       });
 
       return finishTurn(input, {
-        replyText: reply,
+        replyText: ensureSingleIntakeQuestion(correction.replyText),
         hangup: false,
         hangupAfterMark: false,
         session,
         nextConversationState: "awaiting_address_confirmation",
       });
     }
+
+    const correctedFields = correction.fields;
+    const reply =
+      correction.replyText ??
+      (correction.updated
+        ? buildAddressConfirmationReply(correctedFields)
+        : buildAddressConfirmationReply(fieldsBefore));
+
+    session = applyLocalSessionUpdate(session, {
+      collectedFields: correctedFields,
+      currentQuestion: reply,
+    });
+
+    persistTurnAsync(callSid, {
+      collectedFields: correctedFields,
+      currentQuestion: reply,
+      callerSpeech: trimmedSpeech,
+      assistantReply: reply,
+    });
+
+    return finishTurn(input, {
+      replyText: reply,
+      hangup: false,
+      hangupAfterMark: false,
+      session,
+      nextConversationState: "awaiting_address_confirmation",
+    });
   }
 
   if (conversationState === "awaiting_schedule_clarification") {
@@ -1005,25 +1072,59 @@ export async function processRealtimeCallerTurn(
       });
     }
 
-    const reply = ensureSingleIntakeQuestion(buildSummaryWithConfirmation(updatedFields));
+    if (shouldPresentFullSummaryConfirmation(updatedFields)) {
+      const reply = ensureSingleIntakeQuestion(buildSummaryWithConfirmation(updatedFields));
+      session = applyLocalSessionUpdate(session, {
+        collectedFields: updatedFields,
+        currentQuestion: reply,
+      });
+
+      persistTurnAsync(callSid, {
+        collectedFields: updatedFields,
+        currentQuestion: reply,
+        callerSpeech: trimmedSpeech,
+        assistantReply: reply,
+      });
+
+      return finishTurn(input, {
+        replyText: reply,
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: "presenting_summary",
+      });
+    }
+
+    const confirmedFields = syncLegacyStringFields({
+      ...updatedFields,
+      summary_confirmed: true,
+    });
+    const reply = ensureSingleIntakeQuestion(
+      buildClosingMessage({ informationSent: confirmedFields.intake_information_sent === true }),
+    );
+
     session = applyLocalSessionUpdate(session, {
-      collectedFields: updatedFields,
-      currentQuestion: reply,
+      collectedFields: confirmedFields,
+      currentQuestion: null,
+    });
+
+    void completeCallSession(callSid, "completed").catch((error) => {
+      logError("complete_call_session_failed", { callSid }, error);
     });
 
     persistTurnAsync(callSid, {
-      collectedFields: updatedFields,
-      currentQuestion: reply,
+      collectedFields: confirmedFields,
+      currentQuestion: null,
       callerSpeech: trimmedSpeech,
       assistantReply: reply,
     });
 
     return finishTurn(input, {
       replyText: reply,
-      hangup: false,
-      hangupAfterMark: false,
+      hangup: true,
+      hangupAfterMark: true,
       session,
-      nextConversationState: "presenting_summary",
+      nextConversationState: "delivering_closing",
     });
   }
 
@@ -1062,7 +1163,9 @@ export async function processRealtimeCallerTurn(
         ...fieldsBefore,
         summary_confirmed: true,
       });
-      const reply = buildClosingMessage();
+      const reply = buildClosingMessage({
+        informationSent: confirmedFields.intake_information_sent === true,
+      });
       session = applyLocalSessionUpdate(session, {
         collectedFields: confirmedFields,
         currentQuestion: null,

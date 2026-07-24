@@ -5,6 +5,7 @@ import {
   guardIntakeReply,
   joinAcknowledgmentAndQuestion,
 } from "./acknowledgment-policy.js";
+import { buildContextualMultiFieldAcknowledgment } from "./contextual-acknowledgment.js";
 import {
   buildAddressReadbackConfirmation,
   needsAddressReadback,
@@ -22,6 +23,8 @@ import {
   isShortPendingStyleAnswer,
   mergeExtractedFields,
 } from "./multi-field-extraction.js";
+import { inferFieldsFromCapturedContext } from "./field-normalization.js";
+import { applyCallbackScopedCorrection } from "./field-scoped-correction.js";
 import {
   getFieldClarificationAttempts,
   incrementFieldClarificationAttempt,
@@ -185,7 +188,7 @@ export function mergeRealtimeCallerAnswer(
     updated = processScheduleCapture(updated, answer).fields;
   }
 
-  const merged = preserveConfirmedFieldState(fields, updated);
+  const merged = preserveConfirmedFieldState(fields, inferFieldsFromCapturedContext(updated));
 
   if (isTurnDiagnosticsEnabled()) {
     logAnswerHandler({
@@ -214,17 +217,7 @@ export function applyCallbackCorrection(
   speech: string,
   callerPhone?: string,
 ): RealtimeFields {
-  const phone = extractCallbackPhoneFromSpeech(speech, callerPhone);
-
-  if (!phone || isCompanyPhoneNumber(phone)) {
-    return fields;
-  }
-
-  return syncLegacyStringFields({
-    ...fields,
-    callback_phone: normalizeCallbackPhoneE164(phone),
-    callback_phone_confirmed: false,
-  });
+  return applyCallbackScopedCorrection(fields, speech, callerPhone).fields;
 }
 
 export function confirmCallbackPhone(fields: RealtimeFields): RealtimeFields {
@@ -271,6 +264,7 @@ export function buildIntakeReply(
   callerPhone: string | undefined,
   filledCount: number,
   afterConfirmation = false,
+  fieldsBefore?: RealtimeFields,
 ): string {
   const nextField = getNextRequiredField(fields);
 
@@ -279,14 +273,20 @@ export function buildIntakeReply(
   }
 
   const question = getNaturalTransitionQuestion(nextField, fields, callerPhone);
-  const ack = buildRealtimeAcknowledgment(
-    policy,
-    answer,
-    fields,
-    filledCount,
-    nextField,
-    afterConfirmation,
-  );
+  const contextualAck =
+    fieldsBefore && !afterConfirmation
+      ? buildContextualMultiFieldAcknowledgment(fieldsBefore, fields, answer)
+      : null;
+  const ack =
+    contextualAck ??
+    buildRealtimeAcknowledgment(
+      policy,
+      answer,
+      fields,
+      filledCount,
+      nextField,
+      afterConfirmation,
+    );
   const fallback = getRequiredFieldQuestion(nextField, fields, callerPhone);
   const combined = joinAcknowledgmentAndQuestion(ack, question);
 
@@ -347,16 +347,18 @@ export function countNewlyFilledFields(
 }
 
 export function normalizeRealtimeFields(fields: RealtimeFields): RealtimeFields {
-  return sanitizeInvalidStoredCallerName({
-    ...fields,
-    insurance_claim_started:
-      fields.insurance_claim_started ??
-      normalizeTriStateField(fields.insurance_claim),
-    adjuster_contacted: normalizeTriStateField(fields.adjuster_contacted),
-    photos_available: normalizePhotosValue(fields.photos_available),
-    emergency_or_active_leak:
-      fields.emergency_or_active_leak ?? normalizeTriStateField(fields.active_leak),
-  });
+  return inferFieldsFromCapturedContext(
+    sanitizeInvalidStoredCallerName({
+      ...fields,
+      insurance_claim_started:
+        fields.insurance_claim_started ??
+        normalizeTriStateField(fields.insurance_claim),
+      adjuster_contacted: normalizeTriStateField(fields.adjuster_contacted),
+      photos_available: normalizePhotosValue(fields.photos_available),
+      emergency_or_active_leak:
+        fields.emergency_or_active_leak ?? normalizeTriStateField(fields.active_leak),
+    }),
+  );
 }
 
 export function toPersistedFields(fields: RealtimeFields): CollectedFields {

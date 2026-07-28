@@ -425,7 +425,6 @@ function buildPostIntakeReply(
   }
 
   if (
-    isCallerNameResolved(updatedFields) &&
     !needsImmediateSafetyClarification(updatedFields) &&
     needsCallbackReadback(updatedFields)
   ) {

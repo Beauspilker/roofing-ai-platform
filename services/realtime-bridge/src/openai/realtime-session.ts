@@ -13,11 +13,15 @@ const REALTIME_INSTRUCTIONS =
   "Deliver exactly one short script per turn. Never ask more than one question. " +
   "Never invent intake questions or confirm details that were not provided by the server.";
 
-export function buildRealtimeSessionUpdate(voice: string, config?: BridgeConfig) {
-  const silenceDurationMs = Math.min(
-    700,
-    Math.max(500, config?.turnDetectionSilenceDurationMs ?? 600),
-  );
+export function buildRealtimeSessionUpdate(
+  voice: string,
+  config?: BridgeConfig,
+  options: { openingStoryMode?: boolean } = {},
+) {
+  const defaultSilenceMs = config?.turnDetectionSilenceDurationMs ?? 600;
+  const silenceDurationMs = options.openingStoryMode
+    ? Math.max(defaultSilenceMs, config?.openingStorySilenceDurationMs ?? 1800)
+    : Math.min(700, Math.max(500, defaultSilenceMs));
   const prefixPaddingMs = Math.min(
     300,
     Math.max(200, config?.turnDetectionPrefixPaddingMs ?? 250),
@@ -147,8 +151,14 @@ export class OpenAiRealtimeSession {
     return this.connectPromise;
   }
 
-  private configureSession(): void {
-    this.send(buildRealtimeSessionUpdate(this.config.openAiRealtimeVoice, this.config));
+  private configureSession(options: { openingStoryMode?: boolean } = {}): void {
+    this.send(
+      buildRealtimeSessionUpdate(this.config.openAiRealtimeVoice, this.config, options),
+    );
+  }
+
+  updateTurnDetection(options: { openingStoryMode?: boolean } = {}): void {
+    this.configureSession(options);
   }
 
   private handleMessage(raw: string): void {

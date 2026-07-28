@@ -38,6 +38,10 @@ export function getConfig() {
     turnDetectionThreshold: Number.parseFloat(
       process.env.REALTIME_VAD_THRESHOLD ?? "0.5",
     ),
+    openingStorySilenceDurationMs: Number.parseInt(
+      process.env.REALTIME_OPENING_STORY_SILENCE_MS ?? "1800",
+      10,
+    ),
     realtimeVadEagerness:
       (process.env.REALTIME_VAD_EAGERNESS?.trim() as "low" | "medium" | "high" | undefined) ||
       "high",

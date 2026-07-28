@@ -133,6 +133,19 @@ export class SessionOrchestrator {
     return pending;
   }
 
+  enqueuePendingTranscript(transcript: string): void {
+    const trimmed = transcript.trim();
+    if (!trimmed) {
+      return;
+    }
+
+    this.pendingTranscript = trimmed;
+    logInfo("caller_transcript_queued", {
+      callSid: this.context.callSid,
+      queueLength: 1,
+    });
+  }
+
   markOpeningDelivered(): void {
     this.awaitingFirstCallerTurn = true;
   }

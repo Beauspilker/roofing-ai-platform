@@ -34,7 +34,16 @@ import {
 import {
   blockClosingPhraseForConversationState,
 } from "../orchestrator/acknowledgment-policy.js";
+import { resolveConfirmationResponseReason } from "../orchestrator/confirmation-response-routing.js";
 import { logError, logInfo, logWarn } from "../logger.js";
+import {
+  GreetingReadinessGate,
+  GreetingWatchdog,
+  logOpeningPipelineEvent,
+  type GreetingWatchdogStage,
+} from "./opening-pipeline.js";
+import { OpeningStoryTurnController } from "./opening-story-turn.js";
+import { ResponseSerializer } from "./response-serializer.js";
 import { OpenAiRealtimeSession } from "../openai/realtime-session.js";
 import { SessionOrchestrator } from "../orchestrator/session-orchestrator.js";
 import { REALTIME_OPENING_STORY_QUESTION } from "../orchestrator/realtime-prompts.js";
@@ -46,6 +55,7 @@ import {
 
 const CLOSING_MARK_NAME = "closing-final";
 const OPENING_GREETING_DEADLINE_MS = 4_000;
+const GREETING_WATCHDOG_MS = 2_500;
 const RESPONSE_WATCHDOG_MS = 2_000;
 const OPENING_FALLBACK_GREETING =
   "Thank you for calling Beau's Roofing. One moment while I get ready to help you.";
@@ -98,6 +108,12 @@ export class CallBridge {
   private postOpeningResponseCreateCount = 0;
   private readonly audioDiagnostics = new CallAudioDiagnostics();
   private readonly stallRecovery = new StallRecoveryController();
+  private readonly greetingReadiness = new GreetingReadinessGate();
+  private readonly greetingWatchdog = new GreetingWatchdog();
+  private readonly openingStoryTurn = new OpeningStoryTurnController();
+  private readonly responseSerializer = new ResponseSerializer();
+  private cachedOpeningLine: string | null = null;
+  private greetingFallbackUsed = false;
   private bargeInCancelledResponse = false;
   private callerSpeechActive = false;
 
@@ -155,6 +171,11 @@ export class CallBridge {
         break;
       case "stop":
         logInfo("twilio_stream_stopped");
+        logOpeningPipelineEvent({
+          stage: "twilio_stream_stopped",
+          callSid: this.callSid ?? undefined,
+          timestampMs: Date.now(),
+        });
         this.cleanup("twilio_stream_stopped");
         break;
       default:
@@ -207,6 +228,7 @@ export class CallBridge {
       sampleRate: start.mediaFormat?.sampleRate,
       channels: start.mediaFormat?.channels,
     });
+    this.greetingReadiness.markTwilioStreamReady(start.callSid);
 
     this.orchestrator = new SessionOrchestrator({
       callSid: start.callSid,
@@ -254,32 +276,48 @@ export class CallBridge {
 
     try {
       this.scheduleOpeningFallback();
+      this.greetingReadiness.markOpenAiConnecting(start.callSid);
+
       const connectPromise = this.openAi.connect().then(() => {
+        this.greetingReadiness.markOpenAiReady(start.callSid);
         this.callTiming.record("openai_connected", this.callSid ?? undefined);
         this.audioDiagnostics.setOpenAiSocketState("open");
       });
-      const initPromise = this.orchestrator.initialize();
+
+      const initPromise = this.orchestrator.initialize().then((openingLine) => {
+        this.greetingReadiness.markOrchestratorInitialized(start.callSid);
+        this.cachedOpeningLine = openingLine;
+        return openingLine;
+      });
+
       const sessionReadyPromise = connectPromise.then(() =>
-        this.openAi!.waitForSessionReady(),
+        this.openAi!.waitForSessionReady().then(() => {
+          this.greetingReadiness.markSessionConfigured(start.callSid);
+        }),
       );
 
-      const [openingLine] = await Promise.all([initPromise, sessionReadyPromise]);
+      await Promise.all([initPromise, sessionReadyPromise]);
 
       this.clearOpeningFallbackTimer();
-      this.sendOpeningGreeting(openingLine);
+      this.requestOpeningGreeting(this.cachedOpeningLine ?? OPENING_FALLBACK_GREETING);
     } catch (error) {
       logError("stream_start_setup_failed", { callSid: start.callSid }, error);
       this.clearOpeningFallbackTimer();
-      this.sendOpeningGreeting(OPENING_FALLBACK_GREETING);
+      this.requestOpeningGreeting(OPENING_FALLBACK_GREETING, { bypassGate: true });
     }
   }
 
   private scheduleOpeningFallback(): void {
     this.clearOpeningFallbackTimer();
     this.openingFallbackTimer = setTimeout(() => {
-      if (!this.openingGreetingSent) {
+      if (!this.greetingReadiness.hasGreetingBeenRequested()) {
         logWarn("opening_greeting_fallback", { callSid: this.callSid ?? undefined });
-        this.sendOpeningGreeting(OPENING_FALLBACK_GREETING);
+        this.requestOpeningGreeting(OPENING_FALLBACK_GREETING);
+        return;
+      }
+
+      if (!this.greetingWatchdog.hasFirstAudioForwarded()) {
+        this.handleGreetingWatchdogStalled(this.greetingWatchdog.getStage());
       }
     }, OPENING_GREETING_DEADLINE_MS);
   }
@@ -291,22 +329,108 @@ export class CallBridge {
     }
   }
 
-  private sendOpeningGreeting(openingLine: string): void {
-    if (this.openingGreetingSent || !this.openAi || !this.orchestrator) {
+  private requestOpeningGreeting(
+    openingLine: string,
+    options: { bypassGate?: boolean; isRetry?: boolean } = {},
+  ): void {
+    if (!this.openAi || !this.orchestrator) {
       return;
     }
 
-    this.openingGreetingSent = true;
+    if (
+      this.openingGreetingSent &&
+      this.greetingWatchdog.hasFirstAudioForwarded()
+    ) {
+      return;
+    }
+
+    if (!options.bypassGate) {
+      if (options.isRetry) {
+        if (!this.greetingReadiness.canRetryGreeting()) {
+          return;
+        }
+
+        this.greetingReadiness.markGreetingRetryUsed(this.callSid ?? undefined);
+        this.greetingReadiness.resetGreetingRequestForRetry(this.callSid ?? undefined);
+      } else if (!this.greetingReadiness.canRequestGreeting()) {
+        return;
+      }
+
+      if (!this.greetingReadiness.markGreetingRequested(this.callSid ?? undefined)) {
+        return;
+      }
+    }
+
     this.clearOpeningFallbackTimer();
     this.callTiming.record("opening_response_requested", this.callSid ?? undefined);
     this.playbackTracker.reset();
     this.activeResponseUsesClosingMark = false;
 
+    this.greetingWatchdog.onGreetingRequested(this.callSid ?? undefined);
+    this.greetingWatchdog.schedule(
+      (stalledStage) => this.handleGreetingWatchdogStalled(stalledStage),
+      GREETING_WATCHDOG_MS,
+    );
+
     const sent = this.requestAssistantSpeech(openingLine, "opening_greeting");
 
     if (sent) {
+      this.openingGreetingSent = true;
       this.orchestrator.markOpeningDelivered();
+    } else {
+      logWarn("opening_greeting_request_blocked", {
+        callSid: this.callSid ?? undefined,
+      });
     }
+  }
+
+  private handleGreetingWatchdogStalled(stalledStage: GreetingWatchdogStage): void {
+    if (this.greetingWatchdog.hasFirstAudioForwarded()) {
+      return;
+    }
+
+    logOpeningPipelineEvent({
+      stage: "timeout_fired",
+      callSid: this.callSid ?? undefined,
+      timestampMs: Date.now(),
+      stalledStage,
+      detail: `greeting_watchdog:${stalledStage}`,
+    });
+
+    this.openAi?.cancelActiveResponse();
+    this.responseGuard.onResponseCancelled();
+    this.responseSerializer.endResponse();
+    this.pendingClientResponse = false;
+
+    if (this.greetingReadiness.canRetryGreeting()) {
+      this.requestOpeningGreeting(
+        this.cachedOpeningLine ?? OPENING_FALLBACK_GREETING,
+        { isRetry: true },
+      );
+      return;
+    }
+
+    if (this.greetingFallbackUsed) {
+      logWarn("opening_greeting_recovery_exhausted", {
+        callSid: this.callSid ?? undefined,
+        stalledStage,
+      });
+      return;
+    }
+
+    this.greetingFallbackUsed = true;
+    logOpeningPipelineEvent({
+      stage: "recovery_attempted",
+      callSid: this.callSid ?? undefined,
+      timestampMs: Date.now(),
+      detail: "greeting_fallback",
+    });
+    this.requestOpeningGreeting(OPENING_FALLBACK_GREETING, { bypassGate: true });
+  }
+
+  /** @deprecated use requestOpeningGreeting */
+  private sendOpeningGreeting(openingLine: string): void {
+    this.requestOpeningGreeting(openingLine);
   }
 
   private beginOpeningNameListen(): void {
@@ -316,7 +440,9 @@ export class CallBridge {
 
     this.openingNameListenStarted = true;
     this.openingGreetingPlaybackComplete = true;
-    this.openingSilence.beginListeningForCallerName();
+    this.openingSilence.beginListeningForReason();
+    this.openAi?.updateTurnDetection({ openingStoryMode: true });
+    this.openingStoryTurn.beginAwaitingStory();
     this.orchestrator?.onOpeningNameQuestionComplete();
     this.scheduleOpeningSilenceReprompt();
 
@@ -357,12 +483,18 @@ export class CallBridge {
     }
 
     if (isMeaningfulOpeningCallerTranscript(transcript, { awaitingStory: true })) {
-      this.openingSilence.onMeaningfulCallerTranscript();
-      this.responseGuard.completeOpeningReasonListen();
-      this.openingNameListenStarted = false;
+      this.completeOpeningStoryListen();
     }
 
     this.processCallerTurnReply(transcript);
+  }
+
+  private completeOpeningStoryListen(): void {
+    this.openingSilence.onMeaningfulCallerTranscript();
+    this.responseGuard.completeOpeningReasonListen();
+    this.openingNameListenStarted = false;
+    this.openingStoryTurn.completeAwaitingStory();
+    this.openAi?.updateTurnDetection({ openingStoryMode: false });
   }
 
   private scheduleOpeningSilenceReprompt(): void {
@@ -403,6 +535,16 @@ export class CallBridge {
     }
 
     const turnId = options.turnId ?? this.activeTurnId;
+    const canSend = this.responseGuard.canTriggerResponse(reason);
+    const plan = this.responseSerializer.planResponse(reason, text, canSend);
+
+    if (plan.disposition === "deduplicated") {
+      return true;
+    }
+
+    if (plan.disposition !== "sent") {
+      return false;
+    }
 
     const sent = this.openAi.speakScript(
       text,
@@ -410,6 +552,7 @@ export class CallBridge {
       (triggerReason) => this.responseGuard.canTriggerResponse(triggerReason),
       (triggerReason) => {
         this.pendingClientResponse = true;
+        this.responseSerializer.beginResponse(triggerReason);
         this.responseGuard.recordTrigger(triggerReason, turnId);
         this.responseCreateCount += 1;
 
@@ -519,6 +662,15 @@ export class CallBridge {
     }
   }
 
+  private flushSerializedQueuedResponse(): void {
+    const queued = this.responseSerializer.consumeQueuedResponse();
+    if (!queued) {
+      return;
+    }
+
+    this.requestAssistantSpeech(queued.text, queued.reason);
+  }
+
   private handleStreamMedia(payload: string): void {
     if (!payload || !this.openAi) {
       return;
@@ -536,6 +688,15 @@ export class CallBridge {
       case "input_audio_buffer.speech_started":
         this.callerSpeechActive = true;
         this.openingSilence.onCallerSpeechStarted();
+        this.openingStoryTurn.onCallerSpeechStarted();
+        if (this.openingStoryTurn.isAwaitingStory()) {
+          logOpeningPipelineEvent({
+            stage: "caller_audio_detected",
+            callSid: this.callSid ?? undefined,
+            timestampMs: Date.now(),
+            detail: "opening_story",
+          });
+        }
         logTurnBridgeEvent("turn_diag_caller_speech_started", {
           turnId: this.activeTurnId,
           callSid: this.callSid ?? undefined,
@@ -546,6 +707,7 @@ export class CallBridge {
       case "input_audio_buffer.speech_stopped":
         this.callerSpeechActive = false;
         this.openingSilence.onCallerSpeechStopped();
+        this.openingStoryTurn.onCallerSpeechStopped();
         logTurnBridgeEvent("turn_diag_caller_speech_stopped", {
           turnId: this.activeTurnId + 1,
           callSid: this.callSid ?? undefined,
@@ -570,7 +732,12 @@ export class CallBridge {
           logWarn("vad_auto_response_cancelled");
           this.openAi?.cancelActiveResponse();
           this.responseGuard.onResponseCancelled();
+          this.responseSerializer.endResponse();
           break;
+        }
+
+        if (this.responseGuard.getLastTriggerReason() === "opening_greeting") {
+          this.greetingWatchdog.onResponseCreated(this.callSid ?? undefined);
         }
 
         const responseId = (event.response as { id?: string } | undefined)?.id;
@@ -631,9 +798,11 @@ export class CallBridge {
         this.stallRecovery.clearAudioCompletionWatch();
         this.bargeIn?.handleResponseCompleted();
         this.responseGuard.onResponseDone();
+        this.responseSerializer.endResponse();
         this.audioDiagnostics.recordOpenAiResponseEvent("response.done", this.activeTurnId);
 
         if (this.responseGuard.wasLastResponseOpeningGreeting()) {
+          this.greetingWatchdog.onGreetingCompleted(this.callSid ?? undefined);
           this.sendOpeningNameQuestion();
           this.orchestrator?.onAssistantResponseDone();
           this.clearResponseWatchdog();
@@ -658,6 +827,7 @@ export class CallBridge {
         this.orchestrator?.onAssistantResponseDone();
         this.clearResponseWatchdog();
         this.flushPendingSpeech();
+        this.flushSerializedQueuedResponse();
         void this.processQueuedCallerTranscript();
         break;
       case "response.failed":
@@ -665,10 +835,12 @@ export class CallBridge {
         this.audioDiagnostics.recordOpenAiResponseEvent("response.failed", this.activeTurnId);
         this.bargeIn?.handleResponseCancelled();
         this.responseGuard.onResponseFailed();
+        this.responseSerializer.endResponse();
         this.pendingClientResponse = false;
         this.awaitingClosingMark = false;
         this.clearResponseWatchdog();
         this.flushPendingSpeech();
+        this.flushSerializedQueuedResponse();
         void this.processQueuedCallerTranscript();
         break;
       case "response.cancelled":
@@ -676,6 +848,7 @@ export class CallBridge {
         this.audioDiagnostics.recordOpenAiResponseEvent(event.type, this.activeTurnId);
         this.bargeIn?.handleResponseCancelled();
         this.responseGuard.onResponseCancelled();
+        this.responseSerializer.endResponse();
         this.pendingClientResponse = false;
         this.awaitingClosingMark = false;
         this.clearResponseWatchdog();
@@ -690,6 +863,7 @@ export class CallBridge {
           this.bargeInCancelledResponse = false;
           if (!skipReplay) {
             this.flushPendingSpeech();
+            this.flushSerializedQueuedResponse();
           }
         }
         void this.processQueuedCallerTranscript();
@@ -704,9 +878,11 @@ export class CallBridge {
           callSid: this.callSid ?? undefined,
         });
         this.responseGuard.onOpenAiError();
+        this.responseSerializer.endResponse();
         this.pendingClientResponse = false;
         this.clearResponseWatchdog();
         this.flushPendingSpeech();
+        this.flushSerializedQueuedResponse();
         void this.processQueuedCallerTranscript();
         break;
       default:
@@ -773,7 +949,37 @@ export class CallBridge {
       transcriptLength: transcript.length,
     });
 
-    void this.processCallerTurnReply(transcript, this.extractTranscriptConfidence(event));
+    if (this.openingStoryTurn.isAwaitingStory()) {
+      this.openingStoryTurn.noteTranscript(transcript, (readyTranscript) => {
+        void this.dispatchCallerTranscript(
+          readyTranscript,
+          this.extractTranscriptConfidence(event),
+        );
+      });
+      return;
+    }
+
+    void this.dispatchCallerTranscript(transcript, this.extractTranscriptConfidence(event));
+  }
+
+  private dispatchCallerTranscript(
+    transcript: string,
+    speechConfidence: number | null,
+  ): void {
+    if (!this.orchestrator || !this.openAi) {
+      return;
+    }
+
+    const conversationState = this.orchestrator.getConversationState();
+    if (
+      this.responseSerializer.isConfirmationActive() ||
+      !this.responseGuard.canProcessCallerTurnWhileActive(conversationState)
+    ) {
+      this.orchestrator.enqueuePendingTranscript(transcript);
+      return;
+    }
+
+    void this.processCallerTurnReply(transcript, speechConfidence);
   }
 
   private extractTranscriptConfidence(event: {
@@ -932,9 +1138,7 @@ export class CallBridge {
     }
 
     if (isMeaningfulOpeningCallerTranscript(transcript, { awaitingStory: true })) {
-      this.openingSilence.completeOpeningListen();
-      this.responseGuard.completeOpeningReasonListen();
-      this.openingNameListenStarted = false;
+      this.completeOpeningStoryListen();
     }
   }
 
@@ -943,6 +1147,15 @@ export class CallBridge {
     speechConfidence: number | null = null,
   ): void {
     if (!this.orchestrator || !this.openAi) {
+      return;
+    }
+
+    const conversationState = this.orchestrator.getConversationState();
+    if (
+      this.responseSerializer.shouldBlockCallerTurnWhileActive() ||
+      !this.responseGuard.canProcessCallerTurnWhileActive(conversationState)
+    ) {
+      this.orchestrator.enqueuePendingTranscript(transcript);
       return;
     }
 
@@ -992,9 +1205,10 @@ export class CallBridge {
       this.turnTiming.record("next_question_selected", this.callSid ?? undefined, { turnId });
       this.turnTiming.record("response_requested", this.callSid ?? undefined, { turnId });
 
+      const confirmationReason = resolveConfirmationResponseReason(result.replyText);
       const reason: ResponseTriggerReason = result.hangupAfterMark
         ? "closing_message"
-        : "caller_turn_reply";
+        : confirmationReason ?? "caller_turn_reply";
 
       const sent = this.enqueueOrSpeakSpeech(
         {
@@ -1025,6 +1239,10 @@ export class CallBridge {
       return;
     }
 
+    if (this.responseSerializer.isConfirmationActive()) {
+      return;
+    }
+
     if (!this.responseGuard.isWaitingForCaller()) {
       return;
     }
@@ -1048,6 +1266,13 @@ export class CallBridge {
       return;
     }
 
+    if (
+      this.responseGuard.getLastTriggerReason() === "opening_greeting" ||
+      (this.openingGreetingSent && !this.greetingWatchdog.hasFirstAudioForwarded())
+    ) {
+      this.greetingWatchdog.onFirstAudioDelta(this.callSid ?? undefined);
+    }
+
     const payloadBuffer = Buffer.from(base64Audio, "base64");
     this.playbackTracker.recordOutboundBytes(payloadBuffer.length);
     this.audioDiagnostics.recordTwilioOutboundMedia(payloadBuffer.length);
@@ -1063,6 +1288,13 @@ export class CallBridge {
       turnId: this.activeTurnId,
     });
     this.callTiming.record("first_audio_sent_to_twilio", this.callSid ?? undefined);
+
+    if (
+      this.responseGuard.getLastTriggerReason() === "opening_greeting" ||
+      (this.openingGreetingSent && !this.greetingWatchdog.hasFirstAudioForwarded())
+    ) {
+      this.greetingWatchdog.onFirstAudioForwarded(this.callSid ?? undefined);
+    }
 
     if (!this.activeResponseUsesClosingMark) {
       this.markCounter += 1;
@@ -1136,8 +1368,24 @@ export class CallBridge {
 
     this.clearOpeningFallbackTimer();
     this.clearResponseWatchdog();
+    this.greetingWatchdog.clear();
     this.openingSilence.reset();
+    this.openingStoryTurn.completeAwaitingStory();
+    this.responseSerializer.clearQueue();
     this.pendingSpeech = null;
+
+    logOpeningPipelineEvent({
+      stage: "call_ended",
+      callSid: this.callSid ?? undefined,
+      timestampMs: Date.now(),
+      detail: reason,
+    });
+    logOpeningPipelineEvent({
+      stage: "websocket_closed",
+      callSid: this.callSid ?? undefined,
+      timestampMs: Date.now(),
+      detail: reason,
+    });
 
     this.responseGuard.onWebSocketClosed();
 

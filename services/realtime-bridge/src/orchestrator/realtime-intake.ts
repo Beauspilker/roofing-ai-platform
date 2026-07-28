@@ -5,6 +5,10 @@ import {
   guardIntakeReply,
   joinAcknowledgmentAndQuestion,
 } from "./acknowledgment-policy.js";
+import {
+  buildAddressConfirmationReply as buildAddressConfirmationReplyFromFields,
+  buildPhoneConfirmationReply as buildPhoneConfirmationReplyFromFields,
+} from "./confirmation-builders.js";
 import { buildContextualMultiFieldAcknowledgment } from "./contextual-acknowledgment.js";
 import {
   buildAddressReadbackConfirmation,
@@ -267,6 +271,14 @@ export function buildIntakeReply(
   afterConfirmation = false,
   fieldsBefore?: RealtimeFields,
 ): string {
+  if (needsCallbackReadback(fields)) {
+    return buildPhoneConfirmationReplyFromFields(fields);
+  }
+
+  if (needsAddressReadback(fields)) {
+    return buildAddressConfirmationReplyFromFields(fields);
+  }
+
   const nextField = getNextRequiredField(fields);
 
   if (!nextField) {

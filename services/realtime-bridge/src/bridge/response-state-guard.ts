@@ -4,6 +4,8 @@ export type ResponseTriggerReason =
   | "opening_greeting"
   | "opening_name_question"
   | "opening_silence_reprompt"
+  | "phone_confirmation"
+  | "address_confirmation"
   | "caller_turn_reply"
   | "closing_message";
 
@@ -49,6 +51,8 @@ export class ResponseStateGuard {
       reason !== "opening_greeting" &&
       reason !== "opening_name_question" &&
       reason !== "opening_silence_reprompt" &&
+      reason !== "phone_confirmation" &&
+      reason !== "address_confirmation" &&
       this.waitingForCaller &&
       !this.callerTurnReady
     ) {
@@ -61,7 +65,27 @@ export class ResponseStateGuard {
       return false;
     }
 
+    if (
+      (reason === "phone_confirmation" || reason === "address_confirmation") &&
+      this.activeResponse
+    ) {
+      this.logBlocked(reason, "active_response");
+      return false;
+    }
+
     return true;
+  }
+
+  canProcessCallerTurnWhileActive(conversationState: string): boolean {
+    if (!this.activeResponse) {
+      return true;
+    }
+
+    return !(
+      conversationState === "awaiting_callback_confirmation" ||
+      conversationState === "awaiting_address_confirmation" ||
+      conversationState === "awaiting_opening_story"
+    );
   }
 
   beginOpeningNameListen(): void {
@@ -140,6 +164,8 @@ export class ResponseStateGuard {
 
     if (reason === "opening_greeting" || reason === "opening_name_question" || reason === "opening_silence_reprompt") {
       this.waitingForCaller = reason === "opening_silence_reprompt";
+    } else if (reason === "phone_confirmation" || reason === "address_confirmation") {
+      this.waitingForCaller = false;
     } else {
       this.waitingForCaller = false;
     }

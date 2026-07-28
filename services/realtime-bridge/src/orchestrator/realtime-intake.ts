@@ -16,6 +16,7 @@ import {
 } from "./address-confirmation.js";
 import {
   buildCallbackReadbackConfirmation,
+  confirmCallbackPhone,
   extractCallbackPhoneFromSpeech,
   isCompanyPhoneNumber,
   normalizeCallbackPhoneE164,
@@ -225,12 +226,7 @@ export function applyCallbackCorrection(
   return applyCallbackScopedCorrection(fields, speech, callerPhone).fields;
 }
 
-export function confirmCallbackPhone(fields: RealtimeFields): RealtimeFields {
-  return syncLegacyStringFields({
-    ...fields,
-    callback_phone_confirmed: true,
-  });
-}
+export { confirmCallbackPhone } from "./callback-phone.js";
 
 export function getRealtimeStageQuestion(
   stage: RequiredFieldKey | "wrap_up",

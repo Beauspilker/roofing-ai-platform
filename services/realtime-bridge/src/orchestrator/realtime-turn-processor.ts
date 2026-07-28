@@ -748,6 +748,40 @@ export async function processRealtimeCallerTurn(
 
     const correction = applyAddressScopedCorrection(fieldsBefore, trimmedSpeech);
 
+    if (correction.outcome === "accepted") {
+      const confirmedFields = correction.fields;
+      const filledCount = countNewlyFilledFields(fieldsBefore, confirmedFields);
+      const post = buildPostIntakeReply(
+        acknowledgmentPolicy,
+        fieldsBefore,
+        confirmedFields,
+        trimmedSpeech,
+        callerPhone,
+        filledCount,
+        { afterConfirmation: true },
+      );
+
+      session = applyLocalSessionUpdate(session, {
+        collectedFields: post.fields,
+        currentQuestion: post.replyText,
+      });
+
+      persistTurnAsync(callSid, {
+        collectedFields: post.fields,
+        currentQuestion: post.replyText,
+        callerSpeech: trimmedSpeech,
+        assistantReply: post.replyText,
+      });
+
+      return finishTurn(input, {
+        replyText: post.replyText,
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: post.nextState,
+      });
+    }
+
     if (correction.outcome === "needs_clarification" && correction.replyText) {
       session = applyLocalSessionUpdate(session, {
         collectedFields: correction.fields,

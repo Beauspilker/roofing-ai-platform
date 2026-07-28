@@ -657,74 +657,6 @@ function getCompanyPhoneE164() {
   return process.env.TWILIO_PHONE_NUMBER?.trim() || DEFAULT_COMPANY_PHONE_E164;
 }
 
-// src/orchestrator/callback-phone.ts
-function normalizeCallbackPhoneE164(phone) {
-  const digits = phone.replace(/\D/g, "");
-  if (digits.length === 10) {
-    return `+1${digits}`;
-  }
-  if (digits.length === 11 && digits.startsWith("1")) {
-    return `+${digits}`;
-  }
-  if (phone.trim().startsWith("+") && digits.length >= 10) {
-    return `+${digits}`;
-  }
-  return phone.trim();
-}
-function formatCallbackForSpeech(phone) {
-  const digits = phone.replace(/\D/g, "").slice(-10);
-  if (digits.length !== 10) {
-    return phone.trim();
-  }
-  return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
-}
-function isCompanyPhoneNumber(phone) {
-  const normalized = normalizeCallbackPhoneE164(phone);
-  const company = normalizeCallbackPhoneE164(getCompanyPhoneE164());
-  return normalized === company;
-}
-function buildCallbackReadbackConfirmation(phone) {
-  const spoken = formatCallbackForSpeech(phone);
-  return `Just to confirm, your callback number is ${spoken}. Is that correct?`;
-}
-function isCallbackConfirmed(speech) {
-  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
-  return /^(yes|yeah|yep|yup|correct|right|that's right|thats right|that's correct|thats correct|affirmative)\b/.test(
-    normalized
-  );
-}
-function isCallbackRejected(speech) {
-  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
-  return /^(no|nope|nah|not quite|incorrect|wrong|change|fix|update)\b/.test(normalized);
-}
-function extractCallbackPhoneFromSpeech(speech, callerPhone, options = {}) {
-  const normalized = speech.toLowerCase();
-  const phonePattern = /(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/g;
-  const matches = [...speech.matchAll(phonePattern)];
-  if (matches.length > 0) {
-    const hasCorrection = /\b(actually|make that|correction|instead|rather|change it to|should be)\b/i.test(
-      speech
-    );
-    const chosen = hasCorrection ? matches[matches.length - 1] : matches[0];
-    const digits = chosen[0].replace(/\D/g, "");
-    if (digits.length >= 10) {
-      const e164 = normalizeCallbackPhoneE164(digits.slice(-10));
-      if (!isCompanyPhoneNumber(e164)) {
-        return e164;
-      }
-    }
-  }
-  if (options.allowAffirmativeReuse === true && callerPhone && /^(yes|yeah|yep|correct|this one|that one|same number|this number|calling from)\b/i.test(
-    normalized.trim()
-  )) {
-    const e164 = normalizeCallbackPhoneE164(callerPhone);
-    if (!isCompanyPhoneNumber(e164)) {
-      return e164;
-    }
-  }
-  return null;
-}
-
 // src/orchestrator/photos-field.ts
 function normalizePhotosValue(value) {
   if (value === true || value === false || value === "unknown" || value === "declined") {
@@ -869,6 +801,90 @@ function applyCorrectionToStructuredField(fields, speech) {
     }
   }
   return syncLegacyStringFields(updated);
+}
+
+// src/orchestrator/callback-phone.ts
+function normalizeCallbackPhoneE164(phone) {
+  const digits = phone.replace(/\D/g, "");
+  if (digits.length === 10) {
+    return `+1${digits}`;
+  }
+  if (digits.length === 11 && digits.startsWith("1")) {
+    return `+${digits}`;
+  }
+  if (phone.trim().startsWith("+") && digits.length >= 10) {
+    return `+${digits}`;
+  }
+  return phone.trim();
+}
+function formatCallbackForSpeech(phone) {
+  const digits = phone.replace(/\D/g, "").slice(-10);
+  if (digits.length !== 10) {
+    return phone.trim();
+  }
+  return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
+}
+function isCompanyPhoneNumber(phone) {
+  const normalized = normalizeCallbackPhoneE164(phone);
+  const company = normalizeCallbackPhoneE164(getCompanyPhoneE164());
+  return normalized === company;
+}
+function buildCallbackReadbackConfirmation(phone) {
+  const spoken = formatCallbackForSpeech(phone);
+  return `Just to confirm, your callback number is ${spoken}. Is that correct?`;
+}
+function confirmCallbackPhone(fields) {
+  return syncLegacyStringFields({
+    ...fields,
+    callback_phone_confirmed: true,
+    pending_question: fields.pending_question === "callback_confirmation" || fields.pending_question === "callback_phone" ? void 0 : fields.pending_question,
+    field_being_confirmed: fields.field_being_confirmed === "callback_phone" ? void 0 : fields.field_being_confirmed,
+    activeConfirmationField: fields.activeConfirmationField === "callback_phone" ? void 0 : fields.activeConfirmationField,
+    activeConfirmationValue: fields.activeConfirmationField === "callback_phone" ? void 0 : fields.activeConfirmationValue,
+    current_field_value: fields.field_being_confirmed === "callback_phone" ? void 0 : fields.current_field_value,
+    confirmation_attempt_count: void 0,
+    correctionAttemptCount: void 0,
+    confirmationStatus: void 0,
+    pending_correction_hint: void 0,
+    confirmation_last_outcome: "accepted"
+  });
+}
+function isCallbackConfirmed(speech) {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  return /^(yes|yeah|yep|yup|correct|right|that's right|thats right|that's correct|thats correct|affirmative)\b/.test(
+    normalized
+  );
+}
+function isCallbackRejected(speech) {
+  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
+  return /^(no|nope|nah|not quite|incorrect|wrong|change|fix|update)\b/.test(normalized);
+}
+function extractCallbackPhoneFromSpeech(speech, callerPhone, options = {}) {
+  const normalized = speech.toLowerCase();
+  const phonePattern = /(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/g;
+  const matches = [...speech.matchAll(phonePattern)];
+  if (matches.length > 0) {
+    const hasCorrection = /\b(actually|make that|correction|instead|rather|change it to|should be)\b/i.test(
+      speech
+    );
+    const chosen = hasCorrection ? matches[matches.length - 1] : matches[0];
+    const digits = chosen[0].replace(/\D/g, "");
+    if (digits.length >= 10) {
+      const e164 = normalizeCallbackPhoneE164(digits.slice(-10));
+      if (!isCompanyPhoneNumber(e164)) {
+        return e164;
+      }
+    }
+  }
+  if (options.allowAffirmativeReuse === true && callerPhone && /^(yes|yeah|yep|correct|this one|that one|same number|this number|calling from)\b/i.test(
+    normalized.trim()
+  )) {
+    const e164 = normalizeCallbackPhoneE164(callerPhone);
+    if (!isCompanyPhoneNumber(e164)) {
+      return e164;
+    }
+  }
+  return null;
 }
 
 // src/orchestrator/field-validation.ts
@@ -1374,56 +1390,912 @@ function sanitizeServiceAddress(address) {
   return normalized;
 }
 
-// src/orchestrator/address-confirmation.ts
-function hasValue(value) {
-  return typeof value === "string" && value.trim().length > 0;
+// src/orchestrator/schedule-normalizer.ts
+var COMPANY_TIMEZONE = process.env.COMPANY_TIMEZONE?.trim() || "America/Chicago";
+var SCHEDULE_PARSE_FALLBACK_PROMPT = "I'm sorry, I had trouble understanding the timing. What specific day and time would work best for you?";
+var SCHEDULE_DAYPART_CLARIFICATION_PROMPT = "Would morning, afternoon, or evening work best?";
+var SCHEDULE_FLEXIBLE_ACCEPT_MESSAGE = "That's okay. I'll note that your timing is flexible.";
+var GENERIC_SCHEDULE_TIME_PROMPT = /^what time works best\?$/i;
+function getLocalParts(date, timeZone) {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    weekday: "short"
+  });
+  const parts = formatter.formatToParts(date);
+  const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const weekdayMap = {
+    Sun: 0,
+    Mon: 1,
+    Tue: 2,
+    Wed: 3,
+    Thu: 4,
+    Fri: 5,
+    Sat: 6
+  };
+  return {
+    year: Number.parseInt(lookup.year ?? "1970", 10),
+    month: Number.parseInt(lookup.month ?? "1", 10),
+    day: Number.parseInt(lookup.day ?? "1", 10),
+    weekday: weekdayMap[lookup.weekday ?? "Sun"] ?? 0
+  };
 }
-function hasConfirmableAddress(address) {
-  if (!hasValue(address)) {
-    return false;
+function makeUtcDate(year, month, day, hour, minute, timeZone) {
+  let guess = Date.UTC(year, month - 1, day, hour, minute);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const parts = getLocalParts(new Date(guess), timeZone);
+    const deltaHours = hour - deriveHour(new Date(guess), timeZone);
+    const deltaDays = day - parts.day;
+    guess += deltaDays * 864e5 + deltaHours * 36e5;
   }
-  const trimmed = address.trim();
-  return /\d/.test(trimmed) && trimmed.length >= 8;
+  return new Date(guess);
 }
-function formatAddressForSpeech(address) {
-  return normalizeAddressPunctuation(address);
+function deriveHour(date, timeZone) {
+  const hour = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour: "numeric",
+    minute: "numeric",
+    hour12: false
+  }).formatToParts(date);
+  const lookup = Object.fromEntries(hour.map((part) => [part.type, part.value]));
+  return Number.parseInt(lookup.hour ?? "0", 10);
 }
-function sanitizeAddressValue(address) {
-  const stripped = address.replace(/(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/g, " ").replace(/\b(call me at|my number is|phone number is|callback number is)\b.*$/i, "").replace(/\s+/g, " ").trim();
-  if (containsNonAddressContinuation(stripped)) {
-    return sanitizeServiceAddress(stripped) ?? stripped.replace(/[,.]$/, "").trim();
+function addDays(parts, days) {
+  const date = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + days));
+  return {
+    year: date.getUTCFullYear(),
+    month: date.getUTCMonth() + 1,
+    day: date.getUTCDate(),
+    weekday: date.getUTCDay()
+  };
+}
+function resolveWeekday(parts, targetWeekday, useNextWeek) {
+  let delta = (targetWeekday - parts.weekday + 7) % 7;
+  if (delta === 0 && useNextWeek) {
+    delta = 7;
   }
-  return stripped;
+  if (delta === 0 && !useNextWeek) {
+    return parts;
+  }
+  return addDays(parts, delta);
 }
-function buildAddressReadbackConfirmation(address) {
-  return `And your service address is ${formatAddressForSpeech(sanitizeAddressValue(address))}. Is that correct?`;
+function formatSpokenDate(parts) {
+  const monthNames = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December"
+  ];
+  return `${monthNames[parts.month - 1] ?? "January"} ${parts.day}`;
 }
-function needsAddressReadback(fields) {
-  return hasConfirmableAddress(fields.address) && fields.address_confirmed !== true;
+function formatSpokenTime(hour, minute) {
+  const suffix = hour >= 12 ? "PM" : "AM";
+  const hour12 = hour % 12 === 0 ? 12 : hour % 12;
+  const minutePart = `:${String(minute).padStart(2, "0")}`;
+  return `${hour12}${minutePart} ${suffix}`.replace("  ", " ");
 }
-function isAddressConfirmed(fields) {
-  return hasConfirmableAddress(fields.address) && fields.address_confirmed === true;
+var SPOKEN_HOUR_WORDS = {
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  eleven: 11,
+  twelve: 12
+};
+var HOUR_TOKEN = "(\\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)";
+function parseHourToken(token) {
+  const numeric = Number.parseInt(token, 10);
+  if (Number.isFinite(numeric) && numeric >= 1 && numeric <= 12) {
+    return numeric;
+  }
+  return SPOKEN_HOUR_WORDS[token.toLowerCase()] ?? null;
 }
-function isAddressConfirmedSpeech(speech) {
+function extractDaypartFromSpeech(speech) {
+  const normalized = speech.toLowerCase();
+  if (/\bmorning\b/.test(normalized)) {
+    return "morning";
+  }
+  if (/\bafternoon\b/.test(normalized)) {
+    return "afternoon";
+  }
+  if (/\bevening\b/.test(normalized)) {
+    return "evening";
+  }
+  return void 0;
+}
+function applyDaypartMeridiem(hour, daypart) {
+  if (daypart === "morning") {
+    return hour === 12 ? 0 : hour;
+  }
+  if (hour >= 1 && hour <= 11) {
+    return hour + 12;
+  }
+  return hour;
+}
+function applyMeridiemToHour(hour, meridiem, daypart) {
+  let resolved = hour;
+  if (meridiem === "pm" && resolved < 12) {
+    resolved += 12;
+  }
+  if (meridiem === "am" && resolved === 12) {
+    resolved = 0;
+  }
+  if (!meridiem && daypart) {
+    resolved = applyDaypartMeridiem(resolved, daypart);
+  }
+  return resolved;
+}
+function parseColloquialTimeFromSpeech(normalized, daypart) {
+  const quarterTo = normalized.match(
+    new RegExp(`\\bquarter to ${HOUR_TOKEN}\\b`, "i")
+  );
+  if (quarterTo) {
+    const targetHour = parseHourToken(quarterTo[1] ?? "");
+    if (targetHour === null) {
+      return null;
+    }
+    const hourToken = targetHour === 1 ? 12 : targetHour - 1;
+    const hour = applyMeridiemToHour(hourToken, void 0, daypart);
+    return { hour, minute: 45 };
+  }
+  const quarterAfter = normalized.match(
+    new RegExp(`\\bquarter (?:after|past) ${HOUR_TOKEN}\\b`, "i")
+  );
+  if (quarterAfter) {
+    const parsedHour = parseHourToken(quarterAfter[1] ?? "");
+    if (parsedHour === null) {
+      return null;
+    }
+    const hour = applyMeridiemToHour(parsedHour, void 0, daypart);
+    return { hour, minute: 15 };
+  }
+  const hourThirty = normalized.match(
+    new RegExp(`\\b${HOUR_TOKEN}\\s+thirty\\b`, "i")
+  );
+  if (hourThirty) {
+    const parsedHour = parseHourToken(hourThirty[1] ?? "");
+    if (parsedHour === null) {
+      return null;
+    }
+    const hour = applyMeridiemToHour(parsedHour, void 0, daypart);
+    return { hour, minute: 30 };
+  }
+  const halfPast = normalized.match(new RegExp(`\\bhalf past ${HOUR_TOKEN}\\b`, "i"));
+  if (halfPast) {
+    const parsedHour = parseHourToken(halfPast[1] ?? "");
+    if (parsedHour === null) {
+      return null;
+    }
+    const hour = applyMeridiemToHour(parsedHour, void 0, daypart);
+    return { hour, minute: 30 };
+  }
+  const sharpTime = normalized.match(new RegExp(`\\b${HOUR_TOKEN}\\s+sharp\\b`, "i"));
+  if (sharpTime) {
+    const parsedHour = parseHourToken(sharpTime[1] ?? "");
+    if (parsedHour === null) {
+      return null;
+    }
+    const hour = applyMeridiemToHour(parsedHour, void 0, daypart);
+    return { hour, minute: 0 };
+  }
+  const oClockTime = normalized.match(
+    new RegExp(`\\b(?:at\\s+|around\\s+|about\\s+)?${HOUR_TOKEN}(?::(\\d{2}))?\\s+o\\s+clock\\b`, "i")
+  );
+  if (oClockTime) {
+    const parsedHour = parseHourToken(oClockTime[1] ?? "");
+    if (parsedHour === null) {
+      return null;
+    }
+    if (!daypart) {
+      return null;
+    }
+    const minute = Number.parseInt(oClockTime[2] ?? "0", 10);
+    const hour = applyMeridiemToHour(parsedHour, void 0, daypart);
+    return { hour, minute };
+  }
+  return null;
+}
+function parseTimeFromSpeech(normalized, daypart) {
+  const colloquial = parseColloquialTimeFromSpeech(normalized, daypart);
+  if (colloquial) {
+    return colloquial;
+  }
+  const atTime = normalized.match(
+    new RegExp(`\\bat\\s+${HOUR_TOKEN}(?::(\\d{2}))?\\s*(am|pm)?\\b`, "i")
+  );
+  if (atTime) {
+    const parsedHour = parseHourToken(atTime[1] ?? "");
+    if (parsedHour === null) {
+      return null;
+    }
+    let hour = parsedHour;
+    const minute = Number.parseInt(atTime[2] ?? "0", 10);
+    const meridiem = atTime[3]?.toLowerCase();
+    if (meridiem === "pm" && hour < 12) {
+      hour += 12;
+    }
+    if (meridiem === "am" && hour === 12) {
+      hour = 0;
+    }
+    if (!meridiem && hour <= 7 && !daypart) {
+      hour += 12;
+    }
+    if (!meridiem && daypart) {
+      hour = applyDaypartMeridiem(hour, daypart);
+    }
+    return { hour, minute };
+  }
+  const aboutTime = normalized.match(
+    /\babout\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\b/i
+  );
+  if (aboutTime) {
+    const parsedHour = parseHourToken(aboutTime[1] ?? "");
+    if (parsedHour === null) {
+      return null;
+    }
+    let hour = parsedHour;
+    const minute = Number.parseInt(aboutTime[2] ?? "0", 10);
+    if (daypart) {
+      hour = applyDaypartMeridiem(hour, daypart);
+    } else if (hour <= 7) {
+      hour += 12;
+    }
+    return { hour, minute };
+  }
+  const aroundTime = normalized.match(
+    /\baround\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\b/i
+  );
+  if (aroundTime) {
+    const parsedHour = parseHourToken(aroundTime[1] ?? "");
+    if (parsedHour === null) {
+      return null;
+    }
+    let hour = parsedHour;
+    const minute = Number.parseInt(aroundTime[2] ?? "0", 10);
+    if (daypart) {
+      hour = applyDaypartMeridiem(hour, daypart);
+    } else if (hour <= 7) {
+      hour += 12;
+    }
+    return { hour, minute };
+  }
+  const betweenTimes = normalized.match(
+    new RegExp(
+      `\\bbetween\\s+${HOUR_TOKEN}(?::(\\d{2}))?\\s*(?:am|pm)?\\s+and\\s+${HOUR_TOKEN}(?::(\\d{2}))?\\s*(am|pm)?`,
+      "i"
+    )
+  );
+  if (betweenTimes) {
+    const startHour = parseHourToken(betweenTimes[1] ?? "");
+    const endHour = parseHourToken(betweenTimes[3] ?? "");
+    if (startHour === null || endHour === null) {
+      return null;
+    }
+    let hour = startHour;
+    const minute = Number.parseInt(betweenTimes[2] ?? "0", 10);
+    const meridiem = betweenTimes[5]?.toLowerCase();
+    let endHour24 = endHour;
+    const endMinute = Number.parseInt(betweenTimes[4] ?? "0", 10);
+    if (meridiem === "pm" && hour < 12) {
+      hour += 12;
+    }
+    if (meridiem === "am" && hour === 12) {
+      hour = 0;
+    }
+    if (!meridiem && daypart) {
+      hour = applyDaypartMeridiem(hour, daypart);
+      endHour24 = applyDaypartMeridiem(endHour, daypart);
+    } else if (!meridiem && hour <= 7) {
+      hour += 12;
+      endHour24 += 12;
+    }
+    return { hour, minute, endHour: endHour24, endMinute };
+  }
+  const fromToTimes = normalized.match(
+    new RegExp(
+      `\\bfrom\\s+${HOUR_TOKEN}(?::(\\d{2}))?\\s*(?:am|pm)?\\s+to\\s+${HOUR_TOKEN}(?::(\\d{2}))?\\s*(am|pm)?`,
+      "i"
+    )
+  );
+  if (fromToTimes) {
+    const startHour = parseHourToken(fromToTimes[1] ?? "");
+    const endHour = parseHourToken(fromToTimes[3] ?? "");
+    if (startHour === null || endHour === null) {
+      return null;
+    }
+    let hour = startHour;
+    const minute = Number.parseInt(fromToTimes[2] ?? "0", 10);
+    const meridiem = fromToTimes[5]?.toLowerCase();
+    let endHour24 = endHour;
+    const endMinute = Number.parseInt(fromToTimes[4] ?? "0", 10);
+    if (meridiem === "pm" && hour < 12) {
+      hour += 12;
+    }
+    if (meridiem === "am" && hour === 12) {
+      hour = 0;
+    }
+    if (!meridiem && daypart) {
+      hour = applyDaypartMeridiem(hour, daypart);
+      endHour24 = applyDaypartMeridiem(endHour, daypart);
+    } else if (!meridiem && hour <= 7) {
+      hour += 12;
+      endHour24 += 12;
+    }
+    return { hour, minute, endHour: endHour24, endMinute };
+  }
+  const afterTime = normalized.match(
+    new RegExp(
+      `\\b(?:any\\s*time|anytime|after)\\s+${HOUR_TOKEN}(?::(\\d{2}))?\\s*(am|pm)?\\b`,
+      "i"
+    )
+  );
+  if (afterTime) {
+    const parsedHour = parseHourToken(afterTime[1] ?? "");
+    if (parsedHour === null) {
+      return null;
+    }
+    const minute = Number.parseInt(afterTime[2] ?? "0", 10);
+    const meridiem = afterTime[3]?.toLowerCase();
+    let hour = parsedHour;
+    if (meridiem === "pm" && hour < 12) {
+      hour += 12;
+    } else if (meridiem === "am" && hour === 12) {
+      hour = 0;
+    } else if (!meridiem && daypart) {
+      hour = applyDaypartMeridiem(hour, daypart);
+    } else if (!meridiem && hour <= 7) {
+      hour += 12;
+    }
+    return { hour, minute };
+  }
+  const bareTime = normalized.match(
+    /^(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(am|pm)?$/i
+  );
+  if (bareTime) {
+    const parsedHour = parseHourToken(bareTime[1] ?? "");
+    if (parsedHour === null) {
+      return null;
+    }
+    let hour = parsedHour;
+    const minute = Number.parseInt(bareTime[2] ?? "0", 10);
+    const meridiem = bareTime[3]?.toLowerCase();
+    if (meridiem === "pm" && hour < 12) {
+      hour += 12;
+    }
+    if (meridiem === "am" && hour === 12) {
+      hour = 0;
+    }
+    if (!meridiem && daypart) {
+      hour = applyDaypartMeridiem(hour, daypart);
+      return { hour, minute };
+    }
+    if (!meridiem) {
+      return null;
+    }
+    return { hour, minute };
+  }
+  if (daypart) {
+    const trailingTime = normalized.match(
+      /\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(am|pm)?\s*$/i
+    );
+    if (trailingTime) {
+      const parsedHour = parseHourToken(trailingTime[1] ?? "");
+      if (parsedHour !== null) {
+        const minute = Number.parseInt(trailingTime[2] ?? "0", 10);
+        const meridiem = trailingTime[3]?.toLowerCase();
+        let hour = parsedHour;
+        if (meridiem === "pm" && hour < 12) {
+          hour += 12;
+        } else if (meridiem === "am" && hour === 12) {
+          hour = 0;
+        } else if (!meridiem) {
+          hour = applyDaypartMeridiem(hour, daypart);
+        }
+        return { hour, minute };
+      }
+    }
+  }
+  return null;
+}
+function weekdayIndex(name) {
+  const map = {
+    sunday: 0,
+    monday: 1,
+    tuesday: 2,
+    wednesday: 3,
+    thursday: 4,
+    friday: 5,
+    saturday: 6
+  };
+  return map[name.toLowerCase()] ?? null;
+}
+function resolveTargetDateFromSpeech(normalized, today, knownScheduleRaw) {
+  let targetDate = { ...today };
+  let useNextWeek = false;
+  if (/\btomorrow\b/.test(normalized)) {
+    return addDays(today, 1);
+  }
+  if (/\bnext week\b/.test(normalized)) {
+    return addDays(today, 7);
+  }
+  const weekdayMatch = normalized.match(
+    /\b(next\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i
+  );
+  if (weekdayMatch) {
+    useNextWeek = Boolean(weekdayMatch[1]);
+    const weekday = weekdayIndex(weekdayMatch[2] ?? "");
+    if (weekday !== null) {
+      return resolveWeekday(today, weekday, useNextWeek);
+    }
+  }
+  const known = (knownScheduleRaw ?? "").toLowerCase().replace(/[^\w\s:]/g, " ").replace(/\s+/g, " ").trim();
+  if (!known) {
+    return targetDate;
+  }
+  if (/\btomorrow\b/.test(known)) {
+    return addDays(today, 1);
+  }
+  if (/\bnext week\b/.test(known)) {
+    return addDays(today, 7);
+  }
+  const knownWeekdayMatch = known.match(
+    /\b(next\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i
+  );
+  if (knownWeekdayMatch) {
+    useNextWeek = Boolean(knownWeekdayMatch[1]);
+    const weekday = weekdayIndex(knownWeekdayMatch[2] ?? "");
+    if (weekday !== null) {
+      return resolveWeekday(today, weekday, useNextWeek);
+    }
+  }
+  return targetDate;
+}
+function buildFlexibleAvailabilitySpoken(raw, targetDate) {
+  const trimmed = raw.trim();
+  if (/\btomorrow\b/i.test(trimmed)) {
+    return trimmed;
+  }
+  if (/\b(morning|afternoon|evening|anytime|whenever|flexible|as soon as possible|before work|after work|during lunch)\b/i.test(trimmed)) {
+    return trimmed;
+  }
+  return `${formatSpokenDate(targetDate)} ${trimmed}`.trim();
+}
+function parseScheduleSpeech(speech, now = /* @__PURE__ */ new Date(), timeZone = COMPANY_TIMEZONE, options = {}) {
+  try {
+    return parseScheduleSpeechInternal(speech, now, timeZone, options);
+  } catch (error) {
+    logScheduleParseError(error, speech);
+    return {
+      status: "needs_date_clarification",
+      prompt: SCHEDULE_PARSE_FALLBACK_PROMPT,
+      raw: speech.trim()
+    };
+  }
+}
+function logScheduleParseError(error, speech) {
+  logError("schedule_parse_failed", { speechLength: speech.trim().length }, error);
+}
+function parseScheduleSpeechInternal(speech, now = /* @__PURE__ */ new Date(), timeZone = COMPANY_TIMEZONE, options = {}) {
+  const raw = speech.trim();
+  const normalized = raw.toLowerCase().replace(/[^\w\s:]/g, " ").replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return { status: "nothing_schedulable", raw };
+  }
+  const today = getLocalParts(now, timeZone);
+  const targetDate = resolveTargetDateFromSpeech(
+    normalized,
+    today,
+    options.knownScheduleRaw
+  );
+  if (/\b(whenever|any time|anytime|as soon as possible|asap|flexible)\b/.test(normalized)) {
+    return {
+      status: "flexible_availability",
+      spoken: buildFlexibleAvailabilitySpoken(raw, targetDate),
+      raw
+    };
+  }
+  if (/\bbefore work\b|\bduring lunch\b|\bsometime tomorrow\b/.test(normalized)) {
+    return {
+      status: "flexible_availability",
+      spoken: buildFlexibleAvailabilitySpoken(raw, targetDate),
+      raw
+    };
+  }
+  if (/\blater in the afternoon\b/.test(normalized)) {
+    return {
+      status: "flexible_availability",
+      spoken: buildFlexibleAvailabilitySpoken(raw, targetDate),
+      raw
+    };
+  }
+  if (/\bafter work\b|\bafter i get off\b|\bwhen i get off\b/.test(normalized)) {
+    return {
+      status: "flexible_availability",
+      spoken: buildFlexibleAvailabilitySpoken(raw, targetDate),
+      raw
+    };
+  }
+  if (/\bbefore\s+(noon|midday)\b/.test(normalized)) {
+    const dateLabel = formatSpokenDate(targetDate);
+    return {
+      status: "needs_confirmation",
+      spoken: `${dateLabel} before noon`,
+      isoStart: makeUtcDate(targetDate.year, targetDate.month, targetDate.day, 8, 0, timeZone).toISOString(),
+      isoEnd: makeUtcDate(targetDate.year, targetDate.month, targetDate.day, 12, 0, timeZone).toISOString(),
+      raw
+    };
+  }
+  if (/\b(noon|midday)\b/.test(normalized)) {
+    const dateLabel = formatSpokenDate(targetDate);
+    return {
+      status: "needs_confirmation",
+      spoken: `${dateLabel} at 12:00 PM`,
+      isoStart: makeUtcDate(targetDate.year, targetDate.month, targetDate.day, 12, 0, timeZone).toISOString(),
+      raw
+    };
+  }
+  const daypart = extractDaypartFromSpeech(normalized) ?? options.knownDaypart;
+  const time = parseTimeFromSpeech(normalized, daypart);
+  const hasMorning = daypart === "morning" || /\bmorning\b/.test(normalized);
+  const hasAfternoon = daypart === "afternoon" || /\bafternoon\b/.test(normalized);
+  const hasEvening = daypart === "evening" || /\bevening\b/.test(normalized);
+  if ((hasMorning || hasAfternoon || hasEvening) && !time) {
+    const dateLabel = formatSpokenDate(targetDate);
+    if (hasMorning) {
+      return {
+        status: "needs_confirmation",
+        spoken: `Would ${dateLabel} between 8:00 and 11:00 AM work?`,
+        isoStart: makeUtcDate(targetDate.year, targetDate.month, targetDate.day, 8, 0, timeZone).toISOString(),
+        isoEnd: makeUtcDate(targetDate.year, targetDate.month, targetDate.day, 11, 0, timeZone).toISOString(),
+        raw
+      };
+    }
+    if (hasAfternoon && !/\btomorrow\b|\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/.test(normalized)) {
+      return {
+        status: "flexible_availability",
+        spoken: buildFlexibleAvailabilitySpoken(raw, targetDate),
+        raw
+      };
+    }
+    if (hasAfternoon) {
+      const afternoonLabel = /\btomorrow\b/.test(normalized) ? "tomorrow afternoon" : `${formatSpokenDate(targetDate)} afternoon`;
+      return {
+        status: "needs_time_clarification",
+        prompt: `What time ${afternoonLabel} works best?`,
+        raw
+      };
+    }
+    if (hasEvening) {
+      return {
+        status: "needs_time_clarification",
+        prompt: "What time in the evening works best?",
+        raw
+      };
+    }
+  }
+  if (!time && /\btomorrow\b|\bnext\b|\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/.test(normalized)) {
+    return {
+      status: "needs_time_clarification",
+      prompt: "What time works best?",
+      raw
+    };
+  }
+  if (time) {
+    const dateLabel = formatSpokenDate(targetDate);
+    if (time.endHour !== void 0 && time.endMinute !== void 0) {
+      const startLabel = formatSpokenTime(time.hour, time.minute);
+      const endLabel = formatSpokenTime(time.endHour, time.endMinute);
+      return {
+        status: "needs_confirmation",
+        spoken: `${dateLabel} between ${startLabel.replace(/ AM| PM/, "")} and ${endLabel}`,
+        isoStart: makeUtcDate(
+          targetDate.year,
+          targetDate.month,
+          targetDate.day,
+          time.hour,
+          time.minute,
+          timeZone
+        ).toISOString(),
+        isoEnd: makeUtcDate(
+          targetDate.year,
+          targetDate.month,
+          targetDate.day,
+          time.endHour,
+          time.endMinute,
+          timeZone
+        ).toISOString(),
+        raw
+      };
+    }
+    const betweenTimes = normalized.match(
+      /\bbetween\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(?:am|pm)?\s+and\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(am|pm)?/i
+    );
+    if (betweenTimes) {
+      const startHour = parseHourToken(betweenTimes[1] ?? "");
+      const endHour = parseHourToken(betweenTimes[3] ?? "");
+      if (startHour !== null && endHour !== null) {
+        let endHour24 = endHour;
+        const meridiem = betweenTimes[5]?.toLowerCase();
+        if (meridiem === "pm" && endHour24 < 12) {
+          endHour24 += 12;
+        }
+        if (!meridiem && endHour24 <= 7) {
+          endHour24 += 12;
+        }
+        let startHour24 = startHour;
+        if (meridiem === "pm" && startHour24 < 12) {
+          startHour24 += 12;
+        }
+        if (!meridiem && startHour24 <= 7) {
+          startHour24 += 12;
+        }
+        const startLabel = formatSpokenTime(startHour24, Number.parseInt(betweenTimes[2] ?? "0", 10));
+        const endLabel = formatSpokenTime(endHour24, Number.parseInt(betweenTimes[4] ?? "0", 10));
+        return {
+          status: "needs_confirmation",
+          spoken: `${dateLabel} between ${startLabel.replace(/ AM| PM/, "")} and ${endLabel}`,
+          isoStart: makeUtcDate(
+            targetDate.year,
+            targetDate.month,
+            targetDate.day,
+            startHour24,
+            Number.parseInt(betweenTimes[2] ?? "0", 10),
+            timeZone
+          ).toISOString(),
+          isoEnd: makeUtcDate(
+            targetDate.year,
+            targetDate.month,
+            targetDate.day,
+            endHour24,
+            Number.parseInt(betweenTimes[4] ?? "0", 10),
+            timeZone
+          ).toISOString(),
+          raw
+        };
+      }
+    }
+    const spokenTime = formatSpokenTime(time.hour, time.minute);
+    const isoStart = makeUtcDate(
+      targetDate.year,
+      targetDate.month,
+      targetDate.day,
+      time.hour,
+      time.minute,
+      timeZone
+    ).toISOString();
+    return {
+      status: "needs_confirmation",
+      spoken: `${dateLabel} at ${spokenTime}`,
+      isoStart,
+      raw
+    };
+  }
+  const bareMeridiemPrompt = normalized.match(
+    new RegExp(`^${HOUR_TOKEN}(?::(\\d{2}))?\\s*$`, "i")
+  );
+  if (bareMeridiemPrompt) {
+    const parsedHour = parseHourToken(bareMeridiemPrompt[1] ?? "");
+    if (parsedHour !== null) {
+      const minute = Number.parseInt(bareMeridiemPrompt[2] ?? "0", 10);
+      const amHour = parsedHour === 12 ? 0 : parsedHour;
+      const pmHour = parsedHour < 12 ? parsedHour + 12 : parsedHour;
+      return {
+        status: "needs_time_clarification",
+        prompt: `Do you mean ${formatSpokenTime(amHour, minute)} or ${formatSpokenTime(pmHour, minute)}?`,
+        raw
+      };
+    }
+  }
+  const bareOClockPrompt = normalized.match(
+    new RegExp(`^${HOUR_TOKEN}(?::(\\d{2}))?\\s+o\\s+clock\\s*$`, "i")
+  );
+  if (bareOClockPrompt && !daypart) {
+    const parsedHour = parseHourToken(bareOClockPrompt[1] ?? "");
+    if (parsedHour !== null) {
+      const minute = Number.parseInt(bareOClockPrompt[2] ?? "0", 10);
+      const amHour = parsedHour === 12 ? 0 : parsedHour;
+      const pmHour = parsedHour < 12 ? parsedHour + 12 : parsedHour;
+      return {
+        status: "needs_time_clarification",
+        prompt: `Do you mean ${formatSpokenTime(amHour, minute)} or ${formatSpokenTime(pmHour, minute)}?`,
+        raw
+      };
+    }
+  }
+  return { status: "nothing_schedulable", raw };
+}
+function buildScheduleConfirmationQuestion(spoken) {
+  if (spoken.startsWith("Would ")) {
+    return `${spoken} Is that correct?`;
+  }
+  return `Just to confirm, you'd prefer a call on ${spoken.replace(/^on /i, "")}. Is that correct?`;
+}
+function isScheduleConfirmedSpeech(speech) {
   const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
-  return /^(yes|yeah|yep|yup|correct|right|that's right|thats right|that's correct|thats correct)\b/.test(
+  return /^(yes|yeah|yep|yup|correct|right|that's right|thats right|that works|sounds good)\b/.test(
     normalized
   );
 }
-function isAddressRejectedSpeech(speech) {
+function isScheduleRejectedSpeech(speech) {
   const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
   return /^(no|nope|nah|not quite|incorrect|wrong|change|fix|update)\b/.test(normalized);
 }
-function confirmAddress(fields) {
-  const sanitized = fields.address ? sanitizeServiceAddress(fields.address) ?? formatAddressForSpeech(fields.address) : fields.address;
+function applyScheduleParseResult(fields, result) {
+  if (result.status === "nothing_schedulable") {
+    return fields;
+  }
+  if (result.status === "flexible_availability") {
+    return syncLegacyStringFields({
+      ...fields,
+      appointment_preference_raw: result.raw,
+      appointment_preference: result.spoken,
+      schedule_confirmed: true,
+      schedule_pending_clarification: false,
+      schedule_clarification_prompt: void 0,
+      schedule_clarification_attempts: void 0
+    });
+  }
   return syncLegacyStringFields({
     ...fields,
-    address: sanitized,
-    address_confirmed: true,
-    pending_question: fields.pending_question === "address_confirmation" || fields.pending_question === "service_address" ? void 0 : fields.pending_question,
-    field_being_confirmed: fields.field_being_confirmed === "address" ? void 0 : fields.field_being_confirmed,
-    confirmation_candidate: fields.field_being_confirmed === "address" ? void 0 : fields.confirmation_candidate
+    appointment_preference_raw: result.raw,
+    schedule_confirmed: false,
+    schedule_daypart: extractDaypartFromSpeech(result.raw) ?? fields.schedule_daypart,
+    appointment_schedule_iso: result.status === "needs_confirmation" ? result.isoStart : void 0,
+    appointment_schedule_iso_end: result.status === "needs_confirmation" ? result.isoEnd : void 0,
+    appointment_preference: result.status === "needs_confirmation" ? result.spoken : fields.appointment_preference
   });
+}
+function confirmSchedule(fields) {
+  const spoken = fields.appointment_preference?.trim() || fields.appointment_preference_raw?.trim() || "the requested time";
+  return syncLegacyStringFields({
+    ...fields,
+    appointment_preference: spoken,
+    schedule_confirmed: true
+  });
+}
+function needsScheduleClarification(fields) {
+  return Boolean(fields.schedule_pending_clarification);
+}
+function needsScheduleConfirmation(fields) {
+  return Boolean(fields.appointment_schedule_iso || fields.appointment_preference) && fields.schedule_confirmed !== true && !fields.schedule_pending_clarification;
+}
+function isScheduleComplete(fields) {
+  return typeof fields.appointment_preference === "string" && fields.appointment_preference.trim().length > 0 && fields.schedule_confirmed === true;
+}
+function isScheduleClarificationFailure(result) {
+  return result.status === "needs_time_clarification" || result.status === "needs_date_clarification" || result.status === "nothing_schedulable";
+}
+function isGenericScheduleTimePrompt(prompt) {
+  if (!prompt?.trim()) {
+    return true;
+  }
+  return GENERIC_SCHEDULE_TIME_PROMPT.test(prompt.trim());
+}
+function acceptFlexibleSchedulePreference(fields, preference) {
+  const trimmed = preference.trim();
+  return syncLegacyStringFields({
+    ...fields,
+    appointment_preference: trimmed,
+    appointment_preference_raw: trimmed,
+    schedule_confirmed: true,
+    schedule_pending_clarification: false,
+    schedule_clarification_prompt: void 0,
+    schedule_clarification_attempts: void 0
+  });
+}
+function resolveScheduleClarificationPrompt(parsed, nextAttempts) {
+  if (nextAttempts >= 1) {
+    return SCHEDULE_DAYPART_CLARIFICATION_PROMPT;
+  }
+  if (parsed.status === "needs_time_clarification" || parsed.status === "needs_date_clarification") {
+    if (isGenericScheduleTimePrompt(parsed.prompt)) {
+      return SCHEDULE_DAYPART_CLARIFICATION_PROMPT;
+    }
+    return parsed.prompt;
+  }
+  if (parsed.status === "nothing_schedulable") {
+    return SCHEDULE_PARSE_FALLBACK_PROMPT;
+  }
+  return SCHEDULE_DAYPART_CLARIFICATION_PROMPT;
+}
+function processScheduleCapture(fields, speech, now = /* @__PURE__ */ new Date()) {
+  try {
+    const combined = `${fields.appointment_preference_raw ?? ""} ${speech}`.trim();
+    const parsed = parseScheduleSpeech(combined, now, COMPANY_TIMEZONE, {
+      knownDaypart: fields.schedule_daypart,
+      knownScheduleRaw: fields.appointment_preference_raw
+    });
+    let updated = applyScheduleParseResult(
+      {
+        ...fields,
+        appointment_preference_raw: combined
+      },
+      parsed
+    );
+    if (parsed.status === "flexible_availability") {
+      return { fields: updated };
+    }
+    if (parsed.status === "needs_confirmation") {
+      updated = {
+        ...updated,
+        schedule_pending_clarification: false,
+        schedule_clarification_prompt: void 0,
+        schedule_clarification_attempts: void 0
+      };
+      return {
+        fields: updated,
+        confirmationPrompt: buildScheduleConfirmationQuestion(parsed.spoken)
+      };
+    }
+    if (isScheduleClarificationFailure(parsed)) {
+      const alreadyClarifying = fields.schedule_pending_clarification === true;
+      const attempts = alreadyClarifying ? fields.schedule_clarification_attempts ?? 0 : 0;
+      if (alreadyClarifying && attempts >= 1) {
+        return {
+          fields: acceptFlexibleSchedulePreference(updated, combined),
+          flexibleAcceptMessage: SCHEDULE_FLEXIBLE_ACCEPT_MESSAGE
+        };
+      }
+      const nextAttempts = alreadyClarifying ? attempts + 1 : 0;
+      const prompt = resolveScheduleClarificationPrompt(parsed, nextAttempts);
+      updated = {
+        ...updated,
+        schedule_pending_clarification: true,
+        schedule_clarification_prompt: prompt,
+        schedule_clarification_attempts: nextAttempts,
+        schedule_daypart: parsed.status === "needs_time_clarification" ? extractDaypartFromSpeech(parsed.raw) ?? fields.schedule_daypart ?? extractDaypartFromSpeech(fields.appointment_preference_raw ?? "") : fields.schedule_daypart
+      };
+      return { fields: updated, clarificationPrompt: prompt };
+    }
+    updated = {
+      ...updated,
+      schedule_pending_clarification: true,
+      schedule_clarification_prompt: SCHEDULE_PARSE_FALLBACK_PROMPT,
+      schedule_clarification_attempts: (fields.schedule_clarification_attempts ?? 0) + 1
+    };
+    return {
+      fields: updated,
+      clarificationPrompt: SCHEDULE_PARSE_FALLBACK_PROMPT
+    };
+  } catch (error) {
+    logScheduleParseError(error, speech);
+    const combined = `${fields.appointment_preference_raw ?? ""} ${speech}`.trim();
+    const attempts = fields.schedule_clarification_attempts ?? 0;
+    if (attempts >= 1) {
+      return {
+        fields: acceptFlexibleSchedulePreference(fields, combined),
+        flexibleAcceptMessage: SCHEDULE_FLEXIBLE_ACCEPT_MESSAGE
+      };
+    }
+    const updated = {
+      ...fields,
+      appointment_preference_raw: combined,
+      schedule_pending_clarification: true,
+      schedule_clarification_prompt: SCHEDULE_DAYPART_CLARIFICATION_PROMPT,
+      schedule_confirmed: false,
+      schedule_clarification_attempts: attempts + 1
+    };
+    return {
+      fields: updated,
+      clarificationPrompt: SCHEDULE_DAYPART_CLARIFICATION_PROMPT
+    };
+  }
 }
 
 // ../../lib/call-summary.ts
@@ -2498,921 +3370,293 @@ function processCallerNameTurn(fields, speech, options = {}) {
   };
 }
 
-// src/orchestrator/schedule-normalizer.ts
-var COMPANY_TIMEZONE = process.env.COMPANY_TIMEZONE?.trim() || "America/Chicago";
-var SCHEDULE_PARSE_FALLBACK_PROMPT = "I'm sorry, I had trouble understanding the timing. What specific day and time would work best for you?";
-var SCHEDULE_DAYPART_CLARIFICATION_PROMPT = "Would morning, afternoon, or evening work best?";
-var SCHEDULE_FLEXIBLE_ACCEPT_MESSAGE = "That's okay. I'll note that your timing is flexible.";
-var GENERIC_SCHEDULE_TIME_PROMPT = /^what time works best\?$/i;
-function getLocalParts(date, timeZone) {
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    year: "numeric",
-    month: "numeric",
-    day: "numeric",
-    weekday: "short"
-  });
-  const parts = formatter.formatToParts(date);
-  const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  const weekdayMap = {
-    Sun: 0,
-    Mon: 1,
-    Tue: 2,
-    Wed: 3,
-    Thu: 4,
-    Fri: 5,
-    Sat: 6
-  };
+// src/orchestrator/field-completion.ts
+var MAX_FIELD_CLARIFICATION_ATTEMPTS = 2;
+function hasValue(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+function resolutionStatus(fields, field) {
+  return fields.field_resolution?.[field];
+}
+function getFieldClarificationAttempts(fields, field) {
+  return fields.field_clarification_attempts?.[field] ?? 0;
+}
+function incrementFieldClarificationAttempt(fields, field) {
+  const attempts = getFieldClarificationAttempts(fields, field) + 1;
   return {
-    year: Number.parseInt(lookup.year ?? "1970", 10),
-    month: Number.parseInt(lookup.month ?? "1", 10),
-    day: Number.parseInt(lookup.day ?? "1", 10),
-    weekday: weekdayMap[lookup.weekday ?? "Sun"] ?? 0
+    ...fields,
+    field_clarification_attempts: {
+      ...fields.field_clarification_attempts,
+      [field]: attempts
+    }
   };
 }
-function makeUtcDate(year, month, day, hour, minute, timeZone) {
-  let guess = Date.UTC(year, month - 1, day, hour, minute);
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const parts = getLocalParts(new Date(guess), timeZone);
-    const deltaHours = hour - deriveHour(new Date(guess), timeZone);
-    const deltaDays = day - parts.day;
-    guess += deltaDays * 864e5 + deltaHours * 36e5;
-  }
-  return new Date(guess);
-}
-function deriveHour(date, timeZone) {
-  const hour = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    hour: "numeric",
-    minute: "numeric",
-    hour12: false
-  }).formatToParts(date);
-  const lookup = Object.fromEntries(hour.map((part) => [part.type, part.value]));
-  return Number.parseInt(lookup.hour ?? "0", 10);
-}
-function addDays(parts, days) {
-  const date = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + days));
+function markFieldUncertain(fields, field, callerWording) {
+  const note = callerWording?.trim();
+  const existingNotes = fields.additional_notes?.trim();
+  const combinedNotes = note && existingNotes && !existingNotes.includes(note) ? `${existingNotes} ${note}` : note ?? existingNotes;
   return {
-    year: date.getUTCFullYear(),
-    month: date.getUTCMonth() + 1,
-    day: date.getUTCDate(),
-    weekday: date.getUTCDay()
+    ...fields,
+    field_resolution: {
+      ...fields.field_resolution,
+      [field]: "uncertain"
+    },
+    additional_notes: combinedNotes ? combinedNotes.slice(0, 500) : fields.additional_notes
   };
 }
-function resolveWeekday(parts, targetWeekday, useNextWeek) {
-  let delta = (targetWeekday - parts.weekday + 7) % 7;
-  if (delta === 0 && useNextWeek) {
-    delta = 7;
-  }
-  if (delta === 0 && !useNextWeek) {
-    return parts;
-  }
-  return addDays(parts, delta);
+function markFieldCaptured(fields, field) {
+  return {
+    ...fields,
+    field_resolution: {
+      ...fields.field_resolution,
+      [field]: "captured"
+    }
+  };
 }
-function formatSpokenDate(parts) {
-  const monthNames = [
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December"
-  ];
-  return `${monthNames[parts.month - 1] ?? "January"} ${parts.day}`;
+function markFieldConfirmed(fields, field) {
+  return {
+    ...fields,
+    field_resolution: {
+      ...fields.field_resolution,
+      [field]: "confirmed"
+    }
+  };
 }
-function formatSpokenTime(hour, minute) {
-  const suffix = hour >= 12 ? "PM" : "AM";
-  const hour12 = hour % 12 === 0 ? 12 : hour % 12;
-  const minutePart = `:${String(minute).padStart(2, "0")}`;
-  return `${hour12}${minutePart} ${suffix}`.replace("  ", " ");
+function markFieldDerived(fields, field) {
+  return {
+    ...fields,
+    field_resolution: {
+      ...fields.field_resolution,
+      [field]: "derived"
+    }
+  };
 }
-var SPOKEN_HOUR_WORDS = {
-  one: 1,
-  two: 2,
-  three: 3,
-  four: 4,
-  five: 5,
-  six: 6,
-  seven: 7,
-  eight: 8,
-  nine: 9,
-  ten: 10,
-  eleven: 11,
-  twelve: 12
-};
-var HOUR_TOKEN = "(\\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)";
-function parseHourToken(token) {
-  const numeric = Number.parseInt(token, 10);
-  if (Number.isFinite(numeric) && numeric >= 1 && numeric <= 12) {
-    return numeric;
-  }
-  return SPOKEN_HOUR_WORDS[token.toLowerCase()] ?? null;
+function isCallbackComplete(fields) {
+  return hasValue(fields.callback_phone) && fields.callback_phone_confirmed === true;
 }
-function extractDaypartFromSpeech(speech) {
-  const normalized = speech.toLowerCase();
-  if (/\bmorning\b/.test(normalized)) {
-    return "morning";
+function getFieldCompletionStatus(field, fields) {
+  const explicit = resolutionStatus(fields, field);
+  if (explicit === "derived") {
+    return "derived";
   }
-  if (/\bafternoon\b/.test(normalized)) {
-    return "afternoon";
+  if (explicit) {
+    return explicit;
   }
-  if (/\bevening\b/.test(normalized)) {
-    return "evening";
-  }
-  return void 0;
-}
-function applyDaypartMeridiem(hour, daypart) {
-  if (daypart === "morning") {
-    return hour === 12 ? 0 : hour;
-  }
-  if (hour >= 1 && hour <= 11) {
-    return hour + 12;
-  }
-  return hour;
-}
-function applyMeridiemToHour(hour, meridiem, daypart) {
-  let resolved = hour;
-  if (meridiem === "pm" && resolved < 12) {
-    resolved += 12;
-  }
-  if (meridiem === "am" && resolved === 12) {
-    resolved = 0;
-  }
-  if (!meridiem && daypart) {
-    resolved = applyDaypartMeridiem(resolved, daypart);
-  }
-  return resolved;
-}
-function parseColloquialTimeFromSpeech(normalized, daypart) {
-  const quarterTo = normalized.match(
-    new RegExp(`\\bquarter to ${HOUR_TOKEN}\\b`, "i")
-  );
-  if (quarterTo) {
-    const targetHour = parseHourToken(quarterTo[1] ?? "");
-    if (targetHour === null) {
-      return null;
-    }
-    const hourToken = targetHour === 1 ? 12 : targetHour - 1;
-    const hour = applyMeridiemToHour(hourToken, void 0, daypart);
-    return { hour, minute: 45 };
-  }
-  const quarterAfter = normalized.match(
-    new RegExp(`\\bquarter (?:after|past) ${HOUR_TOKEN}\\b`, "i")
-  );
-  if (quarterAfter) {
-    const parsedHour = parseHourToken(quarterAfter[1] ?? "");
-    if (parsedHour === null) {
-      return null;
-    }
-    const hour = applyMeridiemToHour(parsedHour, void 0, daypart);
-    return { hour, minute: 15 };
-  }
-  const hourThirty = normalized.match(
-    new RegExp(`\\b${HOUR_TOKEN}\\s+thirty\\b`, "i")
-  );
-  if (hourThirty) {
-    const parsedHour = parseHourToken(hourThirty[1] ?? "");
-    if (parsedHour === null) {
-      return null;
-    }
-    const hour = applyMeridiemToHour(parsedHour, void 0, daypart);
-    return { hour, minute: 30 };
-  }
-  const halfPast = normalized.match(new RegExp(`\\bhalf past ${HOUR_TOKEN}\\b`, "i"));
-  if (halfPast) {
-    const parsedHour = parseHourToken(halfPast[1] ?? "");
-    if (parsedHour === null) {
-      return null;
-    }
-    const hour = applyMeridiemToHour(parsedHour, void 0, daypart);
-    return { hour, minute: 30 };
-  }
-  const sharpTime = normalized.match(new RegExp(`\\b${HOUR_TOKEN}\\s+sharp\\b`, "i"));
-  if (sharpTime) {
-    const parsedHour = parseHourToken(sharpTime[1] ?? "");
-    if (parsedHour === null) {
-      return null;
-    }
-    const hour = applyMeridiemToHour(parsedHour, void 0, daypart);
-    return { hour, minute: 0 };
-  }
-  const oClockTime = normalized.match(
-    new RegExp(`\\b(?:at\\s+|around\\s+|about\\s+)?${HOUR_TOKEN}(?::(\\d{2}))?\\s+o\\s+clock\\b`, "i")
-  );
-  if (oClockTime) {
-    const parsedHour = parseHourToken(oClockTime[1] ?? "");
-    if (parsedHour === null) {
-      return null;
-    }
-    if (!daypart) {
-      return null;
-    }
-    const minute = Number.parseInt(oClockTime[2] ?? "0", 10);
-    const hour = applyMeridiemToHour(parsedHour, void 0, daypart);
-    return { hour, minute };
-  }
-  return null;
-}
-function parseTimeFromSpeech(normalized, daypart) {
-  const colloquial = parseColloquialTimeFromSpeech(normalized, daypart);
-  if (colloquial) {
-    return colloquial;
-  }
-  const atTime = normalized.match(
-    new RegExp(`\\bat\\s+${HOUR_TOKEN}(?::(\\d{2}))?\\s*(am|pm)?\\b`, "i")
-  );
-  if (atTime) {
-    const parsedHour = parseHourToken(atTime[1] ?? "");
-    if (parsedHour === null) {
-      return null;
-    }
-    let hour = parsedHour;
-    const minute = Number.parseInt(atTime[2] ?? "0", 10);
-    const meridiem = atTime[3]?.toLowerCase();
-    if (meridiem === "pm" && hour < 12) {
-      hour += 12;
-    }
-    if (meridiem === "am" && hour === 12) {
-      hour = 0;
-    }
-    if (!meridiem && hour <= 7 && !daypart) {
-      hour += 12;
-    }
-    if (!meridiem && daypart) {
-      hour = applyDaypartMeridiem(hour, daypart);
-    }
-    return { hour, minute };
-  }
-  const aboutTime = normalized.match(
-    /\babout\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\b/i
-  );
-  if (aboutTime) {
-    const parsedHour = parseHourToken(aboutTime[1] ?? "");
-    if (parsedHour === null) {
-      return null;
-    }
-    let hour = parsedHour;
-    const minute = Number.parseInt(aboutTime[2] ?? "0", 10);
-    if (daypart) {
-      hour = applyDaypartMeridiem(hour, daypart);
-    } else if (hour <= 7) {
-      hour += 12;
-    }
-    return { hour, minute };
-  }
-  const aroundTime = normalized.match(
-    /\baround\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\b/i
-  );
-  if (aroundTime) {
-    const parsedHour = parseHourToken(aroundTime[1] ?? "");
-    if (parsedHour === null) {
-      return null;
-    }
-    let hour = parsedHour;
-    const minute = Number.parseInt(aroundTime[2] ?? "0", 10);
-    if (daypart) {
-      hour = applyDaypartMeridiem(hour, daypart);
-    } else if (hour <= 7) {
-      hour += 12;
-    }
-    return { hour, minute };
-  }
-  const betweenTimes = normalized.match(
-    new RegExp(
-      `\\bbetween\\s+${HOUR_TOKEN}(?::(\\d{2}))?\\s*(?:am|pm)?\\s+and\\s+${HOUR_TOKEN}(?::(\\d{2}))?\\s*(am|pm)?`,
-      "i"
-    )
-  );
-  if (betweenTimes) {
-    const startHour = parseHourToken(betweenTimes[1] ?? "");
-    const endHour = parseHourToken(betweenTimes[3] ?? "");
-    if (startHour === null || endHour === null) {
-      return null;
-    }
-    let hour = startHour;
-    const minute = Number.parseInt(betweenTimes[2] ?? "0", 10);
-    const meridiem = betweenTimes[5]?.toLowerCase();
-    let endHour24 = endHour;
-    const endMinute = Number.parseInt(betweenTimes[4] ?? "0", 10);
-    if (meridiem === "pm" && hour < 12) {
-      hour += 12;
-    }
-    if (meridiem === "am" && hour === 12) {
-      hour = 0;
-    }
-    if (!meridiem && daypart) {
-      hour = applyDaypartMeridiem(hour, daypart);
-      endHour24 = applyDaypartMeridiem(endHour, daypart);
-    } else if (!meridiem && hour <= 7) {
-      hour += 12;
-      endHour24 += 12;
-    }
-    return { hour, minute, endHour: endHour24, endMinute };
-  }
-  const fromToTimes = normalized.match(
-    new RegExp(
-      `\\bfrom\\s+${HOUR_TOKEN}(?::(\\d{2}))?\\s*(?:am|pm)?\\s+to\\s+${HOUR_TOKEN}(?::(\\d{2}))?\\s*(am|pm)?`,
-      "i"
-    )
-  );
-  if (fromToTimes) {
-    const startHour = parseHourToken(fromToTimes[1] ?? "");
-    const endHour = parseHourToken(fromToTimes[3] ?? "");
-    if (startHour === null || endHour === null) {
-      return null;
-    }
-    let hour = startHour;
-    const minute = Number.parseInt(fromToTimes[2] ?? "0", 10);
-    const meridiem = fromToTimes[5]?.toLowerCase();
-    let endHour24 = endHour;
-    const endMinute = Number.parseInt(fromToTimes[4] ?? "0", 10);
-    if (meridiem === "pm" && hour < 12) {
-      hour += 12;
-    }
-    if (meridiem === "am" && hour === 12) {
-      hour = 0;
-    }
-    if (!meridiem && daypart) {
-      hour = applyDaypartMeridiem(hour, daypart);
-      endHour24 = applyDaypartMeridiem(endHour, daypart);
-    } else if (!meridiem && hour <= 7) {
-      hour += 12;
-      endHour24 += 12;
-    }
-    return { hour, minute, endHour: endHour24, endMinute };
-  }
-  const afterTime = normalized.match(
-    new RegExp(
-      `\\b(?:any\\s*time|anytime|after)\\s+${HOUR_TOKEN}(?::(\\d{2}))?\\s*(am|pm)?\\b`,
-      "i"
-    )
-  );
-  if (afterTime) {
-    const parsedHour = parseHourToken(afterTime[1] ?? "");
-    if (parsedHour === null) {
-      return null;
-    }
-    const minute = Number.parseInt(afterTime[2] ?? "0", 10);
-    const meridiem = afterTime[3]?.toLowerCase();
-    let hour = parsedHour;
-    if (meridiem === "pm" && hour < 12) {
-      hour += 12;
-    } else if (meridiem === "am" && hour === 12) {
-      hour = 0;
-    } else if (!meridiem && daypart) {
-      hour = applyDaypartMeridiem(hour, daypart);
-    } else if (!meridiem && hour <= 7) {
-      hour += 12;
-    }
-    return { hour, minute };
-  }
-  const bareTime = normalized.match(
-    /^(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(am|pm)?$/i
-  );
-  if (bareTime) {
-    const parsedHour = parseHourToken(bareTime[1] ?? "");
-    if (parsedHour === null) {
-      return null;
-    }
-    let hour = parsedHour;
-    const minute = Number.parseInt(bareTime[2] ?? "0", 10);
-    const meridiem = bareTime[3]?.toLowerCase();
-    if (meridiem === "pm" && hour < 12) {
-      hour += 12;
-    }
-    if (meridiem === "am" && hour === 12) {
-      hour = 0;
-    }
-    if (!meridiem && daypart) {
-      hour = applyDaypartMeridiem(hour, daypart);
-      return { hour, minute };
-    }
-    if (!meridiem) {
-      return null;
-    }
-    return { hour, minute };
-  }
-  if (daypart) {
-    const trailingTime = normalized.match(
-      /\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(am|pm)?\s*$/i
-    );
-    if (trailingTime) {
-      const parsedHour = parseHourToken(trailingTime[1] ?? "");
-      if (parsedHour !== null) {
-        const minute = Number.parseInt(trailingTime[2] ?? "0", 10);
-        const meridiem = trailingTime[3]?.toLowerCase();
-        let hour = parsedHour;
-        if (meridiem === "pm" && hour < 12) {
-          hour += 12;
-        } else if (meridiem === "am" && hour === 12) {
-          hour = 0;
-        } else if (!meridiem) {
-          hour = applyDaypartMeridiem(hour, daypart);
-        }
-        return { hour, minute };
+  switch (field) {
+    case "full_name":
+      if (fields.caller_name_declined === true || fields.caller_name_unavailable === true) {
+        return "confirmed";
       }
+      if (hasCompleteCallerName(fields)) {
+        return fields.name_pending_confirmation ? "captured" : "confirmed";
+      }
+      return "missing";
+    case "callback_phone":
+      if (isCallbackComplete(fields)) {
+        return "confirmed";
+      }
+      if (hasValue(fields.callback_phone)) {
+        return "captured";
+      }
+      return "missing";
+    case "address":
+      if (isAddressConfirmed(fields)) {
+        return "confirmed";
+      }
+      if (hasConfirmableAddress(fields.address)) {
+        return "captured";
+      }
+      return "missing";
+    case "problem_description":
+      return hasValue(fields.problem_description) ? "captured" : "missing";
+    case "urgency":
+      return hasValue(fields.urgency) ? "captured" : "missing";
+    case "appointment_preference":
+      if (isScheduleComplete(fields)) {
+        return fields.schedule_confirmed === true ? "confirmed" : "captured";
+      }
+      if (hasValue(fields.appointment_preference_raw)) {
+        return "captured";
+      }
+      return "missing";
+    case "emergency_or_active_leak":
+    case "insurance_claim_started":
+    case "adjuster_contacted":
+      return booleanFieldStatus(fields[field]);
+    default:
+      return "missing";
+  }
+}
+function booleanFieldStatus(value) {
+  if (value === true || value === false) {
+    return "captured";
+  }
+  return "missing";
+}
+function isFieldResolvedEnoughToSkip(field, fields) {
+  const status = getFieldCompletionStatus(field, fields);
+  if (status === "confirmed" || status === "uncertain" || status === "derived") {
+    return true;
+  }
+  if (status === "captured") {
+    switch (field) {
+      case "full_name":
+        return hasCompleteCallerName(fields);
+      case "callback_phone":
+        return isCallbackComplete(fields);
+      case "address":
+        return isAddressConfirmed(fields);
+      case "problem_description":
+      case "urgency":
+        return true;
+      case "appointment_preference":
+        return isScheduleComplete(fields);
+      case "emergency_or_active_leak":
+      case "insurance_claim_started":
+      case "adjuster_contacted":
+        return !isStructuredBooleanUnset(fields[field]);
+      default:
+        return false;
     }
   }
-  return null;
+  if (getFieldClarificationAttempts(fields, field) >= MAX_FIELD_CLARIFICATION_ATTEMPTS) {
+    return true;
+  }
+  return false;
 }
-function weekdayIndex(name) {
-  const map = {
-    sunday: 0,
-    monday: 1,
-    tuesday: 2,
-    wednesday: 3,
-    thursday: 4,
-    friday: 5,
-    saturday: 6
+function isFieldAskable(field, fields) {
+  return !isFieldResolvedEnoughToSkip(field, fields);
+}
+function mapPendingQuestionToRequiredField(pending) {
+  switch (pending) {
+    case "caller_name":
+      return "full_name";
+    case "callback_phone":
+    case "callback_confirmation":
+      return "callback_phone";
+    case "service_address":
+    case "address_confirmation":
+      return "address";
+    case "reason_for_call":
+    case "call_reason":
+      return "problem_description";
+    case "insurance_claim":
+      return "insurance_claim_started";
+    case "adjuster_contacted":
+      return "adjuster_contacted";
+    case "active_leak":
+      return "emergency_or_active_leak";
+    case "urgency":
+      return "urgency";
+    case "preferred_callback_time":
+    case "schedule_confirmation":
+      return "appointment_preference";
+    default:
+      return null;
+  }
+}
+function appendContextNote(fields, note) {
+  const trimmed = note.trim();
+  if (!trimmed) {
+    return fields;
+  }
+  const existing = fields.additional_notes?.trim();
+  if (existing?.includes(trimmed)) {
+    return fields;
+  }
+  const combined = existing ? `${existing} ${trimmed}` : trimmed;
+  return {
+    ...fields,
+    additional_notes: combined.slice(0, 500)
   };
-  return map[name.toLowerCase()] ?? null;
 }
-function resolveTargetDateFromSpeech(normalized, today, knownScheduleRaw) {
-  let targetDate = { ...today };
-  let useNextWeek = false;
-  if (/\btomorrow\b/.test(normalized)) {
-    return addDays(today, 1);
-  }
-  if (/\bnext week\b/.test(normalized)) {
-    return addDays(today, 7);
-  }
-  const weekdayMatch = normalized.match(
-    /\b(next\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i
-  );
-  if (weekdayMatch) {
-    useNextWeek = Boolean(weekdayMatch[1]);
-    const weekday = weekdayIndex(weekdayMatch[2] ?? "");
-    if (weekday !== null) {
-      return resolveWeekday(today, weekday, useNextWeek);
-    }
-  }
-  const known = (knownScheduleRaw ?? "").toLowerCase().replace(/[^\w\s:]/g, " ").replace(/\s+/g, " ").trim();
-  if (!known) {
-    return targetDate;
-  }
-  if (/\btomorrow\b/.test(known)) {
-    return addDays(today, 1);
-  }
-  if (/\bnext week\b/.test(known)) {
-    return addDays(today, 7);
-  }
-  const knownWeekdayMatch = known.match(
-    /\b(next\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i
-  );
-  if (knownWeekdayMatch) {
-    useNextWeek = Boolean(knownWeekdayMatch[1]);
-    const weekday = weekdayIndex(knownWeekdayMatch[2] ?? "");
-    if (weekday !== null) {
-      return resolveWeekday(today, weekday, useNextWeek);
-    }
-  }
-  return targetDate;
+
+// src/orchestrator/address-confirmation.ts
+function hasValue2(value) {
+  return typeof value === "string" && value.trim().length > 0;
 }
-function buildFlexibleAvailabilitySpoken(raw, targetDate) {
-  const trimmed = raw.trim();
-  if (/\btomorrow\b/i.test(trimmed)) {
-    return trimmed;
+function hasConfirmableAddress(address) {
+  if (!hasValue2(address)) {
+    return false;
   }
-  if (/\b(morning|afternoon|evening|anytime|whenever|flexible|as soon as possible|before work|after work|during lunch)\b/i.test(trimmed)) {
-    return trimmed;
+  const trimmed = address.trim();
+  return /\d/.test(trimmed) && trimmed.length >= 8;
+}
+function formatAddressForSpeech(address) {
+  return normalizeAddressPunctuation(address);
+}
+function sanitizeAddressValue(address) {
+  const stripped = address.replace(/(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/g, " ").replace(/\b(call me at|my number is|phone number is|callback number is)\b.*$/i, "").replace(/\s+/g, " ").trim();
+  if (containsNonAddressContinuation(stripped)) {
+    return sanitizeServiceAddress(stripped) ?? stripped.replace(/[,.]$/, "").trim();
   }
-  return `${formatSpokenDate(targetDate)} ${trimmed}`.trim();
+  return stripped;
 }
-function parseScheduleSpeech(speech, now = /* @__PURE__ */ new Date(), timeZone = COMPANY_TIMEZONE, options = {}) {
-  try {
-    return parseScheduleSpeechInternal(speech, now, timeZone, options);
-  } catch (error) {
-    logScheduleParseError(error, speech);
-    return {
-      status: "needs_date_clarification",
-      prompt: SCHEDULE_PARSE_FALLBACK_PROMPT,
-      raw: speech.trim()
-    };
-  }
+function buildAddressReadbackConfirmation(address) {
+  return `And your service address is ${formatAddressForSpeech(sanitizeAddressValue(address))}. Is that correct?`;
 }
-function logScheduleParseError(error, speech) {
-  logError("schedule_parse_failed", { speechLength: speech.trim().length }, error);
+function needsAddressReadback(fields) {
+  return hasConfirmableAddress(fields.address) && fields.address_confirmed !== true;
 }
-function parseScheduleSpeechInternal(speech, now = /* @__PURE__ */ new Date(), timeZone = COMPANY_TIMEZONE, options = {}) {
-  const raw = speech.trim();
-  const normalized = raw.toLowerCase().replace(/[^\w\s:]/g, " ").replace(/\s+/g, " ").trim();
+function isAddressConfirmed(fields) {
+  return hasConfirmableAddress(fields.address) && fields.address_confirmed === true;
+}
+function normalizeConfirmationSpeech(speech) {
+  return speech.toLowerCase().replace(/[^\w\s']/g, " ").replace(/\s+/g, " ").trim();
+}
+var ADDRESS_CONFIRMATION_AFFIRMATIVE = /\b(yes|yeah|yep|yup|correct|right|that s right|that s correct|affirmative|uh huh|uhhuh|mm hmm|mhm)\b/;
+function isAddressConfirmedSpeech(speech) {
+  const normalized = normalizeConfirmationSpeech(speech);
   if (!normalized) {
-    return { status: "nothing_schedulable", raw };
+    return false;
   }
-  const today = getLocalParts(now, timeZone);
-  const targetDate = resolveTargetDateFromSpeech(
-    normalized,
-    today,
-    options.knownScheduleRaw
-  );
-  if (/\b(whenever|any time|anytime|as soon as possible|asap|flexible)\b/.test(normalized)) {
-    return {
-      status: "flexible_availability",
-      spoken: buildFlexibleAvailabilitySpoken(raw, targetDate),
-      raw
-    };
-  }
-  if (/\bbefore work\b|\bduring lunch\b|\bsometime tomorrow\b/.test(normalized)) {
-    return {
-      status: "flexible_availability",
-      spoken: buildFlexibleAvailabilitySpoken(raw, targetDate),
-      raw
-    };
-  }
-  if (/\blater in the afternoon\b/.test(normalized)) {
-    return {
-      status: "flexible_availability",
-      spoken: buildFlexibleAvailabilitySpoken(raw, targetDate),
-      raw
-    };
-  }
-  if (/\bafter work\b|\bafter i get off\b|\bwhen i get off\b/.test(normalized)) {
-    return {
-      status: "flexible_availability",
-      spoken: buildFlexibleAvailabilitySpoken(raw, targetDate),
-      raw
-    };
-  }
-  if (/\bbefore\s+(noon|midday)\b/.test(normalized)) {
-    const dateLabel = formatSpokenDate(targetDate);
-    return {
-      status: "needs_confirmation",
-      spoken: `${dateLabel} before noon`,
-      isoStart: makeUtcDate(targetDate.year, targetDate.month, targetDate.day, 8, 0, timeZone).toISOString(),
-      isoEnd: makeUtcDate(targetDate.year, targetDate.month, targetDate.day, 12, 0, timeZone).toISOString(),
-      raw
-    };
-  }
-  if (/\b(noon|midday)\b/.test(normalized)) {
-    const dateLabel = formatSpokenDate(targetDate);
-    return {
-      status: "needs_confirmation",
-      spoken: `${dateLabel} at 12:00 PM`,
-      isoStart: makeUtcDate(targetDate.year, targetDate.month, targetDate.day, 12, 0, timeZone).toISOString(),
-      raw
-    };
-  }
-  const daypart = extractDaypartFromSpeech(normalized) ?? options.knownDaypart;
-  const time = parseTimeFromSpeech(normalized, daypart);
-  const hasMorning = daypart === "morning" || /\bmorning\b/.test(normalized);
-  const hasAfternoon = daypart === "afternoon" || /\bafternoon\b/.test(normalized);
-  const hasEvening = daypart === "evening" || /\bevening\b/.test(normalized);
-  if ((hasMorning || hasAfternoon || hasEvening) && !time) {
-    const dateLabel = formatSpokenDate(targetDate);
-    if (hasMorning) {
-      return {
-        status: "needs_confirmation",
-        spoken: `Would ${dateLabel} between 8:00 and 11:00 AM work?`,
-        isoStart: makeUtcDate(targetDate.year, targetDate.month, targetDate.day, 8, 0, timeZone).toISOString(),
-        isoEnd: makeUtcDate(targetDate.year, targetDate.month, targetDate.day, 11, 0, timeZone).toISOString(),
-        raw
-      };
-    }
-    if (hasAfternoon && !/\btomorrow\b|\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/.test(normalized)) {
-      return {
-        status: "flexible_availability",
-        spoken: buildFlexibleAvailabilitySpoken(raw, targetDate),
-        raw
-      };
-    }
-    if (hasAfternoon) {
-      const afternoonLabel = /\btomorrow\b/.test(normalized) ? "tomorrow afternoon" : `${formatSpokenDate(targetDate)} afternoon`;
-      return {
-        status: "needs_time_clarification",
-        prompt: `What time ${afternoonLabel} works best?`,
-        raw
-      };
-    }
-    if (hasEvening) {
-      return {
-        status: "needs_time_clarification",
-        prompt: "What time in the evening works best?",
-        raw
-      };
-    }
-  }
-  if (!time && /\btomorrow\b|\bnext\b|\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/.test(normalized)) {
-    return {
-      status: "needs_time_clarification",
-      prompt: "What time works best?",
-      raw
-    };
-  }
-  if (time) {
-    const dateLabel = formatSpokenDate(targetDate);
-    if (time.endHour !== void 0 && time.endMinute !== void 0) {
-      const startLabel = formatSpokenTime(time.hour, time.minute);
-      const endLabel = formatSpokenTime(time.endHour, time.endMinute);
-      return {
-        status: "needs_confirmation",
-        spoken: `${dateLabel} between ${startLabel.replace(/ AM| PM/, "")} and ${endLabel}`,
-        isoStart: makeUtcDate(
-          targetDate.year,
-          targetDate.month,
-          targetDate.day,
-          time.hour,
-          time.minute,
-          timeZone
-        ).toISOString(),
-        isoEnd: makeUtcDate(
-          targetDate.year,
-          targetDate.month,
-          targetDate.day,
-          time.endHour,
-          time.endMinute,
-          timeZone
-        ).toISOString(),
-        raw
-      };
-    }
-    const betweenTimes = normalized.match(
-      /\bbetween\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(?:am|pm)?\s+and\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(am|pm)?/i
-    );
-    if (betweenTimes) {
-      const startHour = parseHourToken(betweenTimes[1] ?? "");
-      const endHour = parseHourToken(betweenTimes[3] ?? "");
-      if (startHour !== null && endHour !== null) {
-        let endHour24 = endHour;
-        const meridiem = betweenTimes[5]?.toLowerCase();
-        if (meridiem === "pm" && endHour24 < 12) {
-          endHour24 += 12;
-        }
-        if (!meridiem && endHour24 <= 7) {
-          endHour24 += 12;
-        }
-        let startHour24 = startHour;
-        if (meridiem === "pm" && startHour24 < 12) {
-          startHour24 += 12;
-        }
-        if (!meridiem && startHour24 <= 7) {
-          startHour24 += 12;
-        }
-        const startLabel = formatSpokenTime(startHour24, Number.parseInt(betweenTimes[2] ?? "0", 10));
-        const endLabel = formatSpokenTime(endHour24, Number.parseInt(betweenTimes[4] ?? "0", 10));
-        return {
-          status: "needs_confirmation",
-          spoken: `${dateLabel} between ${startLabel.replace(/ AM| PM/, "")} and ${endLabel}`,
-          isoStart: makeUtcDate(
-            targetDate.year,
-            targetDate.month,
-            targetDate.day,
-            startHour24,
-            Number.parseInt(betweenTimes[2] ?? "0", 10),
-            timeZone
-          ).toISOString(),
-          isoEnd: makeUtcDate(
-            targetDate.year,
-            targetDate.month,
-            targetDate.day,
-            endHour24,
-            Number.parseInt(betweenTimes[4] ?? "0", 10),
-            timeZone
-          ).toISOString(),
-          raw
-        };
-      }
-    }
-    const spokenTime = formatSpokenTime(time.hour, time.minute);
-    const isoStart = makeUtcDate(
-      targetDate.year,
-      targetDate.month,
-      targetDate.day,
-      time.hour,
-      time.minute,
-      timeZone
-    ).toISOString();
-    return {
-      status: "needs_confirmation",
-      spoken: `${dateLabel} at ${spokenTime}`,
-      isoStart,
-      raw
-    };
-  }
-  const bareMeridiemPrompt = normalized.match(
-    new RegExp(`^${HOUR_TOKEN}(?::(\\d{2}))?\\s*$`, "i")
-  );
-  if (bareMeridiemPrompt) {
-    const parsedHour = parseHourToken(bareMeridiemPrompt[1] ?? "");
-    if (parsedHour !== null) {
-      const minute = Number.parseInt(bareMeridiemPrompt[2] ?? "0", 10);
-      const amHour = parsedHour === 12 ? 0 : parsedHour;
-      const pmHour = parsedHour < 12 ? parsedHour + 12 : parsedHour;
-      return {
-        status: "needs_time_clarification",
-        prompt: `Do you mean ${formatSpokenTime(amHour, minute)} or ${formatSpokenTime(pmHour, minute)}?`,
-        raw
-      };
-    }
-  }
-  const bareOClockPrompt = normalized.match(
-    new RegExp(`^${HOUR_TOKEN}(?::(\\d{2}))?\\s+o\\s+clock\\s*$`, "i")
-  );
-  if (bareOClockPrompt && !daypart) {
-    const parsedHour = parseHourToken(bareOClockPrompt[1] ?? "");
-    if (parsedHour !== null) {
-      const minute = Number.parseInt(bareOClockPrompt[2] ?? "0", 10);
-      const amHour = parsedHour === 12 ? 0 : parsedHour;
-      const pmHour = parsedHour < 12 ? parsedHour + 12 : parsedHour;
-      return {
-        status: "needs_time_clarification",
-        prompt: `Do you mean ${formatSpokenTime(amHour, minute)} or ${formatSpokenTime(pmHour, minute)}?`,
-        raw
-      };
-    }
-  }
-  return { status: "nothing_schedulable", raw };
-}
-function buildScheduleConfirmationQuestion(spoken) {
-  if (spoken.startsWith("Would ")) {
-    return `${spoken} Is that correct?`;
-  }
-  return `Just to confirm, you'd prefer a call on ${spoken.replace(/^on /i, "")}. Is that correct?`;
-}
-function isScheduleConfirmedSpeech(speech) {
-  const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
-  return /^(yes|yeah|yep|yup|correct|right|that's right|thats right|that works|sounds good)\b/.test(
+  if (/^(yes|yeah|yep|yup|correct|right|that s right|that s correct|affirmative|uh huh|uhhuh|mm hmm|mhm)\b/.test(
     normalized
-  );
+  )) {
+    return true;
+  }
+  if (/^(uh|um|okay|ok|sure|alright|well|so|oh)\b/.test(normalized) && ADDRESS_CONFIRMATION_AFFIRMATIVE.test(normalized)) {
+    return true;
+  }
+  if (normalized.split(/\s+/).length <= 5 && ADDRESS_CONFIRMATION_AFFIRMATIVE.test(normalized)) {
+    return true;
+  }
+  return false;
 }
-function isScheduleRejectedSpeech(speech) {
+function isAddressRejectedSpeech(speech) {
   const normalized = speech.toLowerCase().replace(/[^\w\s']/g, " ").trim();
   return /^(no|nope|nah|not quite|incorrect|wrong|change|fix|update)\b/.test(normalized);
 }
-function applyScheduleParseResult(fields, result) {
-  if (result.status === "nothing_schedulable") {
-    return fields;
-  }
-  if (result.status === "flexible_availability") {
-    return syncLegacyStringFields({
+function confirmAddress(fields) {
+  const sanitized = fields.address ? sanitizeServiceAddress(fields.address) ?? formatAddressForSpeech(fields.address) : fields.address;
+  return markFieldConfirmed(
+    syncLegacyStringFields({
       ...fields,
-      appointment_preference_raw: result.raw,
-      appointment_preference: result.spoken,
-      schedule_confirmed: true,
-      schedule_pending_clarification: false,
-      schedule_clarification_prompt: void 0,
-      schedule_clarification_attempts: void 0
-    });
-  }
-  return syncLegacyStringFields({
-    ...fields,
-    appointment_preference_raw: result.raw,
-    schedule_confirmed: false,
-    schedule_daypart: extractDaypartFromSpeech(result.raw) ?? fields.schedule_daypart,
-    appointment_schedule_iso: result.status === "needs_confirmation" ? result.isoStart : void 0,
-    appointment_schedule_iso_end: result.status === "needs_confirmation" ? result.isoEnd : void 0,
-    appointment_preference: result.status === "needs_confirmation" ? result.spoken : fields.appointment_preference
-  });
-}
-function confirmSchedule(fields) {
-  const spoken = fields.appointment_preference?.trim() || fields.appointment_preference_raw?.trim() || "the requested time";
-  return syncLegacyStringFields({
-    ...fields,
-    appointment_preference: spoken,
-    schedule_confirmed: true
-  });
-}
-function needsScheduleClarification(fields) {
-  return Boolean(fields.schedule_pending_clarification);
-}
-function needsScheduleConfirmation(fields) {
-  return Boolean(fields.appointment_schedule_iso || fields.appointment_preference) && fields.schedule_confirmed !== true && !fields.schedule_pending_clarification;
-}
-function isScheduleComplete(fields) {
-  return typeof fields.appointment_preference === "string" && fields.appointment_preference.trim().length > 0 && fields.schedule_confirmed === true;
-}
-function isScheduleClarificationFailure(result) {
-  return result.status === "needs_time_clarification" || result.status === "needs_date_clarification" || result.status === "nothing_schedulable";
-}
-function isGenericScheduleTimePrompt(prompt) {
-  if (!prompt?.trim()) {
-    return true;
-  }
-  return GENERIC_SCHEDULE_TIME_PROMPT.test(prompt.trim());
-}
-function acceptFlexibleSchedulePreference(fields, preference) {
-  const trimmed = preference.trim();
-  return syncLegacyStringFields({
-    ...fields,
-    appointment_preference: trimmed,
-    appointment_preference_raw: trimmed,
-    schedule_confirmed: true,
-    schedule_pending_clarification: false,
-    schedule_clarification_prompt: void 0,
-    schedule_clarification_attempts: void 0
-  });
-}
-function resolveScheduleClarificationPrompt(parsed, nextAttempts) {
-  if (nextAttempts >= 1) {
-    return SCHEDULE_DAYPART_CLARIFICATION_PROMPT;
-  }
-  if (parsed.status === "needs_time_clarification" || parsed.status === "needs_date_clarification") {
-    if (isGenericScheduleTimePrompt(parsed.prompt)) {
-      return SCHEDULE_DAYPART_CLARIFICATION_PROMPT;
-    }
-    return parsed.prompt;
-  }
-  if (parsed.status === "nothing_schedulable") {
-    return SCHEDULE_PARSE_FALLBACK_PROMPT;
-  }
-  return SCHEDULE_DAYPART_CLARIFICATION_PROMPT;
-}
-function processScheduleCapture(fields, speech, now = /* @__PURE__ */ new Date()) {
-  try {
-    const combined = `${fields.appointment_preference_raw ?? ""} ${speech}`.trim();
-    const parsed = parseScheduleSpeech(combined, now, COMPANY_TIMEZONE, {
-      knownDaypart: fields.schedule_daypart,
-      knownScheduleRaw: fields.appointment_preference_raw
-    });
-    let updated = applyScheduleParseResult(
-      {
-        ...fields,
-        appointment_preference_raw: combined
-      },
-      parsed
-    );
-    if (parsed.status === "flexible_availability") {
-      return { fields: updated };
-    }
-    if (parsed.status === "needs_confirmation") {
-      updated = {
-        ...updated,
-        schedule_pending_clarification: false,
-        schedule_clarification_prompt: void 0,
-        schedule_clarification_attempts: void 0
-      };
-      return {
-        fields: updated,
-        confirmationPrompt: buildScheduleConfirmationQuestion(parsed.spoken)
-      };
-    }
-    if (isScheduleClarificationFailure(parsed)) {
-      const alreadyClarifying = fields.schedule_pending_clarification === true;
-      const attempts = alreadyClarifying ? fields.schedule_clarification_attempts ?? 0 : 0;
-      if (alreadyClarifying && attempts >= 1) {
-        return {
-          fields: acceptFlexibleSchedulePreference(updated, combined),
-          flexibleAcceptMessage: SCHEDULE_FLEXIBLE_ACCEPT_MESSAGE
-        };
-      }
-      const nextAttempts = alreadyClarifying ? attempts + 1 : 0;
-      const prompt = resolveScheduleClarificationPrompt(parsed, nextAttempts);
-      updated = {
-        ...updated,
-        schedule_pending_clarification: true,
-        schedule_clarification_prompt: prompt,
-        schedule_clarification_attempts: nextAttempts,
-        schedule_daypart: parsed.status === "needs_time_clarification" ? extractDaypartFromSpeech(parsed.raw) ?? fields.schedule_daypart ?? extractDaypartFromSpeech(fields.appointment_preference_raw ?? "") : fields.schedule_daypart
-      };
-      return { fields: updated, clarificationPrompt: prompt };
-    }
-    updated = {
-      ...updated,
-      schedule_pending_clarification: true,
-      schedule_clarification_prompt: SCHEDULE_PARSE_FALLBACK_PROMPT,
-      schedule_clarification_attempts: (fields.schedule_clarification_attempts ?? 0) + 1
-    };
-    return {
-      fields: updated,
-      clarificationPrompt: SCHEDULE_PARSE_FALLBACK_PROMPT
-    };
-  } catch (error) {
-    logScheduleParseError(error, speech);
-    const combined = `${fields.appointment_preference_raw ?? ""} ${speech}`.trim();
-    const attempts = fields.schedule_clarification_attempts ?? 0;
-    if (attempts >= 1) {
-      return {
-        fields: acceptFlexibleSchedulePreference(fields, combined),
-        flexibleAcceptMessage: SCHEDULE_FLEXIBLE_ACCEPT_MESSAGE
-      };
-    }
-    const updated = {
-      ...fields,
-      appointment_preference_raw: combined,
-      schedule_pending_clarification: true,
-      schedule_clarification_prompt: SCHEDULE_DAYPART_CLARIFICATION_PROMPT,
-      schedule_confirmed: false,
-      schedule_clarification_attempts: attempts + 1
-    };
-    return {
-      fields: updated,
-      clarificationPrompt: SCHEDULE_DAYPART_CLARIFICATION_PROMPT
-    };
-  }
+      address: sanitized,
+      address_confirmed: true,
+      pending_question: fields.pending_question === "address_confirmation" || fields.pending_question === "service_address" ? void 0 : fields.pending_question,
+      field_being_confirmed: fields.field_being_confirmed === "address" ? void 0 : fields.field_being_confirmed,
+      confirmation_candidate: fields.field_being_confirmed === "address" ? void 0 : fields.confirmation_candidate,
+      activeConfirmationField: fields.activeConfirmationField === "address" ? void 0 : fields.activeConfirmationField,
+      activeConfirmationValue: fields.activeConfirmationField === "address" ? void 0 : fields.activeConfirmationValue,
+      current_field_value: fields.field_being_confirmed === "address" ? void 0 : fields.current_field_value,
+      confirmation_attempt_count: void 0,
+      correctionAttemptCount: void 0,
+      confirmationStatus: void 0,
+      pending_correction_hint: void 0,
+      confirmation_last_outcome: "accepted"
+    }),
+    "address"
+  );
 }
 
 // src/orchestrator/pending-question.ts
-function hasValue2(value) {
+function hasValue3(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 function needsCallbackConfirmation(fields) {
   return Boolean(
-    hasValue2(fields.callback_phone) && fields.callback_phone_confirmed !== true
+    hasValue3(fields.callback_phone) && fields.callback_phone_confirmed !== true
   );
 }
 function needsAddressConfirmation(fields) {
@@ -3581,7 +3825,7 @@ var SUPPORTED_REASON_PATTERNS = [
   { pattern: /\bestimate\b/i, value: "estimate" },
   { pattern: /\binsurance(?:\s+damage|\s+claim)?\b/i, value: "insurance damage" }
 ];
-function hasValue3(value) {
+function hasValue4(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 function isPendingCallReasonQuestion(pendingQuestion) {
@@ -3680,7 +3924,7 @@ function applyCallReasonCapture(fields, speech) {
     name_awaiting_repeat: void 0
   };
   const volunteeredName = extractExplicitCallerName(trimmed);
-  if (volunteeredName && !hasValue3(updated.full_name)) {
+  if (volunteeredName && !hasValue4(updated.full_name)) {
     updated.full_name = volunteeredName;
   }
   return { fields: updated, resolved: true, needsClarification: false };
@@ -3730,198 +3974,6 @@ function resolveCallReasonClarificationReply(fields, speech) {
     return buildCallReasonNoResponsePrompt();
   }
   return buildCallReasonClarificationPrompt();
-}
-
-// src/orchestrator/field-completion.ts
-var MAX_FIELD_CLARIFICATION_ATTEMPTS = 2;
-function hasValue4(value) {
-  return typeof value === "string" && value.trim().length > 0;
-}
-function resolutionStatus(fields, field) {
-  return fields.field_resolution?.[field];
-}
-function getFieldClarificationAttempts(fields, field) {
-  return fields.field_clarification_attempts?.[field] ?? 0;
-}
-function incrementFieldClarificationAttempt(fields, field) {
-  const attempts = getFieldClarificationAttempts(fields, field) + 1;
-  return {
-    ...fields,
-    field_clarification_attempts: {
-      ...fields.field_clarification_attempts,
-      [field]: attempts
-    }
-  };
-}
-function markFieldUncertain(fields, field, callerWording) {
-  const note = callerWording?.trim();
-  const existingNotes = fields.additional_notes?.trim();
-  const combinedNotes = note && existingNotes && !existingNotes.includes(note) ? `${existingNotes} ${note}` : note ?? existingNotes;
-  return {
-    ...fields,
-    field_resolution: {
-      ...fields.field_resolution,
-      [field]: "uncertain"
-    },
-    additional_notes: combinedNotes ? combinedNotes.slice(0, 500) : fields.additional_notes
-  };
-}
-function markFieldCaptured(fields, field) {
-  return {
-    ...fields,
-    field_resolution: {
-      ...fields.field_resolution,
-      [field]: "captured"
-    }
-  };
-}
-function markFieldDerived(fields, field) {
-  return {
-    ...fields,
-    field_resolution: {
-      ...fields.field_resolution,
-      [field]: "derived"
-    }
-  };
-}
-function isCallbackComplete(fields) {
-  return hasValue4(fields.callback_phone) && fields.callback_phone_confirmed === true;
-}
-function getFieldCompletionStatus(field, fields) {
-  const explicit = resolutionStatus(fields, field);
-  if (explicit === "derived") {
-    return "derived";
-  }
-  if (explicit) {
-    return explicit;
-  }
-  switch (field) {
-    case "full_name":
-      if (fields.caller_name_declined === true || fields.caller_name_unavailable === true) {
-        return "confirmed";
-      }
-      if (hasCompleteCallerName(fields)) {
-        return fields.name_pending_confirmation ? "captured" : "confirmed";
-      }
-      return "missing";
-    case "callback_phone":
-      if (isCallbackComplete(fields)) {
-        return "confirmed";
-      }
-      if (hasValue4(fields.callback_phone)) {
-        return "captured";
-      }
-      return "missing";
-    case "address":
-      if (isAddressConfirmed(fields)) {
-        return "confirmed";
-      }
-      if (hasConfirmableAddress(fields.address)) {
-        return "captured";
-      }
-      return "missing";
-    case "problem_description":
-      return hasValue4(fields.problem_description) ? "captured" : "missing";
-    case "urgency":
-      return hasValue4(fields.urgency) ? "captured" : "missing";
-    case "appointment_preference":
-      if (isScheduleComplete(fields)) {
-        return fields.schedule_confirmed === true ? "confirmed" : "captured";
-      }
-      if (hasValue4(fields.appointment_preference_raw)) {
-        return "captured";
-      }
-      return "missing";
-    case "emergency_or_active_leak":
-    case "insurance_claim_started":
-    case "adjuster_contacted":
-      return booleanFieldStatus(fields[field]);
-    default:
-      return "missing";
-  }
-}
-function booleanFieldStatus(value) {
-  if (value === true || value === false) {
-    return "captured";
-  }
-  return "missing";
-}
-function isFieldResolvedEnoughToSkip(field, fields) {
-  const status = getFieldCompletionStatus(field, fields);
-  if (status === "confirmed" || status === "uncertain" || status === "derived") {
-    return true;
-  }
-  if (status === "captured") {
-    switch (field) {
-      case "full_name":
-        return hasCompleteCallerName(fields);
-      case "callback_phone":
-        return isCallbackComplete(fields);
-      case "address":
-        return isAddressConfirmed(fields);
-      case "problem_description":
-      case "urgency":
-        return true;
-      case "appointment_preference":
-        return isScheduleComplete(fields);
-      case "emergency_or_active_leak":
-      case "insurance_claim_started":
-      case "adjuster_contacted":
-        return !isStructuredBooleanUnset(fields[field]);
-      default:
-        return false;
-    }
-  }
-  if (getFieldClarificationAttempts(fields, field) >= MAX_FIELD_CLARIFICATION_ATTEMPTS) {
-    return true;
-  }
-  return false;
-}
-function isFieldAskable(field, fields) {
-  return !isFieldResolvedEnoughToSkip(field, fields);
-}
-function mapPendingQuestionToRequiredField(pending) {
-  switch (pending) {
-    case "caller_name":
-      return "full_name";
-    case "callback_phone":
-    case "callback_confirmation":
-      return "callback_phone";
-    case "service_address":
-    case "address_confirmation":
-      return "address";
-    case "reason_for_call":
-    case "call_reason":
-      return "problem_description";
-    case "insurance_claim":
-      return "insurance_claim_started";
-    case "adjuster_contacted":
-      return "adjuster_contacted";
-    case "active_leak":
-      return "emergency_or_active_leak";
-    case "urgency":
-      return "urgency";
-    case "preferred_callback_time":
-    case "schedule_confirmation":
-      return "appointment_preference";
-    default:
-      return null;
-  }
-}
-function appendContextNote(fields, note) {
-  const trimmed = note.trim();
-  if (!trimmed) {
-    return fields;
-  }
-  const existing = fields.additional_notes?.trim();
-  if (existing?.includes(trimmed)) {
-    return fields;
-  }
-  const combined = existing ? `${existing} ${trimmed}` : trimmed;
-  return {
-    ...fields,
-    additional_notes: combined.slice(0, 500)
-  };
 }
 
 // src/orchestrator/field-normalization.ts
@@ -9156,13 +9208,14 @@ function processFieldConfirmationResponse(input) {
     }
   }
   if (isConfirmed) {
+    const confirmedFields = activeField === "address" ? confirmAddress(fields) : activeField === "callback_phone" ? confirmCallbackPhone(fields) : fields;
     return {
       fields: clearFieldConfirmationContext({
-        ...fields,
+        ...confirmedFields,
         confirmation_last_outcome: "accepted"
       }),
       outcome: "accepted",
-      updated: false
+      updated: activeField === "address" || activeField === "callback_phone"
     };
   }
   if (!trimmed || isRejected) {
@@ -9236,7 +9289,7 @@ function applyAddressScopedCorrection(fields, speech) {
     ),
     speech,
     activeField: "address",
-    isConfirmed: false,
+    isConfirmed: isAddressConfirmedSpeech(speech),
     isRejected: false
   });
 }
@@ -9250,7 +9303,7 @@ function applyCallbackScopedCorrection(fields, speech, callerPhone) {
     speech,
     activeField: "callback_phone",
     callerPhone,
-    isConfirmed: false,
+    isConfirmed: isCallbackConfirmed(speech),
     isRejected: false
   });
 }
@@ -9318,12 +9371,6 @@ function mergeRealtimeCallerAnswer(fields, answer, callerPhone, options = {}) {
     });
   }
   return merged;
-}
-function confirmCallbackPhone(fields) {
-  return syncLegacyStringFields({
-    ...fields,
-    callback_phone_confirmed: true
-  });
 }
 function buildRealtimeAcknowledgment(policy, answer, fields, filledCount, nextField, afterConfirmation = false) {
   return policy.selectAcknowledgment({
@@ -9934,6 +9981,36 @@ async function processRealtimeCallerTurn(input) {
       });
     }
     const correction = applyAddressScopedCorrection(fieldsBefore, trimmedSpeech);
+    if (correction.outcome === "accepted") {
+      const confirmedFields = correction.fields;
+      const filledCount2 = countNewlyFilledFields(fieldsBefore, confirmedFields);
+      const post2 = buildPostIntakeReply(
+        acknowledgmentPolicy,
+        fieldsBefore,
+        confirmedFields,
+        trimmedSpeech,
+        callerPhone,
+        filledCount2,
+        { afterConfirmation: true }
+      );
+      session = applyLocalSessionUpdate(session, {
+        collectedFields: post2.fields,
+        currentQuestion: post2.replyText
+      });
+      persistTurnAsync(callSid, {
+        collectedFields: post2.fields,
+        currentQuestion: post2.replyText,
+        callerSpeech: trimmedSpeech,
+        assistantReply: post2.replyText
+      });
+      return finishTurn(input, {
+        replyText: post2.replyText,
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: post2.nextState
+      });
+    }
     if (correction.outcome === "needs_clarification" && correction.replyText) {
       session = applyLocalSessionUpdate(session, {
         collectedFields: correction.fields,

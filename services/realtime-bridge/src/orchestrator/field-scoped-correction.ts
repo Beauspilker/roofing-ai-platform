@@ -1,6 +1,8 @@
 import {
+  confirmAddress,
   formatAddressForSpeech,
   hasConfirmableAddress,
+  isAddressConfirmedSpeech,
   sanitizeAddressValue,
 } from "./address-confirmation.js";
 import {
@@ -8,8 +10,10 @@ import {
   buildPhoneConfirmationReply as buildPhoneConfirmationReplyFromFields,
 } from "./confirmation-builders.js";
 import {
+  confirmCallbackPhone,
   extractCallbackPhoneFromSpeech,
   formatCallbackForSpeech,
+  isCallbackConfirmed,
   isCompanyPhoneNumber,
   normalizeCallbackPhoneE164,
 } from "./callback-phone.js";
@@ -766,13 +770,20 @@ export function processFieldConfirmationResponse(input: {
   }
 
   if (isConfirmed) {
+    const confirmedFields =
+      activeField === "address"
+        ? confirmAddress(fields)
+        : activeField === "callback_phone"
+          ? confirmCallbackPhone(fields)
+          : fields;
+
     return {
       fields: clearFieldConfirmationContext({
-        ...fields,
+        ...confirmedFields,
         confirmation_last_outcome: "accepted",
       }),
       outcome: "accepted",
-      updated: false,
+      updated: activeField === "address" || activeField === "callback_phone",
     };
   }
 
@@ -866,7 +877,7 @@ export function applyAddressScopedCorrection(
     ),
     speech,
     activeField: "address",
-    isConfirmed: false,
+    isConfirmed: isAddressConfirmedSpeech(speech),
     isRejected: false,
   });
 }
@@ -885,7 +896,7 @@ export function applyCallbackScopedCorrection(
     speech,
     activeField: "callback_phone",
     callerPhone,
-    isConfirmed: false,
+    isConfirmed: isCallbackConfirmed(speech),
     isRejected: false,
   });
 }

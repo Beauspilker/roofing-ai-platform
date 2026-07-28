@@ -1,4 +1,6 @@
 import { getCompanyPhoneE164 } from "../../../../lib/twilio/company-phone.js";
+import type { RealtimeFields } from "./realtime-prompts.js";
+import { syncLegacyStringFields } from "./structured-intake.js";
 
 /** Normalize a customer callback number to E.164 when possible. */
 export function normalizeCallbackPhoneE164(phone: string): string {
@@ -39,6 +41,35 @@ export function isCompanyPhoneNumber(phone: string): boolean {
 export function buildCallbackReadbackConfirmation(phone: string): string {
   const spoken = formatCallbackForSpeech(phone);
   return `Just to confirm, your callback number is ${spoken}. Is that correct?`;
+}
+
+export function confirmCallbackPhone(fields: RealtimeFields): RealtimeFields {
+  return syncLegacyStringFields({
+    ...fields,
+    callback_phone_confirmed: true,
+    pending_question:
+      fields.pending_question === "callback_confirmation" ||
+      fields.pending_question === "callback_phone"
+        ? undefined
+        : fields.pending_question,
+    field_being_confirmed:
+      fields.field_being_confirmed === "callback_phone" ? undefined : fields.field_being_confirmed,
+    activeConfirmationField:
+      fields.activeConfirmationField === "callback_phone"
+        ? undefined
+        : fields.activeConfirmationField,
+    activeConfirmationValue:
+      fields.activeConfirmationField === "callback_phone"
+        ? undefined
+        : fields.activeConfirmationValue,
+    current_field_value:
+      fields.field_being_confirmed === "callback_phone" ? undefined : fields.current_field_value,
+    confirmation_attempt_count: undefined,
+    correctionAttemptCount: undefined,
+    confirmationStatus: undefined,
+    pending_correction_hint: undefined,
+    confirmation_last_outcome: "accepted",
+  });
 }
 
 export function isCallbackConfirmed(speech: string): boolean {

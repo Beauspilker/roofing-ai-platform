@@ -1286,6 +1286,94 @@ function isSummaryRejected(speech) {
   return /^(no|nope|nah|not quite|incorrect|wrong|change|fix|update)\b/.test(normalized);
 }
 
+// src/orchestrator/address-sanitization.ts
+var STRONG_ADDRESS_BOUNDARY_PATTERNS = [
+  /\s+\banother\s+storm\b/i,
+  /\s+\ba\s+storm\b/i,
+  /\s+\bthe\s+storm\b/i,
+  /\s+\bbecause\b/i,
+  /\s+\bsince\b/i,
+  /\s+\bso\s+i\b/i,
+  /,\s*and\s+i\b/i,
+  /\s+\band\s+i['']?m\b/i,
+  /\s+\band\s+i\s+need\b/i,
+  /\s+\band\s+i\s+live\b/i,
+  /\s+\band\s+we\s+need\b/i,
+  /\s+\bi['']?d\s+like\b/i,
+  /\s+\bi\s+would\s+like\b/i,
+  /\s+\bi\s+need\s+someone\b/i,
+  /\s+\bsomeone\s+should\b/i,
+  /\s+\bit\s+is\s+urgent\b/i,
+  /\s+\bit['']?s\s+urgent\b/i,
+  /\s+\bas\s+soon\s+as\s+possible\b/i,
+  /\s+\btomorrow\b/i,
+  /\s+\bwhen\s+it\s+rains\b/i,
+  /\s+\binsurance\b/i,
+  /\s+\badjuster\b/i,
+  /\s+\bcall\s+me\b/i,
+  /\s+\breach\s+me\b/i,
+  /\s+\bavailable\b/i,
+  /\s+\bafter\s+work\b/i
+];
+var NON_ADDRESS_CLAUSE_PATTERNS = [
+  /\bstorm\s+is\s+supposed\b/i,
+  /\bneed\s+someone\s+out\b/i,
+  /\bas\s+soon\s+as\s+possible\b/i,
+  /\bhaven['']?t\s+contacted\s+insurance\b/i,
+  /\bcall\s+me\s+after\b/i,
+  /\bavailable\s+after\s+work\b/i,
+  /\banother\s+storm\b/i
+];
+var WEAK_ADDRESS_BOUNDARY_PATTERN = /\s+\b(because|since|but|also|however|which|that|then|if|when)\b/i;
+function trimAddressAtConversationalBoundary(address) {
+  let trimmed = address.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+  const sentenceBoundary = trimmed.match(/^(.+?[.!?])(?:\s+|$)/);
+  if (sentenceBoundary?.[1]) {
+    const firstSentence = sentenceBoundary[1].replace(/[.!?]+$/, "").trim();
+    if (firstSentence.length >= 8 && /\d/.test(firstSentence)) {
+      trimmed = firstSentence;
+    }
+  }
+  for (const pattern of STRONG_ADDRESS_BOUNDARY_PATTERNS) {
+    const match = trimmed.match(pattern);
+    if (match?.index !== void 0 && match.index >= 8) {
+      trimmed = trimmed.slice(0, match.index).trim().replace(/[,.]$/, "");
+      break;
+    }
+  }
+  const weakMatch = trimmed.match(WEAK_ADDRESS_BOUNDARY_PATTERN);
+  if (weakMatch?.index !== void 0 && weakMatch.index >= 8) {
+    trimmed = trimmed.slice(0, weakMatch.index).trim().replace(/[,.]$/, "");
+  }
+  return trimmed;
+}
+function containsNonAddressContinuation(address) {
+  return NON_ADDRESS_CLAUSE_PATTERNS.some((pattern) => pattern.test(address));
+}
+function normalizeAddressPunctuation(address) {
+  let formatted = address.trim().replace(/\s+/g, " ");
+  formatted = formatted.replace(/\s+in\s+/gi, ", ");
+  formatted = formatted.replace(/,\s*,/g, ", ");
+  return formatted.replace(/[,.]$/, "").trim();
+}
+function sanitizeServiceAddress(address) {
+  const trimmed = trimAddressAtConversationalBoundary(address).replace(/(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/g, " ").replace(/\b(call me at|my number is|phone number is|callback number is)\b.*$/i, "").replace(/\s+/g, " ").trim();
+  if (!trimmed) {
+    return null;
+  }
+  const normalized = normalizeAddressPunctuation(trimmed);
+  if (containsNonAddressContinuation(normalized)) {
+    return null;
+  }
+  if (!isPlausibleServiceAddress(normalized)) {
+    return null;
+  }
+  return normalized;
+}
+
 // src/orchestrator/address-confirmation.ts
 function hasValue(value) {
   return typeof value === "string" && value.trim().length > 0;
@@ -1298,14 +1386,14 @@ function hasConfirmableAddress(address) {
   return /\d/.test(trimmed) && trimmed.length >= 8;
 }
 function formatAddressForSpeech(address) {
-  let formatted = address.trim().replace(/\s+/g, " ");
-  if (/\bin\b/i.test(formatted) && !/,/.test(formatted)) {
-    formatted = formatted.replace(/\s+in\s+/i, ", ");
-  }
-  return formatted;
+  return normalizeAddressPunctuation(address);
 }
 function sanitizeAddressValue(address) {
-  return address.replace(/(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/g, " ").replace(/\b(call me at|my number is|phone number is|callback number is)\b.*$/i, "").replace(/\s+/g, " ").trim();
+  const stripped = address.replace(/(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/g, " ").replace(/\b(call me at|my number is|phone number is|callback number is)\b.*$/i, "").replace(/\s+/g, " ").trim();
+  if (containsNonAddressContinuation(stripped)) {
+    return sanitizeServiceAddress(stripped) ?? stripped.replace(/[,.]$/, "").trim();
+  }
+  return stripped;
 }
 function buildAddressReadbackConfirmation(address) {
   return `And your service address is ${formatAddressForSpeech(sanitizeAddressValue(address))}. Is that correct?`;
@@ -1327,10 +1415,14 @@ function isAddressRejectedSpeech(speech) {
   return /^(no|nope|nah|not quite|incorrect|wrong|change|fix|update)\b/.test(normalized);
 }
 function confirmAddress(fields) {
+  const sanitized = fields.address ? sanitizeServiceAddress(fields.address) ?? formatAddressForSpeech(fields.address) : fields.address;
   return syncLegacyStringFields({
     ...fields,
-    address: fields.address ? formatAddressForSpeech(fields.address) : fields.address,
-    address_confirmed: true
+    address: sanitized,
+    address_confirmed: true,
+    pending_question: fields.pending_question === "address_confirmation" || fields.pending_question === "service_address" ? void 0 : fields.pending_question,
+    field_being_confirmed: fields.field_being_confirmed === "address" ? void 0 : fields.field_being_confirmed,
+    confirmation_candidate: fields.field_being_confirmed === "address" ? void 0 : fields.confirmation_candidate
   });
 }
 
@@ -3884,9 +3976,9 @@ function isCallbackComplete2(fields) {
 }
 function inferUrgencyFromText(text) {
   const lower = text.toLowerCase();
-  if (/\b(another|next|more)\s+storm\s+(is\s+)?(coming|expected|forecast|hitting|on the way)\b/i.test(
+  if (/\b(another|next|more)\s+storm\s+(is\s+)?(coming|expected|forecast|hitting|on the way|supposed to)\b/i.test(
     lower
-  ) || /\bstorm\s+(is\s+)?(coming|expected|forecast|hitting)\s+(tomorrow|tonight|today)\b/i.test(
+  ) || /\bstorm\s+(is\s+)?(coming|expected|forecast|hitting|supposed to)\s+(tomorrow|tonight|today|through)\b/i.test(
     lower
   ) || /\bstorm\s+tomorrow\b/i.test(lower)) {
     return "high";
@@ -3904,9 +3996,9 @@ function inferUrgencyFromText(text) {
 }
 function inferScheduleHintFromText(text) {
   const lower = text.toLowerCase();
-  if (/\b(another|next|more)\s+storm\s+(is\s+)?(coming|expected|forecast|hitting|on the way)\b/i.test(
+  if (/\b(another|next|more)\s+storm\s+(is\s+)?(coming|expected|forecast|hitting|on the way|supposed to)\b/i.test(
     lower
-  ) || /\bstorm\s+(is\s+)?(coming|expected|forecast|hitting)\s+(tomorrow|tonight|today)\b/i.test(
+  ) || /\bstorm\s+(is\s+)?(coming|expected|forecast|hitting|supposed to)\s+(tomorrow|tonight|today|through)\b/i.test(
     lower
   ) || /\bstorm\s+tomorrow\b/i.test(lower)) {
     return "as soon as possible";
@@ -4488,9 +4580,12 @@ function applyDirectAnswerToMissingField(fields, answer, callerPhone, pendingQue
       break;
     }
     case "address":
-      if (!hasValue6(updated.address) && isPlausibleServiceAddress(trimmed)) {
-        updated.address = trimmed.slice(0, 500);
-        updated.address_confirmed = false;
+      if (!hasValue6(updated.address)) {
+        const sanitized = sanitizeServiceAddress(trimmed);
+        if (sanitized) {
+          updated.address = sanitized.slice(0, 500);
+          updated.address_confirmed = false;
+        }
       }
       break;
     case "problem_description":
@@ -5412,7 +5507,8 @@ function logOpeningPipelineEvent(event) {
     stage: event.stage,
     timestampMs: event.timestampMs,
     ...event.detail ? { detail: event.detail } : {},
-    ...event.stalledStage ? { stalledStage: event.stalledStage } : {}
+    ...event.stalledStage ? { stalledStage: event.stalledStage } : {},
+    ...event.rootCause ? { rootCause: event.rootCause } : {}
   };
   if (event.stage === "timeout_fired" || event.stage === "recovery_attempted") {
     logWarn("opening_pipeline", payload);
@@ -5420,6 +5516,103 @@ function logOpeningPipelineEvent(event) {
   }
   logInfo("opening_pipeline", payload);
 }
+var GreetingDeliveryTracker = class {
+  greetingRequestSent = false;
+  greetingResponseCreated = false;
+  greetingFirstAudioReceived = false;
+  greetingFirstAudioForwarded = false;
+  greetingCompleted = false;
+  greetingCancelledDuringStartup = false;
+  fallbackRequested = false;
+  fallbackProduced = false;
+  fallbackForwarded = false;
+  fallbackCompleted = false;
+  fallbackUnavailable = false;
+  lastRootCause = null;
+  markRequestSent(callSid) {
+    this.greetingRequestSent = true;
+    logOpeningPipelineEvent({
+      stage: "greeting_requested",
+      callSid,
+      timestampMs: Date.now(),
+      detail: "greeting_request_sent"
+    });
+  }
+  markRequestBlocked(callSid) {
+    this.lastRootCause = "RESPONSE_CREATE_BLOCKED";
+    logOpeningPipelineEvent({
+      stage: "greeting_requested",
+      callSid,
+      timestampMs: Date.now(),
+      detail: "greeting_request_blocked",
+      rootCause: "RESPONSE_CREATE_BLOCKED"
+    });
+  }
+  markResponseCreated(callSid) {
+    this.greetingResponseCreated = true;
+  }
+  markFirstAudioReceived(callSid) {
+    this.greetingFirstAudioReceived = true;
+  }
+  markFirstAudioForwarded(callSid) {
+    this.greetingFirstAudioForwarded = true;
+  }
+  markCompleted(callSid) {
+    this.greetingCompleted = true;
+  }
+  markCancelledDuringStartup(callSid) {
+    this.greetingCancelledDuringStartup = true;
+    this.lastRootCause = "GREETING_CANCELLED_DURING_STARTUP";
+    logOpeningPipelineEvent({
+      stage: "recovery_attempted",
+      callSid,
+      timestampMs: Date.now(),
+      detail: "greeting_cancelled_during_startup",
+      rootCause: "GREETING_CANCELLED_DURING_STARTUP"
+    });
+  }
+  markFallbackRequested(callSid) {
+    this.fallbackRequested = true;
+  }
+  markFallbackProduced(callSid) {
+    this.fallbackProduced = true;
+  }
+  markFallbackForwarded(callSid) {
+    this.fallbackForwarded = true;
+  }
+  markFallbackCompleted(callSid) {
+    this.fallbackCompleted = true;
+  }
+  markFallbackUnavailable(callSid) {
+    this.fallbackUnavailable = true;
+    this.lastRootCause = "FALLBACK_UNAVAILABLE";
+    logOpeningPipelineEvent({
+      stage: "recovery_attempted",
+      callSid,
+      timestampMs: Date.now(),
+      detail: "greeting_fallback_unavailable",
+      rootCause: "FALLBACK_UNAVAILABLE"
+    });
+  }
+  resolveRootCause(stage) {
+    if (this.greetingCancelledDuringStartup) {
+      return "GREETING_CANCELLED_DURING_STARTUP";
+    }
+    if (!this.greetingRequestSent) {
+      return "GREETING_NOT_REQUESTED";
+    }
+    if (!this.greetingResponseCreated) {
+      return "RESPONSE_CREATE_TIMEOUT";
+    }
+    if (!this.greetingFirstAudioReceived) {
+      return "FIRST_AUDIO_TIMEOUT";
+    }
+    if (!this.greetingFirstAudioForwarded) {
+      return "TWILIO_FORWARD_BLOCKED";
+    }
+    return "FIRST_AUDIO_TIMEOUT";
+  }
+};
 var GreetingReadinessGate = class {
   twilioStreamReady = false;
   openAiConnected = false;
@@ -5512,15 +5705,20 @@ var GreetingReadinessGate = class {
 var GreetingWatchdog = class {
   timer = null;
   stage = "idle";
+  firstAudioReceived = false;
   firstAudioForwarded = false;
   getStage() {
     return this.stage;
+  }
+  hasFirstAudioReceived() {
+    return this.firstAudioReceived;
   }
   hasFirstAudioForwarded() {
     return this.firstAudioForwarded;
   }
   onGreetingRequested(callSid) {
     this.stage = "requested";
+    this.firstAudioReceived = false;
     this.firstAudioForwarded = false;
     logOpeningPipelineEvent({
       stage: "greeting_requested",
@@ -5538,6 +5736,10 @@ var GreetingWatchdog = class {
     });
   }
   onFirstAudioDelta(callSid) {
+    if (!this.firstAudioReceived) {
+      this.firstAudioReceived = true;
+      this.stage = "first_audio_received";
+    }
     logOpeningPipelineEvent({
       stage: "first_audio_delta",
       callSid,
@@ -5585,6 +5787,65 @@ var GreetingWatchdog = class {
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;
+    }
+  }
+};
+function resolveGreetingRootCause(stage, tracker) {
+  return tracker.resolveRootCause(stage);
+}
+
+// src/bridge/greeting-audio-buffer.ts
+var MAX_BUFFERED_CHUNKS = 48;
+var MAX_BUFFER_AGE_MS = 3e3;
+var GreetingAudioBuffer = class {
+  chunks = [];
+  firstChunkAtMs = null;
+  enqueue(base64Audio) {
+    if (!base64Audio) {
+      return false;
+    }
+    const now = Date.now();
+    this.evictExpired(now);
+    if (this.chunks.length >= MAX_BUFFERED_CHUNKS) {
+      logWarn("greeting_audio_buffer_full", { bufferedChunks: this.chunks.length });
+      return false;
+    }
+    if (this.firstChunkAtMs === null) {
+      this.firstChunkAtMs = now;
+    }
+    this.chunks.push({ base64Audio, receivedAtMs: now });
+    return true;
+  }
+  flush(forward) {
+    const now = Date.now();
+    this.evictExpired(now);
+    const pending = this.chunks.splice(0);
+    this.firstChunkAtMs = null;
+    for (const chunk of pending) {
+      forward(chunk.base64Audio);
+    }
+    if (pending.length > 0) {
+      logInfo("greeting_audio_buffer_flushed", { chunks: pending.length });
+    }
+    return pending.length;
+  }
+  hasBufferedAudio() {
+    this.evictExpired(Date.now());
+    return this.chunks.length > 0;
+  }
+  clear() {
+    this.chunks = [];
+    this.firstChunkAtMs = null;
+  }
+  evictExpired(now) {
+    if (this.firstChunkAtMs !== null && now - this.firstChunkAtMs > MAX_BUFFER_AGE_MS) {
+      logWarn("greeting_audio_buffer_expired", { bufferedChunks: this.chunks.length });
+      this.clear();
+      return;
+    }
+    this.chunks = this.chunks.filter((chunk) => now - chunk.receivedAtMs <= MAX_BUFFER_AGE_MS);
+    if (this.chunks.length === 0) {
+      this.firstChunkAtMs = null;
     }
   }
 };
@@ -7702,10 +7963,11 @@ function preserveConfirmedFieldState(before, after) {
   const callbackUnchanged = (before.callback_phone?.trim() ?? "") === (after.callback_phone?.trim() ?? "");
   const addressUnchanged = (before.address?.trim() ?? "") === (after.address?.trim() ?? "");
   const nameUnchanged = (before.full_name?.trim() ?? "") === (after.full_name?.trim() ?? "");
+  const addressCorrected = before.address_confirmed === true && after.address_confirmed === false && !addressUnchanged;
   return {
     ...after,
     callback_phone_confirmed: callbackUnchanged && before.callback_phone_confirmed === true ? true : after.callback_phone_confirmed,
-    address_confirmed: addressUnchanged && before.address_confirmed === true ? true : after.address_confirmed,
+    address_confirmed: before.address_confirmed === true && !addressCorrected ? true : addressUnchanged && before.address_confirmed === true ? true : after.address_confirmed,
     full_name: nameUnchanged ? before.full_name ?? after.full_name : after.full_name,
     caller_name_declined: nameUnchanged ? before.caller_name_declined : after.caller_name_declined,
     caller_name_unavailable: nameUnchanged ? before.caller_name_unavailable : after.caller_name_unavailable
@@ -7936,41 +8198,50 @@ function extractActiveLeak(speech, pending) {
   }
   return null;
 }
-function trimAddressAtConversationalBoundary(address) {
-  const trimmed = address.trim();
-  if (!trimmed) {
-    return trimmed;
-  }
-  const boundaryPattern = /\s+\b(because|since|and|but|also|however|so|which|that|then|if|when)\b/i;
-  const match = trimmed.match(boundaryPattern);
-  if (match?.index !== void 0 && match.index >= 8) {
-    return trimmed.slice(0, match.index).trim().replace(/[,.]$/, "");
-  }
-  return trimmed;
-}
 function extractAddressFromSpeech(speech) {
   const correctionMatch = speech.match(
     /(?:no,?|actually|instead|rather|correction).*?(?:address is|it's|it is)\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80})/i
   );
-  if (correctionMatch?.[1] && isPlausibleServiceAddress(correctionMatch[1])) {
-    return trimAddressAtConversationalBoundary(correctionMatch[1].trim());
+  if (correctionMatch?.[1]) {
+    const sanitized = sanitizeServiceAddress(correctionMatch[1].trim());
+    if (sanitized) {
+      return sanitized;
+    }
   }
   const addressIsMatch = speech.match(
-    /\b(?:the )?address is\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80})/i
+    /\b(?:the )?address is\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,120})/i
   );
-  if (addressIsMatch?.[1] && isPlausibleServiceAddress(addressIsMatch[1])) {
-    return trimAddressAtConversationalBoundary(addressIsMatch[1].trim());
+  if (addressIsMatch?.[1]) {
+    const sanitized = sanitizeServiceAddress(addressIsMatch[1].trim());
+    if (sanitized) {
+      return sanitized;
+    }
+  }
+  const serviceAddressMatch = speech.match(
+    /\b(?:my )?service address is\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,120})/i
+  );
+  if (serviceAddressMatch?.[1]) {
+    const sanitized = sanitizeServiceAddress(serviceAddressMatch[1].trim());
+    if (sanitized) {
+      return sanitized;
+    }
   }
   const streetMatch = speech.match(
-    /\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80}(?:\b(?:street|st|avenue|ave|road|rd|drive|dr|lane|ln|boulevard|blvd|way|court|ct|circle|place|pl)\b)?/i
+    /\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,120}(?:\b(?:street|st|avenue|ave|road|rd|drive|dr|lane|ln|boulevard|blvd|way|court|ct|circle|place|pl)\b)?(?:[,\s]+[A-Za-z][A-Za-z\s.-]{2,40})?/i
   );
-  if (streetMatch && isPlausibleServiceAddress(streetMatch[0])) {
-    return trimAddressAtConversationalBoundary(streetMatch[0].trim());
+  if (streetMatch) {
+    const sanitized = sanitizeServiceAddress(streetMatch[0].trim());
+    if (sanitized) {
+      return sanitized;
+    }
   }
-  const atMatch = speech.match(/\bat\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,60})/i);
+  const atMatch = speech.match(/\bat\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80})/i);
   const candidate = atMatch?.[1]?.trim();
-  if (candidate && isPlausibleServiceAddress(candidate)) {
-    return trimAddressAtConversationalBoundary(candidate);
+  if (candidate) {
+    const sanitized = sanitizeServiceAddress(candidate);
+    if (sanitized) {
+      return sanitized;
+    }
   }
   return null;
 }
@@ -8054,7 +8325,7 @@ function applyAdaptiveCorrections(fields, speech) {
   let updated = { ...fields };
   const address = extractAddressFromSpeech(speech);
   if (address) {
-    updated.address = sanitizeAddressValue(address).slice(0, 500);
+    updated.address = sanitizeServiceAddress(address) ?? address;
     updated.address_confirmed = false;
   }
   const explicitName = extractExplicitCallerName(speech);
@@ -8138,9 +8409,9 @@ function extractAllFieldsFromTranscript(speech, callerPhone, pendingQuestion = n
   } else if (/\burgent\b/i.test(trimmed) && !hasValue7(extracted.urgency)) {
     extracted.urgency = "urgent";
   }
-  if (!hasValue7(extracted.urgency) && (/\b(another|next|more)\s+storm\s+(is\s+)?(coming|expected|forecast|hitting|on the way)\b/i.test(
+  if (!hasValue7(extracted.urgency) && (/\b(another|next|more)\s+storm\s+(is\s+)?(coming|expected|forecast|hitting|on the way|supposed to)\b/i.test(
     trimmed
-  ) || /\bstorm\s+(is\s+)?(coming|expected|forecast|hitting)\s+(tomorrow|tonight|today)\b/i.test(
+  ) || /\bstorm\s+(is\s+)?(coming|expected|forecast|hitting|supposed to)\s+(tomorrow|tonight|today|through)\b/i.test(
     trimmed
   ) || /\bstorm\s+tomorrow\b/i.test(trimmed))) {
     extracted.urgency = "high";
@@ -8157,9 +8428,13 @@ function mergeExtractedFields(fields, extracted, speech = "") {
   if (hasValue7(extracted.problem_description) && (!hasValue7(updated.problem_description) || allowOverwrite)) {
     updated.problem_description = extracted.problem_description.trim().slice(0, 500);
   }
-  if (hasValue7(extracted.address) && isPlausibleServiceAddress(extracted.address) && (!hasValue7(updated.address) || allowOverwrite)) {
-    updated.address = sanitizeAddressValue(extracted.address.trim()).slice(0, 500);
-    updated.address_confirmed = false;
+  if (hasValue7(extracted.address)) {
+    const sanitized = sanitizeServiceAddress(extracted.address);
+    if (sanitized && fields.address_confirmed === true && !allowOverwrite) {
+    } else if (sanitized && (!hasValue7(updated.address) || allowOverwrite)) {
+      updated.address = sanitized.slice(0, 500);
+      updated.address_confirmed = false;
+    }
   }
   if (hasValue7(extracted.project_type) && (!hasValue7(updated.project_type) || allowOverwrite)) {
     updated.project_type = extracted.project_type;
@@ -8324,8 +8599,9 @@ function applyAnswerForPendingQuestion(fields, answer, callerPhone, pendingQuest
       break;
     case "service_address":
       if (!hasValue7(updated.address)) {
-        if (isPlausibleServiceAddress(trimmed)) {
-          updated.address = sanitizeAddressValue(trimmed).slice(0, 500);
+        const sanitized = sanitizeServiceAddress(trimmed);
+        if (sanitized) {
+          updated.address = sanitized.slice(0, 500);
           updated.address_confirmed = false;
         }
       }
@@ -10746,6 +11022,8 @@ var CallBridge = class {
   stallRecovery = new StallRecoveryController();
   greetingReadiness = new GreetingReadinessGate();
   greetingWatchdog = new GreetingWatchdog();
+  greetingDelivery = new GreetingDeliveryTracker();
+  greetingAudioBuffer = new GreetingAudioBuffer();
   openingStoryTurn = new OpeningStoryTurnController();
   responseSerializer = new ResponseSerializer();
   cachedOpeningLine = null;
@@ -10814,6 +11092,7 @@ var CallBridge = class {
     this.callSid = start.callSid;
     this.callerPhone = start.customParameters?.callerPhone ?? "";
     this.calledPhone = start.customParameters?.calledPhone ?? "";
+    this.flushBufferedGreetingAudio();
     const token = start.customParameters?.token;
     const tokenCallSid = start.customParameters?.callSid ?? start.callSid;
     if (!verifyStreamAuthToken(
@@ -10958,11 +11237,18 @@ var CallBridge = class {
     );
     const sent = this.requestAssistantSpeech(openingLine, "opening_greeting");
     if (sent) {
-      this.openingGreetingSent = true;
-      this.orchestrator.markOpeningDelivered();
+      this.greetingDelivery.markRequestSent(this.callSid ?? void 0);
+      if (options.isFallback) {
+        this.greetingDelivery.markFallbackProduced(this.callSid ?? void 0);
+      }
     } else {
+      this.greetingDelivery.markRequestBlocked(this.callSid ?? void 0);
+      if (options.isFallback) {
+        this.greetingDelivery.markFallbackUnavailable(this.callSid ?? void 0);
+      }
       logWarn("opening_greeting_request_blocked", {
-        callSid: this.callSid ?? void 0
+        callSid: this.callSid ?? void 0,
+        isFallback: options.isFallback ?? false
       });
     }
   }
@@ -10970,12 +11256,15 @@ var CallBridge = class {
     if (this.greetingWatchdog.hasFirstAudioForwarded()) {
       return;
     }
+    const rootCause = resolveGreetingRootCause(stalledStage, this.greetingDelivery);
+    this.greetingDelivery.lastRootCause = rootCause;
     logOpeningPipelineEvent({
       stage: "timeout_fired",
       callSid: this.callSid ?? void 0,
       timestampMs: Date.now(),
       stalledStage,
-      detail: `greeting_watchdog:${stalledStage}`
+      detail: `greeting_watchdog:${stalledStage}`,
+      rootCause
     });
     this.openAi?.cancelActiveResponse();
     this.responseGuard.onResponseCancelled();
@@ -10991,18 +11280,49 @@ var CallBridge = class {
     if (this.greetingFallbackUsed) {
       logWarn("opening_greeting_recovery_exhausted", {
         callSid: this.callSid ?? void 0,
-        stalledStage
+        stalledStage,
+        rootCause
       });
+      if (!this.greetingDelivery.fallbackUnavailable) {
+        this.greetingDelivery.markFallbackUnavailable(this.callSid ?? void 0);
+      }
       return;
     }
+    this.playFallbackGreeting(stalledStage, rootCause);
+  }
+  playFallbackGreeting(stalledStage, rootCause) {
     this.greetingFallbackUsed = true;
+    this.greetingDelivery.markFallbackRequested(this.callSid ?? void 0);
     logOpeningPipelineEvent({
       stage: "recovery_attempted",
       callSid: this.callSid ?? void 0,
       timestampMs: Date.now(),
-      detail: "greeting_fallback"
+      detail: "greeting_fallback",
+      rootCause,
+      stalledStage
     });
-    this.requestOpeningGreeting(OPENING_FALLBACK_GREETING, { bypassGate: true });
+    this.requestOpeningGreeting(OPENING_FALLBACK_GREETING, { bypassGate: true, isFallback: true });
+  }
+  onGreetingFirstAudioForwarded() {
+    this.greetingDelivery.markFirstAudioForwarded(this.callSid ?? void 0);
+    if (!this.openingGreetingSent) {
+      this.openingGreetingSent = true;
+      this.orchestrator?.markOpeningDelivered();
+    }
+    if (this.greetingDelivery.fallbackRequested && !this.greetingDelivery.fallbackForwarded) {
+      this.greetingDelivery.markFallbackForwarded(this.callSid ?? void 0);
+    }
+  }
+  canForwardAudioToTwilio() {
+    return Boolean(this.streamSid) && !this.closed && this.params.twilioSocket.readyState === this.params.twilioSocket.OPEN;
+  }
+  flushBufferedGreetingAudio() {
+    if (!this.canForwardAudioToTwilio()) {
+      return;
+    }
+    this.greetingAudioBuffer.flush((base64Audio) => {
+      this.sendAssistantAudioToTwilio(base64Audio, { fromBuffer: true });
+    });
   }
   /** @deprecated use requestOpeningGreeting */
   sendOpeningGreeting(openingLine) {
@@ -11087,7 +11407,7 @@ var CallBridge = class {
     const canSend = this.responseGuard.canTriggerResponse(reason);
     const plan = this.responseSerializer.planResponse(reason, text, canSend);
     if (plan.disposition === "deduplicated") {
-      return true;
+      return reason !== "opening_greeting";
     }
     if (plan.disposition !== "sent") {
       return false;
@@ -11253,6 +11573,7 @@ var CallBridge = class {
         }
         if (this.responseGuard.getLastTriggerReason() === "opening_greeting") {
           this.greetingWatchdog.onResponseCreated(this.callSid ?? void 0);
+          this.greetingDelivery.markResponseCreated(this.callSid ?? void 0);
         }
         const responseId = event.response?.id;
         if (responseId) {
@@ -11311,6 +11632,10 @@ var CallBridge = class {
         this.audioDiagnostics.recordOpenAiResponseEvent("response.done", this.activeTurnId);
         if (this.responseGuard.wasLastResponseOpeningGreeting()) {
           this.greetingWatchdog.onGreetingCompleted(this.callSid ?? void 0);
+          this.greetingDelivery.markCompleted(this.callSid ?? void 0);
+          if (this.greetingDelivery.fallbackRequested) {
+            this.greetingDelivery.markFallbackCompleted(this.callSid ?? void 0);
+          }
           this.sendOpeningNameQuestion();
           this.orchestrator?.onAssistantResponseDone();
           this.clearResponseWatchdog();
@@ -11356,6 +11681,9 @@ var CallBridge = class {
         this.awaitingClosingMark = false;
         this.clearResponseWatchdog();
         this.stallRecovery.clearAudioCompletionWatch();
+        if (this.responseGuard.getLastTriggerReason() === "opening_greeting" && !this.greetingWatchdog.hasFirstAudioForwarded()) {
+          this.greetingDelivery.markCancelledDuringStartup(this.callSid ?? void 0);
+        }
         logTurnBridgeEvent("turn_diag_response_cancelled", {
           turnId: this.activeTurnId,
           callSid: this.callSid ?? void 0,
@@ -11667,12 +11995,27 @@ var CallBridge = class {
     this.processCallerTurnReply(pending);
   }
   forwardAssistantAudio(base64Audio) {
+    if (!base64Audio) {
+      return;
+    }
+    const isGreetingAudio = this.responseGuard.getLastTriggerReason() === "opening_greeting" || this.greetingDelivery.greetingRequestSent && !this.greetingWatchdog.hasFirstAudioForwarded();
+    if (isGreetingAudio) {
+      this.greetingWatchdog.onFirstAudioDelta(this.callSid ?? void 0);
+      this.greetingDelivery.markFirstAudioReceived(this.callSid ?? void 0);
+    }
+    if (!this.canForwardAudioToTwilio()) {
+      if (isGreetingAudio) {
+        this.greetingAudioBuffer.enqueue(base64Audio);
+      }
+      return;
+    }
+    this.sendAssistantAudioToTwilio(base64Audio, { isGreetingAudio });
+  }
+  sendAssistantAudioToTwilio(base64Audio, options = {}) {
     if (!base64Audio || !this.streamSid) {
       return;
     }
-    if (this.responseGuard.getLastTriggerReason() === "opening_greeting" || this.openingGreetingSent && !this.greetingWatchdog.hasFirstAudioForwarded()) {
-      this.greetingWatchdog.onFirstAudioDelta(this.callSid ?? void 0);
-    }
+    const isGreetingAudio = options.isGreetingAudio ?? this.responseGuard.getLastTriggerReason() === "opening_greeting";
     const payloadBuffer = Buffer.from(base64Audio, "base64");
     this.playbackTracker.recordOutboundBytes(payloadBuffer.length);
     this.audioDiagnostics.recordTwilioOutboundMedia(payloadBuffer.length);
@@ -11683,8 +12026,9 @@ var CallBridge = class {
       turnId: this.activeTurnId
     });
     this.callTiming.record("first_audio_sent_to_twilio", this.callSid ?? void 0);
-    if (this.responseGuard.getLastTriggerReason() === "opening_greeting" || this.openingGreetingSent && !this.greetingWatchdog.hasFirstAudioForwarded()) {
+    if (isGreetingAudio && !this.greetingWatchdog.hasFirstAudioForwarded()) {
       this.greetingWatchdog.onFirstAudioForwarded(this.callSid ?? void 0);
+      this.onGreetingFirstAudioForwarded();
     }
     if (!this.activeResponseUsesClosingMark) {
       this.markCounter += 1;
@@ -11694,6 +12038,11 @@ var CallBridge = class {
           `assistant-${this.markCounter}`
         )
       );
+    }
+    if (options.fromBuffer && isGreetingAudio) {
+      logInfo("greeting_buffered_audio_forwarded", {
+        callSid: this.callSid ?? void 0
+      });
     }
   }
   handleTwilioMark(name) {
@@ -11747,6 +12096,7 @@ var CallBridge = class {
     this.clearOpeningFallbackTimer();
     this.clearResponseWatchdog();
     this.greetingWatchdog.clear();
+    this.greetingAudioBuffer.clear();
     this.openingSilence.reset();
     this.openingStoryTurn.completeAwaitingStory();
     this.responseSerializer.clearQueue();

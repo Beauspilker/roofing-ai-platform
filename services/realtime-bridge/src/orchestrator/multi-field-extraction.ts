@@ -37,6 +37,10 @@ import {
 import { isCallerNameResolved } from "./required-intake.js";
 import { hasCompleteCallerName, processCallerNameTurn, syncFullNameFromParts } from "./caller-name-intake.js";
 import { preserveConfirmedFieldState } from "./safe-field-merge.js";
+import {
+  sanitizeServiceAddress,
+  trimAddressAtConversationalBoundary,
+} from "./address-sanitization.js";
 import type { PendingQuestionKey } from "./pending-question.js";
 import {
   allowsBooleanDirectAnswer,
@@ -377,52 +381,58 @@ function extractActiveLeak(speech: string, pending: PendingQuestionKey | null): 
   return null;
 }
 
-export function trimAddressAtConversationalBoundary(address: string): string {
-  const trimmed = address.trim();
-
-  if (!trimmed) {
-    return trimmed;
-  }
-
-  const boundaryPattern =
-    /\s+\b(because|since|and|but|also|however|so|which|that|then|if|when)\b/i;
-  const match = trimmed.match(boundaryPattern);
-
-  if (match?.index !== undefined && match.index >= 8) {
-    return trimmed.slice(0, match.index).trim().replace(/[,.]$/, "");
-  }
-
-  return trimmed;
-}
+export { trimAddressAtConversationalBoundary } from "./address-sanitization.js";
 
 export function extractAddressFromSpeech(speech: string): string | null {
   const correctionMatch = speech.match(
     /(?:no,?|actually|instead|rather|correction).*?(?:address is|it's|it is)\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80})/i,
   );
-  if (correctionMatch?.[1] && isPlausibleServiceAddress(correctionMatch[1])) {
-    return trimAddressAtConversationalBoundary(correctionMatch[1].trim());
+  if (correctionMatch?.[1]) {
+    const sanitized = sanitizeServiceAddress(correctionMatch[1].trim());
+    if (sanitized) {
+      return sanitized;
+    }
   }
 
   const addressIsMatch = speech.match(
-    /\b(?:the )?address is\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80})/i,
+    /\b(?:the )?address is\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,120})/i,
   );
-  if (addressIsMatch?.[1] && isPlausibleServiceAddress(addressIsMatch[1])) {
-    return trimAddressAtConversationalBoundary(addressIsMatch[1].trim());
+  if (addressIsMatch?.[1]) {
+    const sanitized = sanitizeServiceAddress(addressIsMatch[1].trim());
+    if (sanitized) {
+      return sanitized;
+    }
+  }
+
+  const serviceAddressMatch = speech.match(
+    /\b(?:my )?service address is\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,120})/i,
+  );
+  if (serviceAddressMatch?.[1]) {
+    const sanitized = sanitizeServiceAddress(serviceAddressMatch[1].trim());
+    if (sanitized) {
+      return sanitized;
+    }
   }
 
   const streetMatch = speech.match(
-    /\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80}(?:\b(?:street|st|avenue|ave|road|rd|drive|dr|lane|ln|boulevard|blvd|way|court|ct|circle|place|pl)\b)?/i,
+    /\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,120}(?:\b(?:street|st|avenue|ave|road|rd|drive|dr|lane|ln|boulevard|blvd|way|court|ct|circle|place|pl)\b)?(?:[,\s]+[A-Za-z][A-Za-z\s.-]{2,40})?/i,
   );
 
-  if (streetMatch && isPlausibleServiceAddress(streetMatch[0])) {
-    return trimAddressAtConversationalBoundary(streetMatch[0].trim());
+  if (streetMatch) {
+    const sanitized = sanitizeServiceAddress(streetMatch[0].trim());
+    if (sanitized) {
+      return sanitized;
+    }
   }
 
-  const atMatch = speech.match(/\bat\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,60})/i);
+  const atMatch = speech.match(/\bat\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80})/i);
   const candidate = atMatch?.[1]?.trim();
 
-  if (candidate && isPlausibleServiceAddress(candidate)) {
-    return trimAddressAtConversationalBoundary(candidate);
+  if (candidate) {
+    const sanitized = sanitizeServiceAddress(candidate);
+    if (sanitized) {
+      return sanitized;
+    }
   }
 
   return null;
@@ -531,7 +541,7 @@ export function applyAdaptiveCorrections(
   const address = extractAddressFromSpeech(speech);
 
   if (address) {
-    updated.address = sanitizeAddressValue(address).slice(0, 500);
+    updated.address = sanitizeServiceAddress(address) ?? address;
     updated.address_confirmed = false;
   }
 
@@ -646,10 +656,10 @@ export function extractAllFieldsFromTranscript(
 
   if (
     !hasValue(extracted.urgency) &&
-    (/\b(another|next|more)\s+storm\s+(is\s+)?(coming|expected|forecast|hitting|on the way)\b/i.test(
+    (/\b(another|next|more)\s+storm\s+(is\s+)?(coming|expected|forecast|hitting|on the way|supposed to)\b/i.test(
       trimmed,
     ) ||
-      /\bstorm\s+(is\s+)?(coming|expected|forecast|hitting)\s+(tomorrow|tonight|today)\b/i.test(
+      /\bstorm\s+(is\s+)?(coming|expected|forecast|hitting|supposed to)\s+(tomorrow|tonight|today|through)\b/i.test(
         trimmed,
       ) ||
       /\bstorm\s+tomorrow\b/i.test(trimmed))
@@ -684,13 +694,22 @@ export function mergeExtractedFields(
     updated.problem_description = extracted.problem_description!.trim().slice(0, 500);
   }
 
-  if (
-    hasValue(extracted.address) &&
-    isPlausibleServiceAddress(extracted.address!) &&
-    (!hasValue(updated.address) || allowOverwrite)
-  ) {
-    updated.address = sanitizeAddressValue(extracted.address!.trim()).slice(0, 500);
-    updated.address_confirmed = false;
+  if (hasValue(extracted.address)) {
+    const sanitized = sanitizeServiceAddress(extracted.address!);
+
+    if (
+      sanitized &&
+      fields.address_confirmed === true &&
+      !allowOverwrite
+    ) {
+      // Confirmed address wins unless the caller explicitly corrects it.
+    } else if (
+      sanitized &&
+      (!hasValue(updated.address) || allowOverwrite)
+    ) {
+      updated.address = sanitized.slice(0, 500);
+      updated.address_confirmed = false;
+    }
   }
 
   if (hasValue(extracted.project_type) && (!hasValue(updated.project_type) || allowOverwrite)) {
@@ -893,8 +912,9 @@ export function applyAnswerForPendingQuestion(
       break;
     case "service_address":
       if (!hasValue(updated.address)) {
-        if (isPlausibleServiceAddress(trimmed)) {
-          updated.address = sanitizeAddressValue(trimmed).slice(0, 500);
+        const sanitized = sanitizeServiceAddress(trimmed);
+        if (sanitized) {
+          updated.address = sanitized.slice(0, 500);
           updated.address_confirmed = false;
         }
       }

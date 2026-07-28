@@ -12,6 +12,11 @@ export function preserveConfirmedFieldState(
 
   const nameUnchanged = (before.full_name?.trim() ?? "") === (after.full_name?.trim() ?? "");
 
+  const addressCorrected =
+    before.address_confirmed === true &&
+    after.address_confirmed === false &&
+    !addressUnchanged;
+
   return {
     ...after,
     callback_phone_confirmed:
@@ -19,7 +24,11 @@ export function preserveConfirmedFieldState(
         ? true
         : after.callback_phone_confirmed,
     address_confirmed:
-      addressUnchanged && before.address_confirmed === true ? true : after.address_confirmed,
+      before.address_confirmed === true && !addressCorrected
+        ? true
+        : addressUnchanged && before.address_confirmed === true
+          ? true
+          : after.address_confirmed,
     full_name: nameUnchanged ? before.full_name ?? after.full_name : after.full_name,
     caller_name_declined:
       nameUnchanged ? before.caller_name_declined : after.caller_name_declined,

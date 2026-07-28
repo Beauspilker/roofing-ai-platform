@@ -37,11 +37,14 @@ import {
 import { resolveConfirmationResponseReason } from "../orchestrator/confirmation-response-routing.js";
 import { logError, logInfo, logWarn } from "../logger.js";
 import {
+  GreetingDeliveryTracker,
   GreetingReadinessGate,
   GreetingWatchdog,
   logOpeningPipelineEvent,
+  resolveGreetingRootCause,
   type GreetingWatchdogStage,
 } from "./opening-pipeline.js";
+import { GreetingAudioBuffer } from "./greeting-audio-buffer.js";
 import { OpeningStoryTurnController } from "./opening-story-turn.js";
 import { ResponseSerializer } from "./response-serializer.js";
 import { OpenAiRealtimeSession } from "../openai/realtime-session.js";
@@ -110,6 +113,8 @@ export class CallBridge {
   private readonly stallRecovery = new StallRecoveryController();
   private readonly greetingReadiness = new GreetingReadinessGate();
   private readonly greetingWatchdog = new GreetingWatchdog();
+  private readonly greetingDelivery = new GreetingDeliveryTracker();
+  private readonly greetingAudioBuffer = new GreetingAudioBuffer();
   private readonly openingStoryTurn = new OpeningStoryTurnController();
   private readonly responseSerializer = new ResponseSerializer();
   private cachedOpeningLine: string | null = null;
@@ -197,6 +202,7 @@ export class CallBridge {
     this.callSid = start.callSid;
     this.callerPhone = start.customParameters?.callerPhone ?? "";
     this.calledPhone = start.customParameters?.calledPhone ?? "";
+    this.flushBufferedGreetingAudio();
 
     const token = start.customParameters?.token;
     const tokenCallSid = start.customParameters?.callSid ?? start.callSid;
@@ -331,7 +337,7 @@ export class CallBridge {
 
   private requestOpeningGreeting(
     openingLine: string,
-    options: { bypassGate?: boolean; isRetry?: boolean } = {},
+    options: { bypassGate?: boolean; isRetry?: boolean; isFallback?: boolean } = {},
   ): void {
     if (!this.openAi || !this.orchestrator) {
       return;
@@ -375,11 +381,18 @@ export class CallBridge {
     const sent = this.requestAssistantSpeech(openingLine, "opening_greeting");
 
     if (sent) {
-      this.openingGreetingSent = true;
-      this.orchestrator.markOpeningDelivered();
+      this.greetingDelivery.markRequestSent(this.callSid ?? undefined);
+      if (options.isFallback) {
+        this.greetingDelivery.markFallbackProduced(this.callSid ?? undefined);
+      }
     } else {
+      this.greetingDelivery.markRequestBlocked(this.callSid ?? undefined);
+      if (options.isFallback) {
+        this.greetingDelivery.markFallbackUnavailable(this.callSid ?? undefined);
+      }
       logWarn("opening_greeting_request_blocked", {
         callSid: this.callSid ?? undefined,
+        isFallback: options.isFallback ?? false,
       });
     }
   }
@@ -389,12 +402,16 @@ export class CallBridge {
       return;
     }
 
+    const rootCause = resolveGreetingRootCause(stalledStage, this.greetingDelivery);
+    this.greetingDelivery.lastRootCause = rootCause;
+
     logOpeningPipelineEvent({
       stage: "timeout_fired",
       callSid: this.callSid ?? undefined,
       timestampMs: Date.now(),
       stalledStage,
       detail: `greeting_watchdog:${stalledStage}`,
+      rootCause,
     });
 
     this.openAi?.cancelActiveResponse();
@@ -414,18 +431,65 @@ export class CallBridge {
       logWarn("opening_greeting_recovery_exhausted", {
         callSid: this.callSid ?? undefined,
         stalledStage,
+        rootCause,
       });
+      if (!this.greetingDelivery.fallbackUnavailable) {
+        this.greetingDelivery.markFallbackUnavailable(this.callSid ?? undefined);
+      }
       return;
     }
 
+    this.playFallbackGreeting(stalledStage, rootCause);
+  }
+
+  private playFallbackGreeting(
+    stalledStage: GreetingWatchdogStage,
+    rootCause: ReturnType<typeof resolveGreetingRootCause>,
+  ): void {
     this.greetingFallbackUsed = true;
+    this.greetingDelivery.markFallbackRequested(this.callSid ?? undefined);
+
     logOpeningPipelineEvent({
       stage: "recovery_attempted",
       callSid: this.callSid ?? undefined,
       timestampMs: Date.now(),
       detail: "greeting_fallback",
+      rootCause,
+      stalledStage,
     });
-    this.requestOpeningGreeting(OPENING_FALLBACK_GREETING, { bypassGate: true });
+
+    this.requestOpeningGreeting(OPENING_FALLBACK_GREETING, { bypassGate: true, isFallback: true });
+  }
+
+  private onGreetingFirstAudioForwarded(): void {
+    this.greetingDelivery.markFirstAudioForwarded(this.callSid ?? undefined);
+
+    if (!this.openingGreetingSent) {
+      this.openingGreetingSent = true;
+      this.orchestrator?.markOpeningDelivered();
+    }
+
+    if (this.greetingDelivery.fallbackRequested && !this.greetingDelivery.fallbackForwarded) {
+      this.greetingDelivery.markFallbackForwarded(this.callSid ?? undefined);
+    }
+  }
+
+  private canForwardAudioToTwilio(): boolean {
+    return (
+      Boolean(this.streamSid) &&
+      !this.closed &&
+      this.params.twilioSocket.readyState === this.params.twilioSocket.OPEN
+    );
+  }
+
+  private flushBufferedGreetingAudio(): void {
+    if (!this.canForwardAudioToTwilio()) {
+      return;
+    }
+
+    this.greetingAudioBuffer.flush((base64Audio) => {
+      this.sendAssistantAudioToTwilio(base64Audio, { fromBuffer: true });
+    });
   }
 
   /** @deprecated use requestOpeningGreeting */
@@ -539,7 +603,7 @@ export class CallBridge {
     const plan = this.responseSerializer.planResponse(reason, text, canSend);
 
     if (plan.disposition === "deduplicated") {
-      return true;
+      return reason !== "opening_greeting";
     }
 
     if (plan.disposition !== "sent") {
@@ -738,6 +802,7 @@ export class CallBridge {
 
         if (this.responseGuard.getLastTriggerReason() === "opening_greeting") {
           this.greetingWatchdog.onResponseCreated(this.callSid ?? undefined);
+          this.greetingDelivery.markResponseCreated(this.callSid ?? undefined);
         }
 
         const responseId = (event.response as { id?: string } | undefined)?.id;
@@ -803,6 +868,10 @@ export class CallBridge {
 
         if (this.responseGuard.wasLastResponseOpeningGreeting()) {
           this.greetingWatchdog.onGreetingCompleted(this.callSid ?? undefined);
+          this.greetingDelivery.markCompleted(this.callSid ?? undefined);
+          if (this.greetingDelivery.fallbackRequested) {
+            this.greetingDelivery.markFallbackCompleted(this.callSid ?? undefined);
+          }
           this.sendOpeningNameQuestion();
           this.orchestrator?.onAssistantResponseDone();
           this.clearResponseWatchdog();
@@ -853,6 +922,12 @@ export class CallBridge {
         this.awaitingClosingMark = false;
         this.clearResponseWatchdog();
         this.stallRecovery.clearAudioCompletionWatch();
+        if (
+          this.responseGuard.getLastTriggerReason() === "opening_greeting" &&
+          !this.greetingWatchdog.hasFirstAudioForwarded()
+        ) {
+          this.greetingDelivery.markCancelledDuringStartup(this.callSid ?? undefined);
+        }
         logTurnBridgeEvent("turn_diag_response_cancelled", {
           turnId: this.activeTurnId,
           callSid: this.callSid ?? undefined,
@@ -1262,16 +1337,41 @@ export class CallBridge {
   }
 
   private forwardAssistantAudio(base64Audio: string): void {
+    if (!base64Audio) {
+      return;
+    }
+
+    const isGreetingAudio =
+      this.responseGuard.getLastTriggerReason() === "opening_greeting" ||
+      (this.greetingDelivery.greetingRequestSent &&
+        !this.greetingWatchdog.hasFirstAudioForwarded());
+
+    if (isGreetingAudio) {
+      this.greetingWatchdog.onFirstAudioDelta(this.callSid ?? undefined);
+      this.greetingDelivery.markFirstAudioReceived(this.callSid ?? undefined);
+    }
+
+    if (!this.canForwardAudioToTwilio()) {
+      if (isGreetingAudio) {
+        this.greetingAudioBuffer.enqueue(base64Audio);
+      }
+      return;
+    }
+
+    this.sendAssistantAudioToTwilio(base64Audio, { isGreetingAudio });
+  }
+
+  private sendAssistantAudioToTwilio(
+    base64Audio: string,
+    options: { isGreetingAudio?: boolean; fromBuffer?: boolean } = {},
+  ): void {
     if (!base64Audio || !this.streamSid) {
       return;
     }
 
-    if (
-      this.responseGuard.getLastTriggerReason() === "opening_greeting" ||
-      (this.openingGreetingSent && !this.greetingWatchdog.hasFirstAudioForwarded())
-    ) {
-      this.greetingWatchdog.onFirstAudioDelta(this.callSid ?? undefined);
-    }
+    const isGreetingAudio =
+      options.isGreetingAudio ??
+      this.responseGuard.getLastTriggerReason() === "opening_greeting";
 
     const payloadBuffer = Buffer.from(base64Audio, "base64");
     this.playbackTracker.recordOutboundBytes(payloadBuffer.length);
@@ -1289,11 +1389,9 @@ export class CallBridge {
     });
     this.callTiming.record("first_audio_sent_to_twilio", this.callSid ?? undefined);
 
-    if (
-      this.responseGuard.getLastTriggerReason() === "opening_greeting" ||
-      (this.openingGreetingSent && !this.greetingWatchdog.hasFirstAudioForwarded())
-    ) {
+    if (isGreetingAudio && !this.greetingWatchdog.hasFirstAudioForwarded()) {
       this.greetingWatchdog.onFirstAudioForwarded(this.callSid ?? undefined);
+      this.onGreetingFirstAudioForwarded();
     }
 
     if (!this.activeResponseUsesClosingMark) {
@@ -1304,6 +1402,12 @@ export class CallBridge {
           `assistant-${this.markCounter}`,
         ) as unknown as Record<string, unknown>,
       );
+    }
+
+    if (options.fromBuffer && isGreetingAudio) {
+      logInfo("greeting_buffered_audio_forwarded", {
+        callSid: this.callSid ?? undefined,
+      });
     }
   }
 
@@ -1369,6 +1473,7 @@ export class CallBridge {
     this.clearOpeningFallbackTimer();
     this.clearResponseWatchdog();
     this.greetingWatchdog.clear();
+    this.greetingAudioBuffer.clear();
     this.openingSilence.reset();
     this.openingStoryTurn.completeAwaitingStory();
     this.responseSerializer.clearQueue();

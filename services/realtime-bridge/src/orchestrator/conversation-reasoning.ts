@@ -74,10 +74,10 @@ function inferUrgencyFromText(text: string): string | null {
   const lower = text.toLowerCase();
 
   if (
-    /\b(another|next|more)\s+storm\s+(is\s+)?(coming|expected|forecast|hitting|on the way)\b/i.test(
+    /\b(another|next|more)\s+storm\s+(is\s+)?(coming|expected|forecast|hitting|on the way|supposed to)\b/i.test(
       lower,
     ) ||
-    /\bstorm\s+(is\s+)?(coming|expected|forecast|hitting)\s+(tomorrow|tonight|today)\b/i.test(
+    /\bstorm\s+(is\s+)?(coming|expected|forecast|hitting|supposed to)\s+(tomorrow|tonight|today|through)\b/i.test(
       lower,
     ) ||
     /\bstorm\s+tomorrow\b/i.test(lower)
@@ -104,10 +104,10 @@ function inferScheduleHintFromText(text: string): string | null {
   const lower = text.toLowerCase();
 
   if (
-    /\b(another|next|more)\s+storm\s+(is\s+)?(coming|expected|forecast|hitting|on the way)\b/i.test(
+    /\b(another|next|more)\s+storm\s+(is\s+)?(coming|expected|forecast|hitting|on the way|supposed to)\b/i.test(
       lower,
     ) ||
-    /\bstorm\s+(is\s+)?(coming|expected|forecast|hitting)\s+(tomorrow|tonight|today)\b/i.test(
+    /\bstorm\s+(is\s+)?(coming|expected|forecast|hitting|supposed to)\s+(tomorrow|tonight|today|through)\b/i.test(
       lower,
     ) ||
     /\bstorm\s+tomorrow\b/i.test(lower)

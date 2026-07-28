@@ -3,6 +3,7 @@ import type { RealtimeFields } from "./realtime-prompts.js";
 import { isSummaryConfirmed } from "./realtime-prompts.js";
 import { normalizeCallbackPhoneE164 } from "./callback-phone.js";
 import { isAddressConfirmed, hasConfirmableAddress } from "./address-confirmation.js";
+import { sanitizeServiceAddress } from "./address-sanitization.js";
 import {
   EARLY_CALLER_NAME_QUESTION,
   extractDamageOrCallReason,
@@ -435,9 +436,12 @@ export function applyDirectAnswerToMissingField(
       break;
     }
     case "address":
-      if (!hasValue(updated.address) && isPlausibleServiceAddress(trimmed)) {
-        updated.address = trimmed.slice(0, 500);
-        updated.address_confirmed = false;
+      if (!hasValue(updated.address)) {
+        const sanitized = sanitizeServiceAddress(trimmed);
+        if (sanitized) {
+          updated.address = sanitized.slice(0, 500);
+          updated.address_confirmed = false;
+        }
       }
       break;
     case "problem_description":

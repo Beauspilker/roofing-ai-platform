@@ -1,4 +1,9 @@
 import type { RealtimeFields } from "./realtime-prompts.js";
+import {
+  containsNonAddressContinuation,
+  normalizeAddressPunctuation,
+  sanitizeServiceAddress,
+} from "./address-sanitization.js";
 import { syncLegacyStringFields } from "./structured-intake.js";
 
 function hasValue(value: string | undefined): boolean {
@@ -16,21 +21,21 @@ export function hasConfirmableAddress(address: string | undefined): boolean {
 }
 
 export function formatAddressForSpeech(address: string): string {
-  let formatted = address.trim().replace(/\s+/g, " ");
-
-  if (/\bin\b/i.test(formatted) && !/,/.test(formatted)) {
-    formatted = formatted.replace(/\s+in\s+/i, ", ");
-  }
-
-  return formatted;
+  return normalizeAddressPunctuation(address);
 }
 
 export function sanitizeAddressValue(address: string): string {
-  return address
+  const stripped = address
     .replace(/(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/g, " ")
     .replace(/\b(call me at|my number is|phone number is|callback number is)\b.*$/i, "")
     .replace(/\s+/g, " ")
     .trim();
+
+  if (containsNonAddressContinuation(stripped)) {
+    return sanitizeServiceAddress(stripped) ?? stripped.replace(/[,.]$/, "").trim();
+  }
+
+  return stripped;
 }
 
 export function buildAddressReadbackConfirmation(address: string): string {
@@ -60,9 +65,22 @@ export function isAddressRejectedSpeech(speech: string): boolean {
 }
 
 export function confirmAddress(fields: RealtimeFields): RealtimeFields {
+  const sanitized = fields.address
+    ? sanitizeServiceAddress(fields.address) ?? formatAddressForSpeech(fields.address)
+    : fields.address;
+
   return syncLegacyStringFields({
     ...fields,
-    address: fields.address ? formatAddressForSpeech(fields.address) : fields.address,
+    address: sanitized,
     address_confirmed: true,
+    pending_question:
+      fields.pending_question === "address_confirmation" ||
+      fields.pending_question === "service_address"
+        ? undefined
+        : fields.pending_question,
+    field_being_confirmed:
+      fields.field_being_confirmed === "address" ? undefined : fields.field_being_confirmed,
+    confirmation_candidate:
+      fields.field_being_confirmed === "address" ? undefined : fields.confirmation_candidate,
   });
 }

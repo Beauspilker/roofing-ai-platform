@@ -394,4 +394,4 @@ export function isCallerNameUnavailableSpeech(speech: string): boolean {
 }
 
 export const EARLY_CALLER_NAME_QUESTION =
-  "Could I start with your first and last name?";
+  "Before we continue, may I get your first and last name?";

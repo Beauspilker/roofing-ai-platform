@@ -12,12 +12,15 @@ import { buildValidatedSpokenSummary } from "./summary-builder.js";
 export const REALTIME_OPENING_GREETING =
   "Thank you for calling Beau's Roofing. I'm Beau's Roofing's AI assistant.";
 
-export const REALTIME_OPENING_NAME_QUESTION =
-  "Could I start with your first and last name?";
+export const REALTIME_OPENING_STORY_QUESTION =
+  "What can we help you with today?";
+
+/** @deprecated Use REALTIME_OPENING_STORY_QUESTION — kept for test compatibility. */
+export const REALTIME_OPENING_NAME_QUESTION = REALTIME_OPENING_STORY_QUESTION;
 
 export const REALTIME_INTRO_TRANSITION = "";
 
-export const REALTIME_OPENING_QUESTION = REALTIME_OPENING_NAME_QUESTION;
+export const REALTIME_OPENING_QUESTION = REALTIME_OPENING_STORY_QUESTION;
 
 export const REALTIME_ANYTHING_ELSE_QUESTION =
   "Is there anything else you'd like the roofing company to know before I send this over?";
@@ -50,6 +53,7 @@ export type RealtimeFields = Omit<
   name_awaiting_full_name_spelling?: boolean;
   name_spelling_verified?: boolean;
   opening_name_complete?: boolean;
+  opening_story_followup_attempts?: number;
   schedule_daypart?: "morning" | "afternoon" | "evening";
   name_clarification_attempts?: number;
   additional_notes_responded?: boolean;
@@ -65,7 +69,7 @@ export type RealtimeFields = Omit<
   field_resolution?: Partial<
     Record<
       string,
-      "missing" | "captured" | "uncertain" | "confirmed"
+      "missing" | "captured" | "uncertain" | "confirmed" | "derived"
     >
   >;
   field_clarification_attempts?: Partial<Record<string, number>>;

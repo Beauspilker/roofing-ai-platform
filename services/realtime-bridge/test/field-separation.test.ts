@@ -209,9 +209,9 @@ test("opening explanation occurs after caller explains reason for calling", asyn
   assert.match(outcome.replyText, /best number to reach you|urgent|insurance|address/i);
 });
 
-test("opening uses a separate calm name question after greeting", () => {
+test("opening uses a separate calm story question after greeting", () => {
   assert.doesNotMatch(REALTIME_OPENING_GREETING, /\?/);
-  assert.match(REALTIME_OPENING_NAME_QUESTION, /first and last name/i);
+  assert.match(REALTIME_OPENING_NAME_QUESTION, /what can we help you with today/i);
 });
 
 test("only one pending question is resolved at a time", () => {

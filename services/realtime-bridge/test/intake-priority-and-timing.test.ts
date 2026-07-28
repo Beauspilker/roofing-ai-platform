@@ -49,7 +49,7 @@ test("hail damage with volunteered name does not ask again", async () => {
     callSid: "CA123",
     callerPhone: "+15551234567",
     speechResult: "My name is Beau Spilker and we had hail damage",
-    conversationState: "awaiting_opening_name",
+    conversationState: "awaiting_opening_story",
     acknowledgmentPolicy: policy,
     isFirstCallerTurn: true,
     hasReceivedMeaningfulCallerTranscript: true,

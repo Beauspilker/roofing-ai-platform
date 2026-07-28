@@ -37,7 +37,7 @@ import {
 import { logError, logInfo, logWarn } from "../logger.js";
 import { OpenAiRealtimeSession } from "../openai/realtime-session.js";
 import { SessionOrchestrator } from "../orchestrator/session-orchestrator.js";
-import { REALTIME_OPENING_NAME_QUESTION } from "../orchestrator/realtime-prompts.js";
+import { REALTIME_OPENING_STORY_QUESTION } from "../orchestrator/realtime-prompts.js";
 import {
   buildTwilioMarkMessage,
   buildTwilioMediaMessage,
@@ -334,7 +334,7 @@ export class CallBridge {
     }
 
     this.openingNameQuestionSent = true;
-    this.requestAssistantSpeech(REALTIME_OPENING_NAME_QUESTION, "opening_name_question");
+    this.requestAssistantSpeech(REALTIME_OPENING_STORY_QUESTION, "opening_name_question");
   }
 
   private async processCallerTranscriptAfterOpeningListen(transcript: string): Promise<void> {
@@ -344,7 +344,7 @@ export class CallBridge {
 
     if (
       this.openingSilence.isListeningForReason() &&
-      !isMeaningfulOpeningCallerTranscript(transcript, { awaitingName: true })
+      !isMeaningfulOpeningCallerTranscript(transcript, { awaitingStory: true })
     ) {
       this.scheduleOpeningSilenceReprompt();
       return;
@@ -356,7 +356,7 @@ export class CallBridge {
       return;
     }
 
-    if (isMeaningfulOpeningCallerTranscript(transcript, { awaitingName: true })) {
+    if (isMeaningfulOpeningCallerTranscript(transcript, { awaitingStory: true })) {
       this.openingSilence.onMeaningfulCallerTranscript();
       this.responseGuard.completeOpeningReasonListen();
       this.openingNameListenStarted = false;
@@ -738,7 +738,7 @@ export class CallBridge {
 
     if (
       this.openingSilence.isListeningForReason() &&
-      !isMeaningfulOpeningCallerTranscript(transcript, { awaitingName: true })
+      !isMeaningfulOpeningCallerTranscript(transcript, { awaitingStory: true })
     ) {
       logInfo("opening_transcript_ignored_at_bridge", {
         callSid: this.callSid ?? undefined,
@@ -931,7 +931,7 @@ export class CallBridge {
       return;
     }
 
-    if (isMeaningfulOpeningCallerTranscript(transcript, { awaitingName: true })) {
+    if (isMeaningfulOpeningCallerTranscript(transcript, { awaitingStory: true })) {
       this.openingSilence.completeOpeningListen();
       this.responseGuard.completeOpeningReasonListen();
       this.openingNameListenStarted = false;

@@ -117,6 +117,10 @@ export function resolvePendingQuestion(
     return stored;
   }
 
+  if (conversationState === "awaiting_opening_story") {
+    return "reason_for_call";
+  }
+
   if (conversationState === "awaiting_opening_name") {
     return "caller_name";
   }
@@ -187,6 +191,8 @@ export function pendingQuestionForConversationState(
   conversationState: ConversationState,
 ): PendingQuestionKey | null {
   switch (conversationState) {
+    case "awaiting_opening_story":
+      return "reason_for_call";
     case "awaiting_opening_name":
       return "caller_name";
     case "awaiting_callback_confirmation":

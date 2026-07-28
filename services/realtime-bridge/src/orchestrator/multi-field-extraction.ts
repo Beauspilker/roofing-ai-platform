@@ -3,6 +3,7 @@ import type { RealtimeFields } from "./realtime-prompts.js";
 import {
   appendContextNote,
   markFieldCaptured,
+  markFieldDerived,
   markFieldUncertain,
 } from "./field-completion.js";
 import {
@@ -376,19 +377,37 @@ function extractActiveLeak(speech: string, pending: PendingQuestionKey | null): 
   return null;
 }
 
+export function trimAddressAtConversationalBoundary(address: string): string {
+  const trimmed = address.trim();
+
+  if (!trimmed) {
+    return trimmed;
+  }
+
+  const boundaryPattern =
+    /\s+\b(because|since|and|but|also|however|so|which|that|then|if|when)\b/i;
+  const match = trimmed.match(boundaryPattern);
+
+  if (match?.index !== undefined && match.index >= 8) {
+    return trimmed.slice(0, match.index).trim().replace(/[,.]$/, "");
+  }
+
+  return trimmed;
+}
+
 export function extractAddressFromSpeech(speech: string): string | null {
   const correctionMatch = speech.match(
     /(?:no,?|actually|instead|rather|correction).*?(?:address is|it's|it is)\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80})/i,
   );
   if (correctionMatch?.[1] && isPlausibleServiceAddress(correctionMatch[1])) {
-    return correctionMatch[1].trim();
+    return trimAddressAtConversationalBoundary(correctionMatch[1].trim());
   }
 
   const addressIsMatch = speech.match(
     /\b(?:the )?address is\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,80})/i,
   );
   if (addressIsMatch?.[1] && isPlausibleServiceAddress(addressIsMatch[1])) {
-    return addressIsMatch[1].trim();
+    return trimAddressAtConversationalBoundary(addressIsMatch[1].trim());
   }
 
   const streetMatch = speech.match(
@@ -396,14 +415,14 @@ export function extractAddressFromSpeech(speech: string): string | null {
   );
 
   if (streetMatch && isPlausibleServiceAddress(streetMatch[0])) {
-    return streetMatch[0].trim();
+    return trimAddressAtConversationalBoundary(streetMatch[0].trim());
   }
 
   const atMatch = speech.match(/\bat\s+(\d+\s+[A-Za-z0-9][A-Za-z0-9\s,.-]{4,60})/i);
   const candidate = atMatch?.[1]?.trim();
 
   if (candidate && isPlausibleServiceAddress(candidate)) {
-    return candidate;
+    return trimAddressAtConversationalBoundary(candidate);
   }
 
   return null;
@@ -411,17 +430,41 @@ export function extractAddressFromSpeech(speech: string): string | null {
 
 function extractScheduleHint(speech: string): string | null {
   const patterns = [
+    /\b(?:call me\s+)?(?:after work|when i get off|after i get off)(?:\s+(?:around|about|at))?\s+(?:five|5|four|4|six|6|seven|7|eight|8|nine|9|ten|10|eleven|11|twelve|12)\b[^,.;]*/i,
     /\b(?:i'?m |i am )?(?:available|free|good)\s+(?:after|from|around|at)\s+[^,.;]+/i,
     /\b(?:available|free)\s+(?:tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?:\s+(?:morning|afternoon|evening))?/i,
     /\b(?:anytime|whenever)\s+(?:after|before|around)\s+[^,.;]+/i,
     /\b(?:after|before)\s+(?:work|five|5|noon|morning|afternoon|evening)\b[^,.;]*/i,
     /\b(?:morning|afternoon|evening)\s+(?:works|would work|is fine|is good)\b/i,
+    /\bleaving town\b[^.!?]{0,40}\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow)\b/i,
+    /\badjuster\s+(?:is\s+)?(?:coming|scheduled|visiting|due)\s+(?:on\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow)\b/i,
+    /\b(?:as soon as possible|asap)\b/i,
   ];
 
   for (const pattern of patterns) {
     const match = speech.match(pattern);
     if (match?.[0]) {
-      return match[0].trim().slice(0, 200);
+      const hint = match[0].trim();
+
+      if (/\bleaving town\b/i.test(hint)) {
+        const weekday = hint.match(
+          /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow)\b/i,
+        );
+        if (weekday) {
+          return `before ${weekday[1]}`;
+        }
+      }
+
+      if (/\badjuster\b/i.test(hint)) {
+        const weekday = hint.match(
+          /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow)\b/i,
+        );
+        if (weekday) {
+          return `before ${weekday[1]}`;
+        }
+      }
+
+      return hint.slice(0, 200);
     }
   }
 
@@ -601,6 +644,19 @@ export function extractAllFieldsFromTranscript(
     extracted.urgency = "urgent";
   }
 
+  if (
+    !hasValue(extracted.urgency) &&
+    (/\b(another|next|more)\s+storm\s+(is\s+)?(coming|expected|forecast|hitting|on the way)\b/i.test(
+      trimmed,
+    ) ||
+      /\bstorm\s+(is\s+)?(coming|expected|forecast|hitting)\s+(tomorrow|tonight|today)\b/i.test(
+        trimmed,
+      ) ||
+      /\bstorm\s+tomorrow\b/i.test(trimmed))
+  ) {
+    extracted.urgency = "high";
+  }
+
   return extracted;
 }
 
@@ -704,6 +760,12 @@ export function mergeExtractedFields(
 
   if (hasValue(extracted.urgency) && !hasValue(updated.urgency)) {
     updated.urgency = extracted.urgency!.trim().slice(0, 200);
+    if (
+      /\b(another|next|more)\s+storm\b/i.test(speech) ||
+      /\bstorm\s+tomorrow\b/i.test(speech)
+    ) {
+      updated = markFieldDerived(updated, "urgency");
+    }
   }
 
   if (extracted.emergency_acknowledged) {

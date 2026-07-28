@@ -164,7 +164,7 @@ test("meaningful caller answer can advance opening after reason is captured", ()
   );
 });
 
-test("pendingQuestion remains caller_name until caller responds meaningfully", async () => {
+test("pendingQuestion remains reason_for_call until caller responds meaningfully", async () => {
   const orchestrator = new SessionOrchestrator({
     callSid: "CA123",
     callerPhone: "+15551234567",
@@ -176,13 +176,13 @@ test("pendingQuestion remains caller_name until caller responds meaningfully", a
   };
 
   orchestrator.markOpeningDelivered();
-  orchestrator.onOpeningNameQuestionComplete();
+  orchestrator.onOpeningStoryQuestionComplete();
 
   const session = orchestrator.getSession();
   const fields = (session?.collected_fields ?? {}) as RealtimeFields;
-  assert.equal(orchestrator.getConversationState(), "awaiting_opening_name");
-  assert.equal(fields.pending_question, "caller_name");
-  assert.equal(resolvePendingQuestion(fields, "awaiting_opening_name"), "caller_name");
+  assert.equal(orchestrator.getConversationState(), "awaiting_opening_story");
+  assert.equal(fields.pending_question, "reason_for_call");
+  assert.equal(resolvePendingQuestion(fields, "awaiting_opening_story"), "reason_for_call");
 
   const ignored = await orchestrator.handleCallerTranscript("hello");
   assert.equal(ignored, null);

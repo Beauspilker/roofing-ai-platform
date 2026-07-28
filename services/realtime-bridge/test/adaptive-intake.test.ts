@@ -266,7 +266,7 @@ test("opening response captures name plus future answers from one transcript", a
     callSid: "CA123",
     callerPhone: CALLER_PHONE,
     speechResult: speech,
-    conversationState: "awaiting_opening_name",
+    conversationState: "awaiting_opening_story",
     acknowledgmentPolicy: new AcknowledgmentPolicy(),
     isFirstCallerTurn: true,
   });

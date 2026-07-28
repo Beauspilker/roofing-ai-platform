@@ -8,7 +8,7 @@ import {
 import type { RequiredFieldKey } from "./required-intake.js";
 import { hasCompleteCallerName } from "./caller-name-intake.js";
 
-export type FieldCompletionStatus = "missing" | "captured" | "uncertain" | "confirmed";
+export type FieldCompletionStatus = "missing" | "captured" | "uncertain" | "confirmed" | "derived";
 
 export const MAX_FIELD_CLARIFICATION_ATTEMPTS = 2;
 
@@ -93,6 +93,19 @@ export function markFieldConfirmed(
   };
 }
 
+export function markFieldDerived(
+  fields: RealtimeFields,
+  field: RequiredFieldKey,
+): RealtimeFields {
+  return {
+    ...fields,
+    field_resolution: {
+      ...fields.field_resolution,
+      [field]: "derived",
+    },
+  };
+}
+
 function isCallbackComplete(fields: RealtimeFields): boolean {
   return hasValue(fields.callback_phone) && fields.callback_phone_confirmed === true;
 }
@@ -102,6 +115,9 @@ export function getFieldCompletionStatus(
   fields: RealtimeFields,
 ): FieldCompletionStatus {
   const explicit = resolutionStatus(fields, field);
+  if (explicit === "derived") {
+    return "derived";
+  }
   if (explicit) {
     return explicit;
   }
@@ -165,7 +181,7 @@ export function isFieldResolvedEnoughToSkip(
 ): boolean {
   const status = getFieldCompletionStatus(field, fields);
 
-  if (status === "confirmed" || status === "uncertain") {
+  if (status === "confirmed" || status === "uncertain" || status === "derived") {
     return true;
   }
 

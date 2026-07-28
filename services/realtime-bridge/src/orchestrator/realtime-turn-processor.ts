@@ -89,6 +89,12 @@ import {
   resolveCallReasonClarificationReply,
 } from "./call-reason-handling.js";
 import {
+  buildOpeningStoryClarificationReply,
+  markOpeningStoryFollowupAttempt,
+  needsOpeningStoryClarification,
+  preserveOpeningStoryTranscript,
+} from "./opening-story-handling.js";
+import {
   buildNameClarificationPrompt,
   EARLY_CALLER_NAME_QUESTION,
   isLikelyCallReasonSpeech,
@@ -253,7 +259,10 @@ function shouldHandlePendingCallReason(
   fields: RealtimeFields,
   conversationState: ConversationState,
 ): boolean {
-  if (conversationState === "awaiting_opening_name") {
+  if (
+    conversationState === "awaiting_opening_story" ||
+    conversationState === "awaiting_opening_name"
+  ) {
     return false;
   }
 
@@ -494,7 +503,11 @@ function isNameCaptureTurn(
   speech: string,
   options: { isFirstCallerTurn?: boolean } = {},
 ): boolean {
-  if (conversationState === "awaiting_opening_name" || conversationState === "listening_for_reason") {
+  if (
+    conversationState === "awaiting_opening_story" ||
+    conversationState === "awaiting_opening_name" ||
+    conversationState === "listening_for_reason"
+  ) {
     return false;
   }
 
@@ -1225,6 +1238,108 @@ export async function processRealtimeCallerTurn(
       session,
       nextConversationState: "awaiting_summary_confirmation",
     };
+  }
+
+  if (conversationState === "awaiting_opening_story") {
+    if (
+      !trimmedSpeech ||
+      !isMeaningfulOpeningCallerTranscript(trimmedSpeech, { awaitingStory: true })
+    ) {
+      return {
+        replyText: "",
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: "awaiting_opening_story",
+      };
+    }
+
+    let updatedFields = mergeRealtimeCallerAnswer(fieldsBefore, trimmedSpeech, callerPhone, {
+      pendingQuestion: "reason_for_call",
+      conversationState: "awaiting_opening_story",
+      isFirstCallerTurn: input.isFirstCallerTurn,
+    });
+
+    updatedFields = syncLegacyStringFields({
+      ...updatedFields,
+      intake_intro_delivered: true,
+      opening_name_complete: true,
+      call_reason_awaiting_clarification: false,
+      pending_question: undefined,
+    });
+
+    if (detectEmergency(trimmedSpeech) && !updatedFields.emergency_acknowledged) {
+      updatedFields = {
+        ...updatedFields,
+        urgency: updatedFields.urgency ?? "emergency",
+        emergency_acknowledged: true,
+      };
+    }
+
+    if (needsOpeningStoryClarification(updatedFields, trimmedSpeech)) {
+      updatedFields = preserveOpeningStoryTranscript(updatedFields, trimmedSpeech);
+      updatedFields = markOpeningStoryFollowupAttempt(updatedFields);
+      const clarificationReply = ensureSingleIntakeQuestion(
+        buildOpeningStoryClarificationReply(updatedFields, trimmedSpeech),
+      );
+      updatedFields = attachPendingQuestion(updatedFields, "reason_for_call");
+
+      session = applyLocalSessionUpdate(session, {
+        collectedFields: updatedFields,
+        currentQuestion: clarificationReply,
+      });
+
+      persistTurnAsync(callSid, {
+        collectedFields: updatedFields,
+        currentQuestion: clarificationReply,
+        callerSpeech: trimmedSpeech,
+        assistantReply: clarificationReply,
+      });
+
+      return finishTurn(input, {
+        replyText: clarificationReply,
+        hangup: false,
+        hangupAfterMark: false,
+        session,
+        nextConversationState: "awaiting_opening_story",
+        structuredStateUpdated: true,
+      });
+    }
+
+    const filledCount = countNewlyFilledFields(fieldsBefore, updatedFields);
+    const post = buildPostIntakeReply(
+      acknowledgmentPolicy,
+      fieldsBefore,
+      updatedFields,
+      trimmedSpeech,
+      callerPhone,
+      filledCount,
+      {
+        isFirstCallerTurn: true,
+        hasReceivedMeaningfulCallerTranscript: true,
+      },
+    );
+
+    session = applyLocalSessionUpdate(session, {
+      collectedFields: post.fields,
+      currentQuestion: post.replyText,
+    });
+
+    persistTurnAsync(callSid, {
+      collectedFields: post.fields,
+      currentQuestion: post.replyText,
+      callerSpeech: trimmedSpeech,
+      assistantReply: post.replyText,
+    });
+
+    return finishTurn(input, {
+      replyText: ensureNonEmptyReply(post.replyText, SAFE_INTAKE_REPROMPT),
+      hangup: false,
+      hangupAfterMark: false,
+      session,
+      nextConversationState: post.nextState,
+      structuredStateUpdated: true,
+    });
   }
 
   if (conversationState === "awaiting_opening_name") {

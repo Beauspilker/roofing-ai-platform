@@ -50,8 +50,8 @@ const mockSession = {
   updated_at: new Date().toISOString(),
 };
 
-test("opening asks for first and last name first", () => {
-  assert.match(REALTIME_OPENING_NAME_QUESTION, /first and last name/i);
+test("opening asks an open-ended story question first", () => {
+  assert.match(REALTIME_OPENING_NAME_QUESTION, /what can we help you with today/i);
   assert.doesNotMatch(REALTIME_OPENING_GREETING, /How can I help you today/i);
 });
 
@@ -182,9 +182,9 @@ test("opening name confirmation accepts correction and continues", async () => {
   );
 });
 
-test("opening greeting and name question stay separate", () => {
+test("opening greeting and story question stay separate", () => {
   assert.doesNotMatch(REALTIME_OPENING_GREETING, /\?/);
-  assert.match(REALTIME_OPENING_NAME_QUESTION, /first and last name/i);
+  assert.match(REALTIME_OPENING_NAME_QUESTION, /what can we help you with today/i);
   assert.notEqual(REALTIME_OPENING_GREETING.trim(), REALTIME_OPENING_NAME_QUESTION.trim());
 });
 

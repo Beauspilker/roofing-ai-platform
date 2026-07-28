@@ -27,6 +27,11 @@ import {
   isFieldResolvedEnoughToSkip,
 } from "./field-completion.js";
 import {
+  applyConversationInferences,
+  buildConversationReasoning,
+  buildReasoningAwareTransition,
+} from "./conversation-reasoning.js";
+import {
   isStructuredBooleanUnset,
   parseExplicitBoolean,
   syncLegacyStringFields,
@@ -178,7 +183,8 @@ export function needsImmediateSafetyClarification(fields: RealtimeFields): boole
 }
 
 function collectMissingFieldsInPriorityOrder(fields: RealtimeFields): RequiredFieldKey[] {
-  const normalized = inferFieldsFromCapturedContext(fields);
+  const reasoning = buildConversationReasoning(fields);
+  const normalized = reasoning.normalizedFields;
   const missing: RequiredFieldKey[] = [];
 
   if (needsImmediateSafetyClarification(normalized)) {
@@ -213,6 +219,14 @@ function collectMissingFieldsInPriorityOrder(fields: RealtimeFields): RequiredFi
   }
 
   for (const field of BRANCH_FIELD_ORDER) {
+    if (field === "appointment_preference" && hasValue(normalized.appointment_preference_raw)) {
+      continue;
+    }
+
+    if (reasoning.skipReasons[field] && !isFieldAskable(field, normalized)) {
+      continue;
+    }
+
     if (!isFieldComplete(field, normalized)) {
       missing.push(field);
     }
@@ -297,6 +311,7 @@ export function canCloseCall(
 
 export function blocksPrematureCallClosing(conversationState: ConversationState): boolean {
   return (
+    conversationState === "awaiting_opening_story" ||
     conversationState === "awaiting_opening_name" ||
     conversationState === "listening_for_reason" ||
     conversationState === "collecting_intake" ||
@@ -309,7 +324,9 @@ export function blocksPrematureCallClosing(conversationState: ConversationState)
 }
 
 export function getNextRequiredField(fields: RealtimeFields): RequiredFieldKey | null {
-  return collectMissingFieldsInPriorityOrder(fields)[0] ?? null;
+  const reasoned = applyConversationInferences(fields);
+  buildConversationReasoning(reasoned);
+  return collectMissingFieldsInPriorityOrder(reasoned)[0] ?? null;
 }
 
 const FIELD_QUESTIONS: Record<RequiredFieldKey, string> = {
@@ -359,11 +376,13 @@ export function getNaturalTransitionQuestion(
   fields: RealtimeFields,
   callerPhone?: string,
 ): string {
-  if (field === "callback_phone") {
-    return getRequiredFieldQuestion(field, fields, callerPhone);
-  }
+  const reasoned = applyConversationInferences(fields);
+  const base =
+    field === "callback_phone"
+      ? getRequiredFieldQuestion(field, reasoned, callerPhone)
+      : CONTEXTUAL_TRANSITIONS[field] ?? getRequiredFieldQuestion(field, reasoned, callerPhone);
 
-  return CONTEXTUAL_TRANSITIONS[field] ?? getRequiredFieldQuestion(field, fields, callerPhone);
+  return buildReasoningAwareTransition(field, reasoned, base);
 }
 
 export function applyDirectAnswerToMissingField(

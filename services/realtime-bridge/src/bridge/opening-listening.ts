@@ -10,7 +10,7 @@ import { isSpelledNameSpeech } from "../orchestrator/caller-name-intake.js";
 import type { RealtimeFields } from "../orchestrator/realtime-prompts.js";
 import {
   REALTIME_OPENING_GREETING,
-  REALTIME_OPENING_NAME_QUESTION,
+  REALTIME_OPENING_STORY_QUESTION,
   REALTIME_OPENING_QUESTION,
 } from "../orchestrator/realtime-prompts.js";
 
@@ -22,7 +22,7 @@ export const OPENING_SILENCE_HANGUP_MS = 8_000;
 
 export const OPENING_STILL_THERE_PROMPT = "Are you still there?";
 export const OPENING_READY_REPROMPT =
-  "I'm here whenever you're ready. Could I start with your first and last name?";
+  "I'm here whenever you're ready. What can we help you with today?";
 export const OPENING_SILENCE_GOODBYE =
   "It sounds like we may have lost the connection. Thanks for calling Beau's Roofing. Have a great day.";
 
@@ -47,7 +47,7 @@ export function isAssistantOpeningEchoTranscript(speech: string): boolean {
     return true;
   }
 
-  if (normalized === REALTIME_OPENING_NAME_QUESTION.trim().toLowerCase()) {
+  if (normalized === REALTIME_OPENING_STORY_QUESTION.trim().toLowerCase()) {
     return true;
   }
 
@@ -68,7 +68,7 @@ export function isAssistantOpeningEchoTranscript(speech: string): boolean {
 
 export function isMeaningfulOpeningCallerTranscript(
   speech: string,
-  options: { awaitingName?: boolean } = {},
+  options: { awaitingName?: boolean; awaitingStory?: boolean } = {},
 ): boolean {
   const trimmed = speech.trim();
 
@@ -100,19 +100,19 @@ export function isMeaningfulOpeningCallerTranscript(
     return true;
   }
 
-  if (options.awaitingName !== true) {
-    if (extractDamageOrCallReason(trimmed)) {
-      return true;
-    }
-
-    if (isLikelyCallReasonSpeech(trimmed)) {
-      return true;
-    }
-
-    return trimmed.split(/\s+/).length >= 4;
+  if (options.awaitingName === true) {
+    return trimmed.length >= 2;
   }
 
-  return trimmed.length >= 2;
+  if (extractDamageOrCallReason(trimmed)) {
+    return true;
+  }
+
+  if (isLikelyCallReasonSpeech(trimmed)) {
+    return true;
+  }
+
+  return trimmed.split(/\s+/).length >= 2;
 }
 
 export function resolveCallReasonFromSpeech(speech: string): string | null {

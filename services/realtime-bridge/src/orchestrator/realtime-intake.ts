@@ -24,6 +24,7 @@ import {
   mergeExtractedFields,
 } from "./multi-field-extraction.js";
 import { inferFieldsFromCapturedContext } from "./field-normalization.js";
+import { applyConversationInferences } from "./conversation-reasoning.js";
 import { applyCallbackScopedCorrection } from "./field-scoped-correction.js";
 import {
   getFieldClarificationAttempts,
@@ -188,7 +189,7 @@ export function mergeRealtimeCallerAnswer(
     updated = processScheduleCapture(updated, answer).fields;
   }
 
-  const merged = preserveConfirmedFieldState(fields, inferFieldsFromCapturedContext(updated));
+  const merged = preserveConfirmedFieldState(fields, applyConversationInferences(updated, answer));
 
   if (isTurnDiagnosticsEnabled()) {
     logAnswerHandler({
@@ -347,7 +348,7 @@ export function countNewlyFilledFields(
 }
 
 export function normalizeRealtimeFields(fields: RealtimeFields): RealtimeFields {
-  return inferFieldsFromCapturedContext(
+  return applyConversationInferences(
     sanitizeInvalidStoredCallerName({
       ...fields,
       insurance_claim_started:

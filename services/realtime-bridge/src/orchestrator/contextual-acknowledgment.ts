@@ -1,4 +1,8 @@
 import type { RealtimeFields } from "./realtime-prompts.js";
+import {
+  buildTimingAcknowledgment,
+  buildUrgencyAcknowledgment,
+} from "./conversation-reasoning.js";
 
 function formatAckList(items: string[]): string {
   if (items.length === 1) {
@@ -97,6 +101,28 @@ export function buildContextualMultiFieldAcknowledgment(
     (after.appointment_preference_raw?.trim() || after.appointment_preference?.trim())
   ) {
     notes.push("your availability");
+  }
+
+  if (!before.urgency?.trim() && after.urgency?.trim()) {
+    const urgencyAck = buildUrgencyAcknowledgment(after);
+    if (urgencyAck) {
+      notes.push(urgencyAck.replace(/\.$/, "").replace(/^I'll /i, "that you'd like "));
+    } else if (/\b(high|urgent|emergency)\b/i.test(after.urgency ?? "")) {
+      notes.push("that this is urgent");
+    }
+  }
+
+  const timingAck = buildTimingAcknowledgment(after);
+  if (
+    timingAck &&
+    !before.appointment_preference_raw?.trim() &&
+    !before.appointment_preference?.trim() &&
+    (after.appointment_preference_raw?.trim() || after.appointment_preference?.trim())
+  ) {
+    const timingNote = timingAck.replace(/\.$/, "").replace(/^I'll note /i, "");
+    if (!notes.some((note) => note.includes("availability") || note.includes("callback"))) {
+      notes.push(timingNote);
+    }
   }
 
   if (notes.length < 2) {

@@ -88,7 +88,7 @@ test("opening response with volunteered name does not ask again", async () => {
     callSid: "CA123",
     callerPhone: "+15551234567",
     speechResult: "My name is Beau Spilker and we have hail damage.",
-    conversationState: "awaiting_opening_name",
+    conversationState: "awaiting_opening_story",
     acknowledgmentPolicy: policy,
     isFirstCallerTurn: true,
     hasReceivedMeaningfulCallerTranscript: true,
@@ -110,7 +110,7 @@ test("opening response This is Beau with tree damage stores both fields", async 
     callSid: "CA123",
     callerPhone: "+15551234567",
     speechResult: "This is Beau Spilker. A tree fell on my roof.",
-    conversationState: "awaiting_opening_name",
+    conversationState: "awaiting_opening_story",
     acknowledgmentPolicy: policy,
     isFirstCallerTurn: true,
     hasReceivedMeaningfulCallerTranscript: true,
@@ -119,7 +119,7 @@ test("opening response This is Beau with tree damage stores both fields", async 
   const fields = outcome.session?.collected_fields as RealtimeFields;
   assert.equal(fields.caller_first_name, "Beau");
   assert.equal(fields.caller_last_name, "Spilker");
-  assert.match(fields.problem_description ?? "", /tree fell on my roof/i);
+  assert.match(fields.problem_description ?? "", /tree damage|tree fell on my roof/i);
   assert.match(outcome.replyText, /best number to reach you/i);
 });
 

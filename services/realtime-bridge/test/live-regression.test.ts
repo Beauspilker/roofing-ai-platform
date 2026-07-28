@@ -48,7 +48,7 @@ test("TEST A — long opening, no duplicate leak question", async () => {
     callSid: "CA123",
     callerPhone: "+14025550187",
     speechResult: speech,
-    conversationState: "awaiting_opening_name",
+    conversationState: "awaiting_opening_story",
     acknowledgmentPolicy: new AcknowledgmentPolicy(),
     isFirstCallerTurn: true,
   });

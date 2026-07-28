@@ -42,7 +42,7 @@ function sessionWithPendingReason(): typeof mockSession {
   };
 }
 
-test("greeting response.done enters awaiting_opening_name without selecting call reason", () => {
+test("greeting response.done enters awaiting_opening_story without selecting call reason", () => {
   const orchestrator = new SessionOrchestrator({
     callSid: "CA123",
     callerPhone: "+15551234567",
@@ -54,15 +54,14 @@ test("greeting response.done enters awaiting_opening_name without selecting call
   };
 
   orchestrator.markOpeningDelivered();
-  orchestrator.onOpeningNameQuestionComplete();
+  orchestrator.onOpeningStoryQuestionComplete();
 
-  assert.equal(orchestrator.getConversationState(), "awaiting_opening_name");
+  assert.equal(orchestrator.getConversationState(), "awaiting_opening_story");
   assert.equal(orchestrator.isOpeningGreetingPlaybackComplete(), true);
 
   const fields = (orchestrator.getSession()?.collected_fields ?? {}) as RealtimeFields;
-  assert.equal(fields.pending_question, "caller_name");
-  assert.equal(resolvePendingQuestion(fields, "awaiting_opening_name"), "caller_name");
-  assert.equal(getNextRequiredField(fields), "full_name");
+  assert.equal(fields.pending_question, "reason_for_call");
+  assert.equal(resolvePendingQuestion(fields, "awaiting_opening_story"), "reason_for_call");
 });
 
 test("greeting response.done blocks caller_turn_reply until name question completes", () => {
@@ -214,7 +213,7 @@ test("buildCallReasonResolvedReply produces one deterministic caller_name respon
   assert.equal(post.nextState, "collecting_intake");
 });
 
-test("awaiting_opening_name without meaningful transcript does not advance intake", async () => {
+test("awaiting_opening_story without meaningful transcript does not advance intake", async () => {
   const orchestrator = new SessionOrchestrator({
     callSid: "CA123",
     callerPhone: "+15551234567",
@@ -223,13 +222,13 @@ test("awaiting_opening_name without meaningful transcript does not advance intak
 
   (orchestrator as unknown as { session: typeof mockSession }).session = {
     ...mockSession,
-    collected_fields: { pending_question: "caller_name" },
+    collected_fields: { pending_question: "reason_for_call" },
   };
-  orchestrator.onOpeningNameQuestionComplete();
+  orchestrator.onOpeningStoryQuestionComplete();
 
   const ignored = await orchestrator.handleCallerTranscript("hello");
   assert.equal(ignored, null);
-  assert.equal(orchestrator.getConversationState(), "awaiting_opening_name");
+  assert.equal(orchestrator.getConversationState(), "awaiting_opening_story");
 });
 
 test("listening_for_reason without meaningful transcript does not advance intake", async () => {

@@ -19,6 +19,28 @@ import {
 import { createServiceClient } from "@/lib/supabase/service";
 import { sendTwilioSms } from "@/lib/twilio/sms-outbound";
 
+type EmployeeNotificationRuntime = {
+  createClient: typeof createServiceClient;
+  sendSms: typeof sendTwilioSms;
+};
+
+let employeeNotificationRuntimeOverride: Partial<EmployeeNotificationRuntime> | null =
+  null;
+
+export function __setEmployeeNotificationRuntimeForTests(
+  override: Partial<EmployeeNotificationRuntime> | null,
+): void {
+  employeeNotificationRuntimeOverride = override;
+}
+
+function getEmployeeNotificationRuntime(): EmployeeNotificationRuntime {
+  return {
+    createClient:
+      employeeNotificationRuntimeOverride?.createClient ?? createServiceClient,
+    sendSms: employeeNotificationRuntimeOverride?.sendSms ?? sendTwilioSms,
+  };
+}
+
 const MAX_EMPLOYEE_NOTIFICATION_ATTEMPTS = 3;
 const RETRY_DELAYS_MS = [0, 750, 2000];
 
@@ -59,7 +81,7 @@ async function recordEmployeeNotificationState(
     error?: string | null;
   },
 ): Promise<void> {
-  const supabase = createServiceClient();
+  const supabase = getEmployeeNotificationRuntime().createClient();
 
   if (!supabase) {
     return;
@@ -84,7 +106,7 @@ async function logEmployeeActivity(
   summary: string,
   metadata: Record<string, unknown>,
 ): Promise<void> {
-  const supabase = createServiceClient();
+  const supabase = getEmployeeNotificationRuntime().createClient();
 
   if (!supabase) {
     return;
@@ -110,7 +132,7 @@ async function shouldSkipEmployeeNotification(
 }
 
 async function loadCompany(companyId: string): Promise<Company | null> {
-  const supabase = createServiceClient();
+  const supabase = getEmployeeNotificationRuntime().createClient();
 
   if (!supabase) {
     return null;
@@ -130,7 +152,7 @@ async function loadCompany(companyId: string): Promise<Company | null> {
 }
 
 async function loadLead(leadId: string, companyId: string): Promise<Lead | null> {
-  const supabase = createServiceClient();
+  const supabase = getEmployeeNotificationRuntime().createClient();
 
   if (!supabase) {
     return null;
@@ -159,7 +181,7 @@ async function deliverEmployeeChannelNotification(input: {
   message: string;
   isRetry: boolean;
 }): Promise<{ channel: NotificationChannel; ok: boolean; error?: string }> {
-  const supabase = createServiceClient();
+  const supabase = getEmployeeNotificationRuntime().createClient();
 
   if (!supabase) {
     return {
@@ -183,7 +205,10 @@ async function deliverEmployeeChannelNotification(input: {
 
     if (input.channel === "sms") {
       try {
-        const smsResult = await sendTwilioSms(input.recipient, input.message);
+        const smsResult = await getEmployeeNotificationRuntime().sendSms(
+          input.recipient,
+          input.message,
+        );
         const status = smsResult.delivered ? "sent" : "simulated";
 
         await supabase
@@ -239,7 +264,7 @@ async function deliverEmployeeChannelNotification(input: {
     await logEmployeeActivity(
       input.companyId,
       input.leadId,
-      input.isRetry ? "Employee notification retry succeeded" : "Employee email sent",
+      input.isRetry ? "Employee notification retry succeeded" : "Employee email queued",
       {
         channel: "email",
         recipient: input.recipient.replace(/(.{2}).+(@.+)/, "$1***$2"),
@@ -253,7 +278,10 @@ async function deliverEmployeeChannelNotification(input: {
 
   if (input.channel === "sms") {
     try {
-      const smsResult = await sendTwilioSms(input.recipient, input.message);
+      const smsResult = await getEmployeeNotificationRuntime().sendSms(
+        input.recipient,
+        input.message,
+      );
       const status = smsResult.delivered ? "sent" : "simulated";
 
       await createEmployeeNotificationRecord(supabase, {
@@ -318,7 +346,7 @@ async function deliverEmployeeChannelNotification(input: {
     await logEmployeeActivity(
       input.companyId,
       input.leadId,
-      input.isRetry ? "Employee notification retry succeeded" : "Employee email sent",
+      input.isRetry ? "Employee notification retry succeeded" : "Employee email queued",
       {
         channel: "email",
         recipient: input.recipient.replace(/(.{2}).+(@.+)/, "$1***$2"),
@@ -364,7 +392,11 @@ export async function notifyEmployeesOfPhoneAiLead(input: {
   }
 
   const fields = input.fields ?? session.collected_fields ?? {};
-  const recipients = await resolveEmployeeNotificationRecipients(company);
+  const supabase = getEmployeeNotificationRuntime().createClient();
+  const recipients = await resolveEmployeeNotificationRecipients(
+    company,
+    supabase,
+  );
   const content = buildEmployeeLeadNotificationContent({
     lead,
     fields,
@@ -550,7 +582,7 @@ export async function notifyEmployeesOfPhoneAiLeadIfNeeded(input: {
 export async function retryEmployeeLeadNotification(
   callSid: string,
 ): Promise<EmployeeNotificationResult> {
-  const supabase = createServiceClient();
+  const supabase = getEmployeeNotificationRuntime().createClient();
 
   if (!supabase || !callSid) {
     return {

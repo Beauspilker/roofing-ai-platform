@@ -1,5 +1,6 @@
 import type { CollectedFields } from "@/lib/call-intake";
 import { buildCrmCallSummary } from "@/lib/call-summary";
+import { formatPhoneForTwilioSms } from "@/lib/customer-confirmation-content";
 import {
   derivePhoneLeadPriorityLabel,
   type PhoneLeadPriorityLabel,
@@ -9,6 +10,7 @@ import type { Lead } from "@/lib/leads";
 import { getBusinessSettingsByCompanyId } from "@/lib/business-settings";
 import type { Company } from "@/lib/companies";
 import { createServiceClient } from "@/lib/supabase/service";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 export const EMPLOYEE_PHONE_AI_LEAD_KIND = "employee_phone_ai_lead";
 
@@ -168,8 +170,9 @@ export type EmployeeNotificationRecipients = {
 
 export async function resolveEmployeeNotificationRecipients(
   company: Company,
+  supabaseClient?: SupabaseClient | null,
 ): Promise<EmployeeNotificationRecipients> {
-  const supabase = createServiceClient();
+  const supabase = supabaseClient ?? createServiceClient();
   const settings = supabase
     ? await getBusinessSettingsByCompanyId(supabase, company.id)
     : null;
@@ -196,6 +199,15 @@ export async function resolveEmployeeNotificationRecipients(
   };
 }
 
+function normalizeEmployeeSmsRecipient(phone: string | null): string | null {
+  if (!phone) {
+    return null;
+  }
+
+  const trimmed = phone.trim();
+  return formatPhoneForTwilioSms(trimmed) ?? trimmed;
+}
+
 export function pickSmsRecipient(
   recipients: EmployeeNotificationRecipients,
   style: EmployeeNotificationStyle,
@@ -204,11 +216,12 @@ export function pickSmsRecipient(
     return null;
   }
 
-  if (style === "urgent") {
-    return recipients.emergencySmsRecipient ?? recipients.smsRecipient;
-  }
+  const rawRecipient =
+    style === "urgent"
+      ? recipients.emergencySmsRecipient ?? recipients.smsRecipient
+      : recipients.smsRecipient;
 
-  return recipients.smsRecipient;
+  return normalizeEmployeeSmsRecipient(rawRecipient);
 }
 
 export function pickEmailRecipient(

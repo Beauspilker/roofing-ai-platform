@@ -7,7 +7,9 @@
     "build": "next build",
     "build:bridge": "npm run check --prefix services/realtime-bridge",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "tsx --test lib/**/*.test.ts",
+    "test:bridge": "npm test --prefix services/realtime-bridge"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.0",
@@ -26,6 +28,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.10",
     "tailwindcss": "^4",
+    "tsx": "^4.21.0",
     "typescript": "^5"
   }
 }

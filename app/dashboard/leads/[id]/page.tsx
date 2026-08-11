@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { ActivityTimelineSection } from "@/components/leads/ActivityTimelineSection";
+import { CallIntelligenceSection } from "@/components/leads/CallIntelligenceSection";
 import { CustomerNotificationsSection } from "@/components/leads/CustomerNotificationsSection";
 import { CustomerPhotosSection } from "@/components/leads/CustomerPhotosSection";
 import { LeadArchiveControls } from "@/components/leads/LeadArchiveControls";
@@ -14,6 +15,10 @@ import { getCompanyByUserId } from "@/lib/companies";
 import { getLeadByIdForCompany, isArchivedLead } from "@/lib/leads";
 import { getNotesByLeadId } from "@/lib/notes";
 import { getNotificationsByLeadId } from "@/lib/notifications";
+import {
+  getPhoneCallIntelligenceForLead,
+  hasCallIntelligenceDisplay,
+} from "@/lib/phone-call-intelligence";
 import { getCustomerPhotosWithSignedUrls } from "@/lib/photos";
 import { createClient } from "@/lib/supabase/server";
 
@@ -63,6 +68,13 @@ export default async function LeadDetailsPage({
     supabase,
     company.id,
   );
+  const callIntelligence = await getPhoneCallIntelligenceForLead(
+    supabase,
+    lead.id,
+    company.id,
+    lead,
+  );
+  const showCallIntelligence = hasCallIntelligenceDisplay(callIntelligence);
 
   return (
     <main className="min-h-screen bg-black px-4 py-8 text-white sm:px-6 lg:px-8">
@@ -106,7 +118,15 @@ export default async function LeadDetailsPage({
             Lead details
           </p>
           <div className="mt-6">
-            <LeadDetailsView lead={lead} />
+            <LeadDetailsView
+              lead={lead}
+              hideDescription={showCallIntelligence}
+            />
+            {showCallIntelligence ? (
+              <div className="mt-8">
+                <CallIntelligenceSection intelligence={callIntelligence} />
+              </div>
+            ) : null}
             <CustomerPhotosSection
               leadId={lead.id}
               photos={photos}

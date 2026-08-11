@@ -15,6 +15,7 @@ import {
 
 type LeadDetailsViewProps = {
   lead: Lead;
+  hideDescription?: boolean;
 };
 
 const priorityStyles = {
@@ -51,7 +52,10 @@ function DetailField({
   );
 }
 
-export function LeadDetailsView({ lead }: LeadDetailsViewProps) {
+export function LeadDetailsView({
+  lead,
+  hideDescription = false,
+}: LeadDetailsViewProps) {
   const priority = deriveLeadPriority(lead);
   const archived = isArchivedLead(lead);
 
@@ -140,10 +144,12 @@ export function LeadDetailsView({ lead }: LeadDetailsViewProps) {
           />
         </dl>
 
-        <DetailField
-          label="Description"
-          value={formatLeadFieldValue(lead.description)}
-        />
+        {!hideDescription ? (
+          <DetailField
+            label="Description"
+            value={formatLeadFieldValue(lead.description)}
+          />
+        ) : null}
       </section>
 
       <section className="space-y-4">

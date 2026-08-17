@@ -6,6 +6,7 @@ import {
   type PhoneLeadPriorityLabel,
 } from "@/lib/call-lead-crm";
 import type { CallSession } from "@/lib/call-sessions";
+import type { IntakeAnswers, IntakeUrgency } from "@/lib/intake";
 import type { Lead } from "@/lib/leads";
 import { getBusinessSettingsByCompanyId } from "@/lib/business-settings";
 import type { Company } from "@/lib/companies";
@@ -13,6 +14,7 @@ import { createServiceClient } from "@/lib/supabase/service";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 export const EMPLOYEE_PHONE_AI_LEAD_KIND = "employee_phone_ai_lead";
+export const EMPLOYEE_WEBSITE_LEAD_KIND = "employee_website_lead";
 
 export type EmployeeNotificationStyle = "normal" | "urgent";
 
@@ -76,12 +78,44 @@ export function buildEmployeePriorityReason(
   return null;
 }
 
+export function buildConciseEmployeeLeadEmailBody(input: {
+  companyName?: string | null;
+  lead: Lead;
+  issue: string;
+  priorityLabel: PhoneLeadPriorityLabel;
+  dashboardUrl: string | null;
+}): string {
+  const lines = ["New Roofing Lead", ""];
+
+  if (hasText(input.companyName)) {
+    lines.push(`Company: ${input.companyName.trim()}`, "");
+  }
+
+  lines.push(
+    `Customer: ${displayValue(input.lead.full_name)}`,
+    `Phone: ${displayValue(input.lead.phone)}`,
+    `Issue: ${input.issue}`,
+    `Priority: ${input.priorityLabel}`,
+  );
+
+  if (hasText(input.lead.address_line_1)) {
+    lines.push(`Address: ${input.lead.address_line_1.trim()}`);
+  }
+
+  if (input.dashboardUrl) {
+    lines.push("", "Open Lead:", input.dashboardUrl);
+  }
+
+  return lines.join("\n");
+}
+
 export function buildEmployeeLeadNotificationContent(input: {
   lead: Lead;
   fields: CollectedFields;
   callSid: string;
   conversationId: string;
   dashboardUrl: string | null;
+  companyName?: string | null;
 }): EmployeeLeadNotificationContent {
   const priorityLabel = derivePhoneLeadPriorityLabel(input.fields);
   const style = resolveEmployeeNotificationStyle(priorityLabel);
@@ -122,13 +156,21 @@ export function buildEmployeeLeadNotificationContent(input: {
 
   const emailSubject =
     style === "urgent"
-      ? `URGENT PHONE AI LEAD — ${displayValue(input.lead.full_name)}${priorityReason ? ` — ${priorityReason}` : ""}`
-      : `New Phone AI Lead — ${displayValue(input.lead.full_name)}`;
+      ? `URGENT: New Roofing Lead — ${displayValue(input.lead.full_name)}`
+      : `New Roofing Lead — ${displayValue(input.lead.full_name)}`;
 
   const smsBody =
     style === "urgent"
       ? `${smsSubjectLine}\n\n${body}`.slice(0, 1500)
       : `${smsSubjectLine}\n\n${body}`.slice(0, 1500);
+
+  const emailBody = buildConciseEmployeeLeadEmailBody({
+    companyName: input.companyName,
+    lead: input.lead,
+    issue,
+    priorityLabel,
+    dashboardUrl: input.dashboardUrl,
+  });
 
   return {
     style,
@@ -137,7 +179,7 @@ export function buildEmployeeLeadNotificationContent(input: {
     smsSubjectLine,
     emailSubject,
     smsBody,
-    emailBody: `${emailSubject}\n\n${body}`,
+    emailBody,
   };
 }
 
@@ -237,6 +279,85 @@ export function pickEmailRecipient(
   }
 
   return recipients.emailRecipient;
+}
+
+export function deriveWebsiteLeadPriorityLabel(
+  urgency: IntakeUrgency | "",
+): PhoneLeadPriorityLabel {
+  if (urgency === "emergency") {
+    return "Emergency";
+  }
+
+  if (urgency === "standard") {
+    return "Medium";
+  }
+
+  return "Low";
+}
+
+export function buildWebsiteLeadNotificationContent(input: {
+  lead: Lead;
+  answers: IntakeAnswers;
+  dashboardUrl: string | null;
+  companyName?: string | null;
+}): EmployeeLeadNotificationContent {
+  const priorityLabel = deriveWebsiteLeadPriorityLabel(input.answers.urgency);
+  const style = resolveEmployeeNotificationStyle(priorityLabel);
+  const issue = displayValue(input.answers.description);
+  const priorityReason =
+    priorityLabel === "Emergency"
+      ? "Homeowner marked this as an emergency request."
+      : null;
+
+  const lines = [
+    `Customer: ${displayValue(input.lead.full_name)}`,
+    `Phone: ${displayValue(input.lead.phone)}`,
+    ...(hasText(input.lead.email) ? [`Email: ${input.lead.email.trim()}`] : []),
+    `Address: ${displayValue(input.lead.address_line_1)}`,
+    `City: ${displayValue(input.lead.city)}`,
+    `State: ${displayValue(input.lead.state)}`,
+    `ZIP: ${displayValue(input.lead.postal_code)}`,
+    `Project: ${displayValue(input.answers.project_type)}`,
+    `Priority: ${priorityLabel}`,
+    ...(priorityReason ? [`Why urgent: ${priorityReason}`] : []),
+    `Issue: ${issue}`,
+    `Insurance: ${input.lead.insurance_claim ? "Yes" : "No"}`,
+    `Source: Website`,
+  ];
+
+  if (input.dashboardUrl) {
+    lines.push("", `View lead: ${input.dashboardUrl}`);
+  }
+
+  const body = lines.join("\n");
+
+  const smsSubjectLine =
+    style === "urgent" ? "URGENT WEBSITE LEAD" : "New Website Lead";
+
+  const emailSubject =
+    style === "urgent"
+      ? `URGENT: New Website Lead — ${displayValue(input.lead.full_name)}`
+      : `New Website Lead — ${displayValue(input.lead.full_name)}`;
+
+  const smsBody = `${smsSubjectLine}\n\n${body}`.slice(0, 1500);
+
+  const emailBody = buildConciseEmployeeLeadEmailBody({
+    companyName: input.companyName,
+    lead: input.lead,
+    issue,
+    priorityLabel,
+    dashboardUrl: input.dashboardUrl,
+  });
+
+  return {
+    style,
+    priorityLabel,
+    priorityReason,
+    smsSubjectLine,
+    emailSubject,
+    smsBody,
+    emailBody,
+  };
 }
 
 export function buildEmployeeNotificationContext(input: {

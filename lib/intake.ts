@@ -231,10 +231,12 @@ export function buildIntakeDescription(answers: IntakeAnswers): string {
   }
 
   if (answers.storm_damage_details.trim()) {
-    lines.push(`[Storm damage details: ${answers.storm_damage_details.trim()}]`);
+    lines.push("Storm damage details:");
+    lines.push(answers.storm_damage_details.trim());
+    lines.push("");
   }
 
-  lines.push("");
+  lines.push("Issue description:");
   lines.push(answers.description.trim());
 
   if (answers.preferred_contact.trim()) {

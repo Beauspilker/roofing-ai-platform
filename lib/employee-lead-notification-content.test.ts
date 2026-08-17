@@ -4,6 +4,7 @@ import test from "node:test";
 import type { Company } from "./companies.js";
 import type { Lead } from "./leads.js";
 import {
+  buildConciseEmployeeLeadEmailBody,
   buildEmployeeLeadNotificationContent,
   pickEmailRecipient,
   pickSmsRecipient,
@@ -111,12 +112,54 @@ test("buildEmployeeLeadNotificationContent preserves existing SMS formatting", (
     callSid: "CA1234567890",
     conversationId: "session-1",
     dashboardUrl: "https://app.example.com/dashboard/leads/lead-1",
+    companyName: "Acme Roofing",
   });
 
   assert.match(content.smsBody, /^New Phone AI Lead/);
   assert.match(content.smsBody, /Jane Smith/);
   assert.match(content.smsBody, /Routine inspection request/);
   assert.match(content.smsBody, /View lead: https:\/\/app\.example\.com/);
+  assert.doesNotMatch(content.smsBody, /^New Roofing Lead/);
+});
+
+test("buildEmployeeLeadNotificationContent uses concise email body", () => {
+  const content = buildEmployeeLeadNotificationContent({
+    lead: sampleLead(),
+    fields: {
+      problem_description: "Active roof leak",
+      active_leak: "yes",
+      summary_confirmed: true,
+    },
+    callSid: "CA1234567890",
+    conversationId: "session-1",
+    dashboardUrl: "https://app.example.com/dashboard/leads/lead-1",
+    companyName: "Acme Roofing",
+  });
+
+  assert.match(content.emailSubject, /^URGENT: New Roofing Lead — Jane Smith/);
+  assert.match(content.emailBody, /^New Roofing Lead/);
+  assert.match(content.emailBody, /Company: Acme Roofing/);
+  assert.match(content.emailBody, /Customer: Jane Smith/);
+  assert.match(content.emailBody, /Issue: Active roof leak/);
+  assert.match(content.emailBody, /Priority: High/);
+  assert.match(content.emailBody, /Address: 123 Main Street/);
+  assert.match(content.emailBody, /Open Lead:\nhttps:\/\/app\.example\.com/);
+  assert.doesNotMatch(content.emailBody, /Summary:/);
+  assert.doesNotMatch(content.emailBody, /CallSid/);
+});
+
+test("buildConciseEmployeeLeadEmailBody omits address when unavailable", () => {
+  const body = buildConciseEmployeeLeadEmailBody({
+    companyName: "Acme Roofing",
+    lead: sampleLead({ address_line_1: null }),
+    issue: "Storm damage",
+    priorityLabel: "Medium",
+    dashboardUrl: null,
+  });
+
+  assert.match(body, /Issue: Storm damage/);
+  assert.doesNotMatch(body, /Address:/);
+  assert.doesNotMatch(body, /Open Lead:/);
 });
 
 test("resolveEmployeeNotificationRecipients uses company business phone", async () => {

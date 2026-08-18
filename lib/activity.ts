@@ -14,6 +14,9 @@ export const ACTIVITY_TYPES = [
   "settings_updated",
   "notification_queued",
   "website_lead_captured",
+  "follow_up_scheduled",
+  "follow_up_rescheduled",
+  "follow_up_completed",
 ] as const;
 
 export type ActivityType = (typeof ACTIVITY_TYPES)[number];

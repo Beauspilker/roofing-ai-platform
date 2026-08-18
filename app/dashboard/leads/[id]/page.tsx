@@ -7,6 +7,7 @@ import { CustomerPhotosSection } from "@/components/leads/CustomerPhotosSection"
 import { LeadArchiveControls } from "@/components/leads/LeadArchiveControls";
 import { LeadDetailsView } from "@/components/leads/LeadDetailsView";
 import { LeadEstimateSection } from "@/components/leads/LeadEstimateSection";
+import { LeadFollowUpSection } from "@/components/leads/LeadFollowUpSection";
 import { LeadInspectionSection } from "@/components/leads/LeadInspectionSection";
 import { LeadPipelineSection } from "@/components/leads/LeadPipelineSection";
 import { LeadWonSection } from "@/components/leads/LeadWonSection";
@@ -127,6 +128,7 @@ export default async function LeadDetailsPage({
             <LeadPipelineSection lead={lead} />
             <LeadInspectionSection lead={lead} />
             <LeadEstimateSection lead={lead} />
+            <LeadFollowUpSection lead={lead} />
             <LeadWonSection lead={lead} />
             <LeadDetailsView
               lead={lead}

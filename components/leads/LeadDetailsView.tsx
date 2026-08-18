@@ -2,6 +2,7 @@ import { ArchivedBadge } from "@/components/leads/ArchivedBadge";
 import type { Lead } from "@/lib/leads";
 import type { LeadOutcomeDisplay } from "@/lib/lead-outcome";
 import { formatLostReasonLabel } from "@/lib/lead-outcome";
+import { isFollowUpOverdue } from "@/lib/lead-follow-up";
 import {
   deriveLeadPriority,
   formatInsuranceClaim,
@@ -10,6 +11,7 @@ import {
   formatLeadLastContactedAt,
   formatLeadEstimateAmount,
   formatLeadEstimateSentAt,
+  formatLeadFollowUpAt,
   formatLeadFieldValue,
   formatLeadStatus,
   getLeadPriorityLabel,
@@ -65,6 +67,7 @@ export function LeadDetailsView({
 }: LeadDetailsViewProps) {
   const priority = deriveLeadPriority(lead);
   const archived = isArchivedLead(lead);
+  const followUpOverdue = isFollowUpOverdue(lead.follow_up_at);
 
   return (
     <div className="space-y-8">
@@ -162,6 +165,16 @@ export function LeadDetailsView({
       <section className="space-y-4">
         <h2 className="text-lg font-semibold text-white">Dates</h2>
         <dl className="grid gap-4 sm:grid-cols-2">
+          {lead.follow_up_at ? (
+            <DetailField
+              label={followUpOverdue ? "Follow-up due (overdue)" : "Follow-up due"}
+              value={
+                <span className={followUpOverdue ? "text-red-300" : undefined}>
+                  {formatLeadFollowUpAt(lead.follow_up_at)}
+                </span>
+              }
+            />
+          ) : null}
           {lead.appointment_at ? (
             <DetailField
               label="Inspection date"

@@ -8,9 +8,11 @@ import {
   formatLeadAddress,
   formatLeadCallType,
   formatLeadCreatedAt,
+  formatLeadFollowUpAt,
   formatLeadStatus,
   isArchivedLead,
 } from "@/lib/leads";
+import { isFollowUpOverdue } from "@/lib/lead-follow-up";
 
 type LeadListTableProps = {
   leads: Lead[];
@@ -58,6 +60,27 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
+function FollowUpBadge({ lead }: { lead: Lead }) {
+  if (!lead.follow_up_at) {
+    return <span className="text-gray-500">—</span>;
+  }
+
+  const overdue = isFollowUpOverdue(lead.follow_up_at);
+
+  return (
+    <span
+      className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-medium ${
+        overdue
+          ? "border-red-900/50 bg-red-950/40 text-red-300"
+          : "border-amber-900/50 bg-amber-950/40 text-amber-200"
+      }`}
+    >
+      {overdue ? "Overdue · " : "Due · "}
+      {formatLeadFollowUpAt(lead.follow_up_at)}
+    </span>
+  );
+}
+
 function LeadRow({ lead }: { lead: Lead }) {
   const router = useRouter();
   const href = `/dashboard/leads/${lead.id}`;
@@ -96,6 +119,9 @@ function LeadRow({ lead }: { lead: Lead }) {
       <td className="px-4 py-4 sm:px-6">
         <PriorityBadge lead={lead} />
       </td>
+      <td className="px-4 py-4 sm:px-6">
+        <FollowUpBadge lead={lead} />
+      </td>
       <td className="px-4 py-4 text-gray-400 sm:px-6">
         {formatLeadCreatedAt(lead.created_at)}
       </td>
@@ -115,6 +141,7 @@ export function LeadListTable({ leads }: LeadListTableProps) {
               <th className="px-4 py-4 font-medium sm:px-6">Call type</th>
               <th className="px-4 py-4 font-medium sm:px-6">Status</th>
               <th className="px-4 py-4 font-medium sm:px-6">Priority</th>
+              <th className="px-4 py-4 font-medium sm:px-6">Follow-up</th>
               <th className="px-4 py-4 font-medium sm:px-6">Created</th>
             </tr>
           </thead>

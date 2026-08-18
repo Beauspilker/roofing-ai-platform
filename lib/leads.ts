@@ -19,6 +19,7 @@ export type Lead = {
   estimate_amount: number | null;
   estimate_sent_at: string | null;
   last_contacted_at: string | null;
+  follow_up_at: string | null;
   archived_at: string | null;
   created_at: string;
   updated_at: string;
@@ -388,6 +389,10 @@ export function formatLeadEstimateAmount(estimateAmount: number): string {
 
 export function formatLeadEstimateSentAt(estimateSentAt: string): string {
   return formatLeadAppointmentAt(estimateSentAt);
+}
+
+export function formatLeadFollowUpAt(followUpAt: string): string {
+  return formatLeadAppointmentAt(followUpAt);
 }
 
 export function formatLeadFieldValue(value: string | null | undefined): string {

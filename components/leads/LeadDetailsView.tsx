@@ -5,6 +5,7 @@ import {
   formatInsuranceClaim,
   formatLeadAppointmentAt,
   formatLeadCreatedAt,
+  formatLeadLastContactedAt,
   formatLeadFieldValue,
   formatLeadStatus,
   getLeadPriorityLabel,
@@ -159,6 +160,12 @@ export function LeadDetailsView({
             <DetailField
               label="Inspection date"
               value={formatLeadAppointmentAt(lead.appointment_at)}
+            />
+          ) : null}
+          {lead.last_contacted_at ? (
+            <DetailField
+              label="Last contacted"
+              value={formatLeadLastContactedAt(lead.last_contacted_at)}
             />
           ) : null}
           <DetailField

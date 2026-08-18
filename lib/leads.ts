@@ -295,6 +295,37 @@ export function isLeadAwaitingContact(lead: Lead): boolean {
   return lead.status === "new" && lead.last_contacted_at === null;
 }
 
+export function shouldSetLastContactedAt(
+  previousStatus: string,
+  nextStatus: LeadStatus,
+  existingLastContactedAt: string | null,
+): boolean {
+  return (
+    nextStatus === "contacted" &&
+    previousStatus !== "contacted" &&
+    existingLastContactedAt === null
+  );
+}
+
+export function resolveLastContactedAtUpdate(
+  previousStatus: string,
+  nextStatus: LeadStatus,
+  existingLastContactedAt: string | null,
+  now: Date = new Date(),
+): string | undefined {
+  if (
+    !shouldSetLastContactedAt(
+      previousStatus,
+      nextStatus,
+      existingLastContactedAt,
+    )
+  ) {
+    return undefined;
+  }
+
+  return now.toISOString();
+}
+
 export function isNewLeadToday(lead: Lead, now = new Date()): boolean {
   const created = new Date(lead.created_at);
 
@@ -342,6 +373,10 @@ export function formatLeadAppointmentAt(appointmentAt: string): string {
     hour: "numeric",
     minute: "2-digit",
   }).format(new Date(appointmentAt));
+}
+
+export function formatLeadLastContactedAt(lastContactedAt: string): string {
+  return formatLeadAppointmentAt(lastContactedAt);
 }
 
 export function formatLeadFieldValue(value: string | null | undefined): string {

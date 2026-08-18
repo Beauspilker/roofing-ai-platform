@@ -12,6 +12,7 @@ import {
   getLeadByIdForCompany,
   isArchivedLead,
   isLeadStatus,
+  resolveLastContactedAtUpdate,
 } from "@/lib/leads";
 import { createClient } from "@/lib/supabase/server";
 
@@ -55,9 +56,24 @@ export async function updateLeadPipelineStatus(formData: FormData) {
     );
   }
 
+  const lastContactedAt = resolveLastContactedAtUpdate(
+    lead.status,
+    nextStatus,
+    lead.last_contacted_at,
+  );
+
+  const updatePayload: {
+    status: typeof nextStatus;
+    last_contacted_at?: string;
+  } = { status: nextStatus };
+
+  if (lastContactedAt !== undefined) {
+    updatePayload.last_contacted_at = lastContactedAt;
+  }
+
   const { error } = await supabase
     .from("leads")
-    .update({ status: nextStatus })
+    .update(updatePayload)
     .eq("id", leadId)
     .eq("company_id", company.id);
 
@@ -78,6 +94,9 @@ export async function updateLeadPipelineStatus(formData: FormData) {
         previous_status: lead.status,
         updated_status: nextStatus,
         source: "pipeline",
+        ...(lastContactedAt !== undefined
+          ? { contact_recorded: true, last_contacted_at: lastContactedAt }
+          : {}),
       },
     });
   } catch {

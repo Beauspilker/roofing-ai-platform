@@ -8,6 +8,7 @@ import {
   formatSupabaseError,
   getLeadByIdForCompany,
   parseLeadFormInput,
+  resolveLastContactedAtUpdate,
   type LeadFormState,
 } from "@/lib/leads";
 import { createClient } from "@/lib/supabase/server";
@@ -48,23 +49,50 @@ export async function updateLead(
     return { error: parsed.error };
   }
 
+  const lastContactedAt = resolveLastContactedAtUpdate(
+    existingLead.status,
+    parsed.status,
+    existingLead.last_contacted_at,
+  );
+
+  const updatePayload: {
+    full_name: string;
+    phone: string | null;
+    email: string | null;
+    address_line_1: string | null;
+    city: string | null;
+    state: string | null;
+    postal_code: string | null;
+    source: typeof parsed.source;
+    status: typeof parsed.status;
+    project_type: string | null;
+    description: string | null;
+    insurance_claim: boolean;
+    appointment_at: string | null;
+    last_contacted_at?: string;
+  } = {
+    full_name: parsed.full_name,
+    phone: parsed.phone ?? null,
+    email: parsed.email ?? null,
+    address_line_1: parsed.address_line_1 ?? null,
+    city: parsed.city ?? null,
+    state: parsed.state ?? null,
+    postal_code: parsed.postal_code ?? null,
+    source: parsed.source,
+    status: parsed.status,
+    project_type: parsed.project_type ?? null,
+    description: parsed.description ?? null,
+    insurance_claim: parsed.insurance_claim,
+    appointment_at: parsed.appointment_at ?? null,
+  };
+
+  if (lastContactedAt !== undefined) {
+    updatePayload.last_contacted_at = lastContactedAt;
+  }
+
   const { error } = await supabase
     .from("leads")
-    .update({
-      full_name: parsed.full_name,
-      phone: parsed.phone ?? null,
-      email: parsed.email ?? null,
-      address_line_1: parsed.address_line_1 ?? null,
-      city: parsed.city ?? null,
-      state: parsed.state ?? null,
-      postal_code: parsed.postal_code ?? null,
-      source: parsed.source,
-      status: parsed.status,
-      project_type: parsed.project_type ?? null,
-      description: parsed.description ?? null,
-      insurance_claim: parsed.insurance_claim,
-      appointment_at: parsed.appointment_at ?? null,
-    })
+    .update(updatePayload)
     .eq("id", leadId)
     .eq("company_id", company.id);
 
@@ -89,6 +117,9 @@ export async function updateLead(
           previous_status: existingLead.status,
           updated_status: parsed.status,
           source: "edit_form",
+          ...(lastContactedAt !== undefined
+            ? { contact_recorded: true, last_contacted_at: lastContactedAt }
+            : {}),
         },
       });
     } catch (activityError) {

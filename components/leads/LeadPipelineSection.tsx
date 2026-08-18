@@ -10,12 +10,13 @@ import {
   isPipelineTerminalStatus,
   PIPELINE_STAGES,
 } from "@/lib/lead-pipeline";
+import { LOST_REASON_FORM_OPTIONS } from "@/lib/lead-outcome";
+import { normalizeEstimateAmount } from "@/lib/lead-estimate";
 import {
   formatLeadStatus,
   isArchivedLead,
   type Lead,
 } from "@/lib/leads";
-import { normalizeEstimateAmount } from "@/lib/lead-estimate";
 
 type LeadPipelineSectionProps = {
   lead: Lead;
@@ -227,9 +228,49 @@ export function LeadPipelineSection({ lead }: LeadPipelineSectionProps) {
       ) : null}
 
       {!isTerminal && showLostAction ? (
-        <form ref={lostFormRef} action={updateLeadPipelineStatus}>
+        <form ref={lostFormRef} action={updateLeadPipelineStatus} className="space-y-4">
           <input type="hidden" name="lead_id" value={lead.id} />
           <input type="hidden" name="status" value="lost" />
+
+          <div className="grid gap-4 max-w-md">
+            <div>
+              <label
+                htmlFor="lost_reason"
+                className="block text-sm font-medium text-gray-300"
+              >
+                Lost reason
+              </label>
+              <select
+                id="lost_reason"
+                name="lost_reason"
+                defaultValue=""
+                className="mt-2 w-full rounded-xl border border-gray-700 bg-black/40 px-4 py-3 text-white focus:border-blue-500 focus:outline-none"
+              >
+                {LOST_REASON_FORM_OPTIONS.map((option) => (
+                  <option key={option.value || "none"} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label
+                htmlFor="lost_notes"
+                className="block text-sm font-medium text-gray-300"
+              >
+                Lost notes
+              </label>
+              <textarea
+                id="lost_notes"
+                name="lost_notes"
+                rows={3}
+                placeholder="Optional notes about why this lead was lost"
+                className="mt-2 w-full rounded-xl border border-gray-700 bg-black/40 px-4 py-3 text-white placeholder:text-gray-500 focus:border-blue-500 focus:outline-none"
+              />
+            </div>
+          </div>
+
           <button
             type="button"
             onClick={handleLostClick}

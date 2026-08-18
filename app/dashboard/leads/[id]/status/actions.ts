@@ -17,6 +17,15 @@ import {
   shouldIncludeAppointmentAtInUpdate,
 } from "@/lib/lead-inspection";
 import {
+  logLostOutcomeActivity,
+  logWonOutcomeActivity,
+} from "@/lib/lead-outcome-activities";
+import {
+  planMarkLeadLost,
+  planPipelineWonAdvance,
+  shouldIncludeFinalJobAmountInUpdate,
+} from "@/lib/lead-outcome";
+import {
   formatStatusChangeSummary,
   isAllowedPipelineStatusTransition,
 } from "@/lib/lead-pipeline";
@@ -77,6 +86,8 @@ export async function updateLeadPipelineStatus(formData: FormData) {
 
   let inspectionPlan = null;
   let estimatePlan = null;
+  let wonPlan = null;
+  let lostPlan = null;
 
   if (requiresInspectionDateForPipelineStatus(nextStatus)) {
     const formAppointmentRaw = formData.get("appointment_at")?.toString() ?? "";
@@ -111,9 +122,45 @@ export async function updateLeadPipelineStatus(formData: FormData) {
     estimatePlan = planned;
   }
 
+  if (nextStatus === "won") {
+    const formFinalJobAmountRaw =
+      formData.get("final_job_amount")?.toString() ?? "";
+    const planned = planPipelineWonAdvance({
+      existingEstimateAmount: lead.estimate_amount,
+      formFinalJobAmountRaw,
+    });
+
+    if ("error" in planned) {
+      redirect(
+        `/dashboard/leads/${leadId}?error=${encodeURIComponent(planned.error)}`,
+      );
+    }
+
+    wonPlan = planned;
+  }
+
+  if (nextStatus === "lost") {
+    const planned = planMarkLeadLost({
+      currentStatus: lead.status,
+      lostReasonRaw: formData.get("lost_reason")?.toString() ?? "",
+      lostNotesRaw: formData.get("lost_notes")?.toString() ?? "",
+    });
+
+    if ("error" in planned) {
+      redirect(
+        `/dashboard/leads/${leadId}?error=${encodeURIComponent(planned.error)}`,
+      );
+    }
+
+    lostPlan = planned;
+  }
+
   const estimateSentAt = estimatePlan
     ? resolveEstimateSentAtUpdate(lead.estimate_sent_at, estimatePlan.statusChanged)
     : undefined;
+
+  const wonAt = wonPlan ? new Date().toISOString() : undefined;
+  const lostAt = lostPlan ? new Date().toISOString() : undefined;
 
   const updatePayload: {
     status: typeof nextStatus;
@@ -151,6 +198,14 @@ export async function updateLeadPipelineStatus(formData: FormData) {
     updatePayload.estimate_sent_at = estimateSentAt;
   }
 
+  if (
+    wonPlan &&
+    wonPlan.estimateAmountChanged &&
+    shouldIncludeFinalJobAmountInUpdate(lead.estimate_amount, wonPlan.finalJobAmount)
+  ) {
+    updatePayload.estimate_amount = wonPlan.finalJobAmount;
+  }
+
   const { error } = await supabase
     .from("leads")
     .update(updatePayload)
@@ -186,6 +241,29 @@ export async function updateLeadPipelineStatus(formData: FormData) {
         source: "pipeline",
         estimateSentAt: estimateSentAt ?? lead.estimate_sent_at,
         previousEstimateAmount: lead.estimate_amount,
+      });
+    } else if (wonPlan && wonAt) {
+      await logWonOutcomeActivity({
+        supabase,
+        companyId: company.id,
+        leadId,
+        actorUserId: user.id,
+        previousStatus: lead.status,
+        plan: wonPlan,
+        wonAt,
+        source: "pipeline",
+        estimateSentAt: lead.estimate_sent_at,
+      });
+    } else if (lostPlan && lostAt) {
+      await logLostOutcomeActivity({
+        supabase,
+        companyId: company.id,
+        leadId,
+        actorUserId: user.id,
+        previousStatus: lead.status,
+        plan: lostPlan,
+        lostAt,
+        source: "pipeline",
       });
     } else {
       await createActivity(supabase, {

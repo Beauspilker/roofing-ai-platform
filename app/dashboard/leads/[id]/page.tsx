@@ -9,6 +9,7 @@ import { LeadDetailsView } from "@/components/leads/LeadDetailsView";
 import { LeadEstimateSection } from "@/components/leads/LeadEstimateSection";
 import { LeadInspectionSection } from "@/components/leads/LeadInspectionSection";
 import { LeadPipelineSection } from "@/components/leads/LeadPipelineSection";
+import { LeadWonSection } from "@/components/leads/LeadWonSection";
 import { LeadRestoredBanner } from "@/components/leads/LeadRestoredBanner";
 import { LeadSaveSuccessBanner } from "@/components/leads/LeadSaveSuccessBanner";
 import { LeadNotesSection } from "@/components/leads/LeadNotesSection";
@@ -16,6 +17,7 @@ import { getActivityByLeadId } from "@/lib/activity";
 import { getBusinessSettingsByCompanyId } from "@/lib/business-settings";
 import { getCompanyByUserId } from "@/lib/companies";
 import { getLeadByIdForCompany, isArchivedLead } from "@/lib/leads";
+import { getLeadOutcomeFromActivities } from "@/lib/lead-outcome";
 import { getNotesByLeadId } from "@/lib/notes";
 import { getNotificationsByLeadId } from "@/lib/notifications";
 import {
@@ -78,6 +80,7 @@ export default async function LeadDetailsPage({
     lead,
   );
   const showCallIntelligence = hasCallIntelligenceDisplay(callIntelligence);
+  const outcome = getLeadOutcomeFromActivities(activities);
 
   return (
     <main className="min-h-screen bg-black px-4 py-8 text-white sm:px-6 lg:px-8">
@@ -124,8 +127,10 @@ export default async function LeadDetailsPage({
             <LeadPipelineSection lead={lead} />
             <LeadInspectionSection lead={lead} />
             <LeadEstimateSection lead={lead} />
+            <LeadWonSection lead={lead} />
             <LeadDetailsView
               lead={lead}
+              outcome={outcome}
               hideDescription={showCallIntelligence}
             />
             {showCallIntelligence ? (

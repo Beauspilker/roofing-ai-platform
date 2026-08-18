@@ -1,5 +1,7 @@
 import { ArchivedBadge } from "@/components/leads/ArchivedBadge";
 import type { Lead } from "@/lib/leads";
+import type { LeadOutcomeDisplay } from "@/lib/lead-outcome";
+import { formatLostReasonLabel } from "@/lib/lead-outcome";
 import {
   deriveLeadPriority,
   formatInsuranceClaim,
@@ -19,6 +21,7 @@ import {
 type LeadDetailsViewProps = {
   lead: Lead;
   hideDescription?: boolean;
+  outcome?: LeadOutcomeDisplay | null;
 };
 
 const priorityStyles = {
@@ -58,6 +61,7 @@ function DetailField({
 export function LeadDetailsView({
   lead,
   hideDescription = false,
+  outcome = null,
 }: LeadDetailsViewProps) {
   const priority = deriveLeadPriority(lead);
   const archived = isArchivedLead(lead);
@@ -181,6 +185,33 @@ export function LeadDetailsView({
               label="Estimate sent"
               value={formatLeadEstimateSentAt(lead.estimate_sent_at)}
             />
+          ) : null}
+          {outcome?.type === "won" ? (
+            <DetailField
+              label="Won on"
+              value={formatLeadEstimateSentAt(outcome.recordedAt)}
+            />
+          ) : null}
+          {outcome?.type === "won" && outcome.finalJobAmount !== null ? (
+            <DetailField
+              label="Final job value"
+              value={formatLeadEstimateAmount(outcome.finalJobAmount)}
+            />
+          ) : null}
+          {outcome?.type === "lost" ? (
+            <DetailField
+              label="Lost on"
+              value={formatLeadEstimateSentAt(outcome.recordedAt)}
+            />
+          ) : null}
+          {outcome?.type === "lost" && outcome.lostReason ? (
+            <DetailField
+              label="Lost reason"
+              value={formatLostReasonLabel(outcome.lostReason) ?? outcome.lostReason}
+            />
+          ) : null}
+          {outcome?.type === "lost" && outcome.lostNotes ? (
+            <DetailField label="Lost notes" value={outcome.lostNotes} />
           ) : null}
           <DetailField
             label="Created date"

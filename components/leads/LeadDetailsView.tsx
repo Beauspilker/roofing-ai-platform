@@ -157,7 +157,7 @@ export function LeadDetailsView({
         <dl className="grid gap-4 sm:grid-cols-2">
           {lead.appointment_at ? (
             <DetailField
-              label="Appointment date"
+              label="Inspection date"
               value={formatLeadAppointmentAt(lead.appointment_at)}
             />
           ) : null}

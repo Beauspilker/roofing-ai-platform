@@ -217,7 +217,7 @@ export function LeadForm({
 
       <LeadFormField
         id="appointment_at"
-        label="Appointment date"
+        label="Inspection date"
         type="datetime-local"
         defaultValue={initialValues.appointment_at}
       />

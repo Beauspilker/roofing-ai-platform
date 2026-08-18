@@ -54,7 +54,7 @@ const SOURCE_LABELS: Record<string, string> = {
 const STATUS_LABELS: Record<string, string> = {
   new: "New",
   contacted: "Contacted",
-  appointment_scheduled: "Appointment scheduled",
+  appointment_scheduled: "Inspection scheduled",
   estimate_sent: "Estimate sent",
   won: "Won",
   lost: "Lost",

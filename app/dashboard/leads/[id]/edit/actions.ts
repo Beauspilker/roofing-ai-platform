@@ -3,6 +3,7 @@
 import { redirect } from "next/navigation";
 import { createActivity } from "@/lib/activity";
 import { getCompanyByUserId } from "@/lib/companies";
+import { formatStatusChangeSummary } from "@/lib/lead-pipeline";
 import {
   formatSupabaseError,
   getLeadByIdForCompany,
@@ -71,37 +72,45 @@ export async function updateLead(
     return { error: formatSupabaseError(error) };
   }
 
-  try {
-    await createActivity(supabase, {
-      companyId: company.id,
-      leadId,
-      activityType: "status_changed",
-      summary: "Lead information updated",
-      actorUserId: user.id,
-      metadata: {
-        previous_status: existingLead.status,
-        updated_status: parsed.status,
-      },
-    });
-  } catch (activityError) {
-    if (
-      typeof activityError === "object" &&
-      activityError !== null &&
-      "message" in activityError &&
-      typeof activityError.message === "string"
-    ) {
-      return {
-        error: formatSupabaseError(
-          activityError as {
-            message: string;
-            details?: string | null;
-            hint?: string | null;
-          },
-        ),
-      };
-    }
+  const statusChanged = parsed.status !== existingLead.status;
 
-    return { error: "Lead was updated but activity could not be recorded." };
+  if (statusChanged) {
+    try {
+      await createActivity(supabase, {
+        companyId: company.id,
+        leadId,
+        activityType: "status_changed",
+        summary: formatStatusChangeSummary(
+          existingLead.status,
+          parsed.status,
+        ),
+        actorUserId: user.id,
+        metadata: {
+          previous_status: existingLead.status,
+          updated_status: parsed.status,
+          source: "edit_form",
+        },
+      });
+    } catch (activityError) {
+      if (
+        typeof activityError === "object" &&
+        activityError !== null &&
+        "message" in activityError &&
+        typeof activityError.message === "string"
+      ) {
+        return {
+          error: formatSupabaseError(
+            activityError as {
+              message: string;
+              details?: string | null;
+              hint?: string | null;
+            },
+          ),
+        };
+      }
+
+      return { error: "Lead was updated but activity could not be recorded." };
+    }
   }
 
   redirect(`/dashboard/leads/${leadId}?saved=1`);

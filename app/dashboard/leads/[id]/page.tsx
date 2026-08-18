@@ -6,6 +6,7 @@ import { CustomerNotificationsSection } from "@/components/leads/CustomerNotific
 import { CustomerPhotosSection } from "@/components/leads/CustomerPhotosSection";
 import { LeadArchiveControls } from "@/components/leads/LeadArchiveControls";
 import { LeadDetailsView } from "@/components/leads/LeadDetailsView";
+import { LeadInspectionSection } from "@/components/leads/LeadInspectionSection";
 import { LeadPipelineSection } from "@/components/leads/LeadPipelineSection";
 import { LeadRestoredBanner } from "@/components/leads/LeadRestoredBanner";
 import { LeadSaveSuccessBanner } from "@/components/leads/LeadSaveSuccessBanner";
@@ -120,6 +121,7 @@ export default async function LeadDetailsPage({
           </p>
           <div className="mt-6">
             <LeadPipelineSection lead={lead} />
+            <LeadInspectionSection lead={lead} />
             <LeadDetailsView
               lead={lead}
               hideDescription={showCallIntelligence}

@@ -3,6 +3,12 @@
 import { redirect } from "next/navigation";
 import { createActivity } from "@/lib/activity";
 import { getCompanyByUserId } from "@/lib/companies";
+import { logInspectionSchedulingActivities } from "@/lib/lead-inspection-activities";
+import {
+  planPipelineInspectionAdvance,
+  requiresInspectionDateForPipelineStatus,
+  shouldIncludeAppointmentAtInUpdate,
+} from "@/lib/lead-inspection";
 import {
   formatStatusChangeSummary,
   isAllowedPipelineStatusTransition,
@@ -62,13 +68,42 @@ export async function updateLeadPipelineStatus(formData: FormData) {
     lead.last_contacted_at,
   );
 
+  let inspectionPlan = null;
+
+  if (requiresInspectionDateForPipelineStatus(nextStatus)) {
+    const formAppointmentRaw = formData.get("appointment_at")?.toString() ?? "";
+    const planned = planPipelineInspectionAdvance({
+      existingAppointmentAt: lead.appointment_at,
+      formAppointmentAtRaw: formAppointmentRaw,
+    });
+
+    if ("error" in planned) {
+      redirect(
+        `/dashboard/leads/${leadId}?error=${encodeURIComponent(planned.error)}`,
+      );
+    }
+
+    inspectionPlan = planned;
+  }
+
   const updatePayload: {
     status: typeof nextStatus;
     last_contacted_at?: string;
+    appointment_at?: string;
   } = { status: nextStatus };
 
   if (lastContactedAt !== undefined) {
     updatePayload.last_contacted_at = lastContactedAt;
+  }
+
+  if (
+    inspectionPlan &&
+    shouldIncludeAppointmentAtInUpdate(
+      lead.appointment_at,
+      inspectionPlan.appointmentAt,
+    )
+  ) {
+    updatePayload.appointment_at = inspectionPlan.appointmentAt;
   }
 
   const { error } = await supabase
@@ -84,21 +119,34 @@ export async function updateLeadPipelineStatus(formData: FormData) {
   }
 
   try {
-    await createActivity(supabase, {
-      companyId: company.id,
-      leadId,
-      activityType: "status_changed",
-      summary: formatStatusChangeSummary(lead.status, nextStatus),
-      actorUserId: user.id,
-      metadata: {
-        previous_status: lead.status,
-        updated_status: nextStatus,
+    if (inspectionPlan) {
+      await logInspectionSchedulingActivities({
+        supabase,
+        companyId: company.id,
+        leadId,
+        actorUserId: user.id,
+        previousStatus: lead.status,
+        plan: inspectionPlan,
         source: "pipeline",
-        ...(lastContactedAt !== undefined
-          ? { contact_recorded: true, last_contacted_at: lastContactedAt }
-          : {}),
-      },
-    });
+        previousAppointmentAt: lead.appointment_at,
+      });
+    } else {
+      await createActivity(supabase, {
+        companyId: company.id,
+        leadId,
+        activityType: "status_changed",
+        summary: formatStatusChangeSummary(lead.status, nextStatus),
+        actorUserId: user.id,
+        metadata: {
+          previous_status: lead.status,
+          updated_status: nextStatus,
+          source: "pipeline",
+          ...(lastContactedAt !== undefined
+            ? { contact_recorded: true, last_contacted_at: lastContactedAt }
+            : {}),
+        },
+      });
+    }
   } catch {
     // Lead status is updated even if activity logging fails.
   }

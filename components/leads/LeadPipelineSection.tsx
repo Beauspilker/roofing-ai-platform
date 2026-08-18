@@ -52,6 +52,8 @@ export function LeadPipelineSection({ lead }: LeadPipelineSectionProps) {
   const nextStatus = getNextPipelineStatus(lead.status);
   const showLostAction = canMarkLeadAsLost(lead.status);
   const isTerminal = isPipelineTerminalStatus(lead.status);
+  const requiresInspectionDate =
+    nextStatus === "appointment_scheduled" && !lead.appointment_at;
 
   function submitPipelineStatus(status: string) {
     const form = pipelineFormRef.current;
@@ -66,6 +68,14 @@ export function LeadPipelineSection({ lead }: LeadPipelineSectionProps) {
 
     if (statusInput) {
       statusInput.value = status;
+    }
+
+    if (
+      status === "appointment_scheduled" &&
+      !lead.appointment_at &&
+      !form.reportValidity()
+    ) {
+      return;
     }
 
     form.requestSubmit();
@@ -98,6 +108,9 @@ export function LeadPipelineSection({ lead }: LeadPipelineSectionProps) {
                 {formatLeadStatus(nextStatus)}
               </span>{" "}
               to advance
+              {requiresInspectionDate
+                ? " after choosing an inspection date below"
+                : null}
             </>
           ) : null}
         </p>
@@ -106,6 +119,28 @@ export function LeadPipelineSection({ lead }: LeadPipelineSectionProps) {
       <form ref={pipelineFormRef} action={updateLeadPipelineStatus}>
         <input type="hidden" name="lead_id" value={lead.id} />
         <input type="hidden" name="status" value={nextStatus ?? ""} />
+
+        {requiresInspectionDate ? (
+          <div className="mb-4 max-w-md">
+            <label
+              htmlFor="pipeline_appointment_at"
+              className="block text-sm font-medium text-gray-300"
+            >
+              Inspection date and time
+            </label>
+            <input
+              id="pipeline_appointment_at"
+              name="appointment_at"
+              type="datetime-local"
+              required
+              className="mt-2 w-full rounded-xl border border-gray-700 bg-black/40 px-4 py-3 text-white focus:border-blue-500 focus:outline-none"
+            />
+            <p className="mt-2 text-xs text-gray-500">
+              Required to advance to Inspection scheduled.
+            </p>
+          </div>
+        ) : null}
+
         <ol className="grid gap-2 sm:grid-cols-5">
           {PIPELINE_STAGES.map((stage, index) => {
             const isActionable =

@@ -379,6 +379,17 @@ export function formatLeadLastContactedAt(lastContactedAt: string): string {
   return formatLeadAppointmentAt(lastContactedAt);
 }
 
+export function formatLeadEstimateAmount(estimateAmount: number): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+  }).format(estimateAmount);
+}
+
+export function formatLeadEstimateSentAt(estimateSentAt: string): string {
+  return formatLeadAppointmentAt(estimateSentAt);
+}
+
 export function formatLeadFieldValue(value: string | null | undefined): string {
   if (!value || value.trim().length === 0) {
     return "—";

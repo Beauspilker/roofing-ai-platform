@@ -6,6 +6,8 @@ import {
   formatLeadAppointmentAt,
   formatLeadCreatedAt,
   formatLeadLastContactedAt,
+  formatLeadEstimateAmount,
+  formatLeadEstimateSentAt,
   formatLeadFieldValue,
   formatLeadStatus,
   getLeadPriorityLabel,
@@ -166,6 +168,18 @@ export function LeadDetailsView({
             <DetailField
               label="Last contacted"
               value={formatLeadLastContactedAt(lead.last_contacted_at)}
+            />
+          ) : null}
+          {lead.estimate_amount !== null ? (
+            <DetailField
+              label="Estimate amount"
+              value={formatLeadEstimateAmount(lead.estimate_amount)}
+            />
+          ) : null}
+          {lead.estimate_sent_at ? (
+            <DetailField
+              label="Estimate sent"
+              value={formatLeadEstimateSentAt(lead.estimate_sent_at)}
             />
           ) : null}
           <DetailField

@@ -15,6 +15,7 @@ import {
   isArchivedLead,
   type Lead,
 } from "@/lib/leads";
+import { normalizeEstimateAmount } from "@/lib/lead-estimate";
 
 type LeadPipelineSectionProps = {
   lead: Lead;
@@ -54,6 +55,9 @@ export function LeadPipelineSection({ lead }: LeadPipelineSectionProps) {
   const isTerminal = isPipelineTerminalStatus(lead.status);
   const requiresInspectionDate =
     nextStatus === "appointment_scheduled" && !lead.appointment_at;
+  const requiresEstimateAmount =
+    nextStatus === "estimate_sent" &&
+    normalizeEstimateAmount(lead.estimate_amount) === null;
 
   function submitPipelineStatus(status: string) {
     const form = pipelineFormRef.current;
@@ -73,6 +77,14 @@ export function LeadPipelineSection({ lead }: LeadPipelineSectionProps) {
     if (
       status === "appointment_scheduled" &&
       !lead.appointment_at &&
+      !form.reportValidity()
+    ) {
+      return;
+    }
+
+    if (
+      status === "estimate_sent" &&
+      normalizeEstimateAmount(lead.estimate_amount) === null &&
       !form.reportValidity()
     ) {
       return;
@@ -111,6 +123,9 @@ export function LeadPipelineSection({ lead }: LeadPipelineSectionProps) {
               {requiresInspectionDate
                 ? " after choosing an inspection date below"
                 : null}
+              {requiresEstimateAmount
+                ? " after entering an estimate amount below"
+                : null}
             </>
           ) : null}
         </p>
@@ -137,6 +152,29 @@ export function LeadPipelineSection({ lead }: LeadPipelineSectionProps) {
             />
             <p className="mt-2 text-xs text-gray-500">
               Required to advance to Inspection scheduled.
+            </p>
+          </div>
+        ) : null}
+
+        {requiresEstimateAmount ? (
+          <div className="mb-4 max-w-md">
+            <label
+              htmlFor="pipeline_estimate_amount"
+              className="block text-sm font-medium text-gray-300"
+            >
+              Estimate amount
+            </label>
+            <input
+              id="pipeline_estimate_amount"
+              name="estimate_amount"
+              type="number"
+              min="0.01"
+              step="0.01"
+              required
+              className="mt-2 w-full rounded-xl border border-gray-700 bg-black/40 px-4 py-3 text-white focus:border-blue-500 focus:outline-none"
+            />
+            <p className="mt-2 text-xs text-gray-500">
+              Required to advance to Estimate sent.
             </p>
           </div>
         ) : null}

@@ -3,6 +3,13 @@
 import { redirect } from "next/navigation";
 import { createActivity } from "@/lib/activity";
 import { getCompanyByUserId } from "@/lib/companies";
+import { logEstimateSendActivities } from "@/lib/lead-estimate-activities";
+import {
+  planPipelineEstimateAdvance,
+  requiresEstimateForPipelineStatus,
+  resolveEstimateSentAtUpdate,
+  shouldIncludeEstimateAmountInUpdate,
+} from "@/lib/lead-estimate";
 import { logInspectionSchedulingActivities } from "@/lib/lead-inspection-activities";
 import {
   planPipelineInspectionAdvance,
@@ -69,6 +76,7 @@ export async function updateLeadPipelineStatus(formData: FormData) {
   );
 
   let inspectionPlan = null;
+  let estimatePlan = null;
 
   if (requiresInspectionDateForPipelineStatus(nextStatus)) {
     const formAppointmentRaw = formData.get("appointment_at")?.toString() ?? "";
@@ -86,10 +94,33 @@ export async function updateLeadPipelineStatus(formData: FormData) {
     inspectionPlan = planned;
   }
 
+  if (requiresEstimateForPipelineStatus(nextStatus)) {
+    const formEstimateRaw = formData.get("estimate_amount")?.toString() ?? "";
+    const planned = planPipelineEstimateAdvance({
+      existingEstimateAmount: lead.estimate_amount,
+      existingEstimateSentAt: lead.estimate_sent_at,
+      formEstimateAmountRaw: formEstimateRaw,
+    });
+
+    if ("error" in planned) {
+      redirect(
+        `/dashboard/leads/${leadId}?error=${encodeURIComponent(planned.error)}`,
+      );
+    }
+
+    estimatePlan = planned;
+  }
+
+  const estimateSentAt = estimatePlan
+    ? resolveEstimateSentAtUpdate(lead.estimate_sent_at, estimatePlan.statusChanged)
+    : undefined;
+
   const updatePayload: {
     status: typeof nextStatus;
     last_contacted_at?: string;
     appointment_at?: string;
+    estimate_amount?: number;
+    estimate_sent_at?: string;
   } = { status: nextStatus };
 
   if (lastContactedAt !== undefined) {
@@ -104,6 +135,20 @@ export async function updateLeadPipelineStatus(formData: FormData) {
     )
   ) {
     updatePayload.appointment_at = inspectionPlan.appointmentAt;
+  }
+
+  if (
+    estimatePlan &&
+    shouldIncludeEstimateAmountInUpdate(
+      lead.estimate_amount,
+      estimatePlan.estimateAmount,
+    )
+  ) {
+    updatePayload.estimate_amount = estimatePlan.estimateAmount;
+  }
+
+  if (estimateSentAt !== undefined) {
+    updatePayload.estimate_sent_at = estimateSentAt;
   }
 
   const { error } = await supabase
@@ -129,6 +174,18 @@ export async function updateLeadPipelineStatus(formData: FormData) {
         plan: inspectionPlan,
         source: "pipeline",
         previousAppointmentAt: lead.appointment_at,
+      });
+    } else if (estimatePlan) {
+      await logEstimateSendActivities({
+        supabase,
+        companyId: company.id,
+        leadId,
+        actorUserId: user.id,
+        previousStatus: lead.status,
+        plan: estimatePlan,
+        source: "pipeline",
+        estimateSentAt: estimateSentAt ?? lead.estimate_sent_at,
+        previousEstimateAmount: lead.estimate_amount,
       });
     } else {
       await createActivity(supabase, {

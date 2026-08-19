@@ -17,7 +17,11 @@ import { LeadNotesSection } from "@/components/leads/LeadNotesSection";
 import { getActivityByLeadId } from "@/lib/activity";
 import { getBusinessSettingsByCompanyId } from "@/lib/business-settings";
 import { getCompanyByUserId } from "@/lib/companies";
-import { getLeadByIdForCompany, isArchivedLead } from "@/lib/leads";
+import {
+  canUploadPhotosToLead,
+  getLeadByIdForCompany,
+  isArchivedLead,
+} from "@/lib/leads";
 import { getLeadOutcomeFromActivities } from "@/lib/lead-outcome";
 import { getNotesByLeadId } from "@/lib/notes";
 import { getNotificationsByLeadId } from "@/lib/notifications";
@@ -143,7 +147,7 @@ export default async function LeadDetailsPage({
             <CustomerPhotosSection
               leadId={lead.id}
               photos={photos}
-              canUpload
+              canUpload={canUploadPhotosToLead(lead)}
             />
             <LeadNotesSection leadId={lead.id} notes={notes} />
             <CustomerNotificationsSection

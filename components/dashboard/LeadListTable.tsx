@@ -19,6 +19,7 @@ import {
   formatLeadCreatedAt,
   formatLeadFollowUpAt,
   formatLeadStatus,
+  getLeadPriorityLabel,
   getSourceLabel,
   isArchivedLead,
 } from "@/lib/leads";
@@ -53,9 +54,9 @@ function PriorityBadge({ lead }: { lead: Lead }) {
 
   return (
     <span
-      className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-medium capitalize ${priorityStyles[priority]}`}
+      className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-medium ${priorityStyles[priority]}`}
     >
-      {priority}
+      {getLeadPriorityLabel(priority)}
     </span>
   );
 }

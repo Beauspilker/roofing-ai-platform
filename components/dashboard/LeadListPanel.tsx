@@ -12,10 +12,7 @@ import {
   getSourceLabel,
   isArchivedLead,
   isDashboardActiveLead,
-  isLeadAttentionFilter,
-  isLeadFollowUpFilter,
-  isLeadInspectionFilter,
-  isLeadStatus,
+  resolveUrlControlledLeadFilters,
   LEAD_PRIORITIES,
   LEAD_PROJECT_TYPES,
   LEAD_SOURCES,
@@ -60,48 +57,18 @@ function LeadListPanelContent({ leads }: LeadListPanelProps) {
   const [filters, setFilters] = useState<LeadFilterValues>(DEFAULT_LEAD_FILTERS);
 
   useEffect(() => {
-    const status = searchParams.get("status");
-    const followUp = searchParams.get("followUp");
-    const inspection = searchParams.get("inspection");
-    const attention = searchParams.get("attention");
+    const urlFilters = resolveUrlControlledLeadFilters(searchParams);
 
-    setFilters((current) => {
-      let next = current;
-
-      if (status && isLeadStatus(status)) {
-        next = {
-          ...next,
-          status,
-          archiveView: "active",
-        };
-      }
-
-      if (followUp && isLeadFollowUpFilter(followUp)) {
-        next = {
-          ...next,
-          followUp,
-          archiveView: "active",
-        };
-      }
-
-      if (inspection && isLeadInspectionFilter(inspection)) {
-        next = {
-          ...next,
-          inspection,
-          archiveView: "active",
-        };
-      }
-
-      if (attention && isLeadAttentionFilter(attention)) {
-        next = {
-          ...next,
-          attention,
-          archiveView: "active",
-        };
-      }
-
-      return next;
-    });
+    setFilters((current) => ({
+      ...current,
+      status: urlFilters.status,
+      followUp: urlFilters.followUp,
+      inspection: urlFilters.inspection,
+      attention: urlFilters.attention,
+      archiveView: urlFilters.forceActiveArchiveView
+        ? "active"
+        : current.archiveView,
+    }));
   }, [searchParams]);
 
   const filteredLeads = useMemo(
@@ -163,7 +130,7 @@ function LeadListPanelContent({ leads }: LeadListPanelProps) {
               updateFilter("archiveView", value as LeadArchiveView)
             }
             options={[
-              { value: "active", label: "Active leads" },
+              { value: "active", label: "Non-archived leads" },
               { value: "archived", label: "Archived leads" },
               { value: "all", label: "All leads" },
             ]}

@@ -257,6 +257,58 @@ export function isLeadAttentionFilter(value: string): value is LeadAttentionFilt
   return value === "all" || value === "needs";
 }
 
+export type UrlControlledLeadFilters = {
+  status: LeadStatus | "all";
+  followUp: LeadFollowUpFilter;
+  inspection: LeadInspectionFilter;
+  attention: LeadAttentionFilter;
+  forceActiveArchiveView: boolean;
+};
+
+type SearchParamsReader = {
+  get(name: string): string | null;
+};
+
+export function resolveUrlControlledLeadFilters(
+  searchParams: SearchParamsReader,
+): UrlControlledLeadFilters {
+  const statusParam = searchParams.get("status");
+  const followUpParam = searchParams.get("followUp");
+  const inspectionParam = searchParams.get("inspection");
+  const attentionParam = searchParams.get("attention");
+
+  const status =
+    statusParam && isLeadStatus(statusParam) ? statusParam : "all";
+  const followUp =
+    followUpParam && isLeadFollowUpFilter(followUpParam) ? followUpParam : "all";
+  const inspection =
+    inspectionParam && isLeadInspectionFilter(inspectionParam)
+      ? inspectionParam
+      : "all";
+  const attention =
+    attentionParam && isLeadAttentionFilter(attentionParam)
+      ? attentionParam
+      : "all";
+
+  const forceActiveArchiveView =
+    status !== "all" ||
+    followUp !== "all" ||
+    inspection !== "all" ||
+    attention !== "all";
+
+  return {
+    status,
+    followUp,
+    inspection,
+    attention,
+    forceActiveArchiveView,
+  };
+}
+
+export function canUploadPhotosToLead(lead: Lead): boolean {
+  return !isArchivedLead(lead);
+}
+
 function matchesArchiveView(lead: Lead, archiveView: LeadArchiveView): boolean {
   if (archiveView === "all") {
     return true;

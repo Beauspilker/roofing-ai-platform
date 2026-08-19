@@ -5,7 +5,11 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createActivity } from "@/lib/activity";
 import { getCompanyByUserId } from "@/lib/companies";
-import { formatSupabaseError, getLeadByIdForCompany } from "@/lib/leads";
+import {
+  canUploadPhotosToLead,
+  formatSupabaseError,
+  getLeadByIdForCompany,
+} from "@/lib/leads";
 import {
   buildCustomerPhotoStoragePath,
   createCustomerPhotoRecord,
@@ -62,6 +66,10 @@ export async function uploadCustomerPhoto(
   const lead = await getLeadByIdForCompany(supabase, leadId, company.id);
   if (!lead) {
     return { error: "Lead not found or you do not have access to it." };
+  }
+
+  if (!canUploadPhotosToLead(lead)) {
+    return { error: "Photos cannot be uploaded to archived leads." };
   }
 
   const extension = getPhotoExtension(file.name, file.type);

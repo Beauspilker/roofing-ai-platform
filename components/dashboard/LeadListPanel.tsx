@@ -12,6 +12,7 @@ import {
   getSourceLabel,
   isArchivedLead,
   isDashboardActiveLead,
+  isLeadAttentionFilter,
   isLeadFollowUpFilter,
   isLeadInspectionFilter,
   isLeadStatus,
@@ -62,6 +63,7 @@ function LeadListPanelContent({ leads }: LeadListPanelProps) {
     const status = searchParams.get("status");
     const followUp = searchParams.get("followUp");
     const inspection = searchParams.get("inspection");
+    const attention = searchParams.get("attention");
 
     setFilters((current) => {
       let next = current;
@@ -86,6 +88,14 @@ function LeadListPanelContent({ leads }: LeadListPanelProps) {
         next = {
           ...next,
           inspection,
+          archiveView: "active",
+        };
+      }
+
+      if (attention && isLeadAttentionFilter(attention)) {
+        next = {
+          ...next,
+          attention,
           archiveView: "active",
         };
       }
@@ -119,6 +129,7 @@ function LeadListPanelContent({ leads }: LeadListPanelProps) {
     filters.source !== "all" ||
     filters.followUp !== "all" ||
     filters.inspection !== "all" ||
+    filters.attention !== "all" ||
     filters.archiveView !== "active";
 
   function updateFilter<K extends keyof LeadFilterValues>(

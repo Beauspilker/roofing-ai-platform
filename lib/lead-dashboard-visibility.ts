@@ -3,6 +3,8 @@ import {
   hasScheduledInspection,
   isInspectionOverdue,
 } from "@/lib/lead-inspection-visibility";
+import { computeLeadNeedsAttentionVisibility } from "@/lib/lead-needs-attention";
+import { computeLeadPipelineValueVisibility } from "@/lib/lead-pipeline-value";
 import { PIPELINE_STAGES } from "@/lib/lead-pipeline";
 import {
   computeLeadDashboardStats,
@@ -33,9 +35,21 @@ export type LeadPipelineVisibility = {
   inspectionsOverdue: number;
 };
 
+export type LeadValueAttentionVisibility = {
+  openPipelineValue: number;
+  openPipelineLeadCount: number;
+  wonRevenue: number;
+  wonLeadCount: number;
+  needsAttentionCount: number;
+  awaitingContactCount: number;
+  overdueFollowUpCount: number;
+  overdueInspectionCount: number;
+};
+
 export type LeadDashboardVisibility = {
   stats: LeadDashboardStats;
   pipeline: LeadPipelineVisibility;
+  rollups: LeadValueAttentionVisibility;
 };
 
 function emptyPipelineStageCounts(): PipelineStageCounts {
@@ -110,9 +124,17 @@ export function computeLeadDashboardVisibility(
   leads: Lead[],
   now: Date = new Date(),
 ): LeadDashboardVisibility {
+  const pipeline = computeLeadPipelineVisibility(leads, now);
+  const value = computeLeadPipelineValueVisibility(leads);
+  const attention = computeLeadNeedsAttentionVisibility(leads, now);
+
   return {
     stats: computeLeadDashboardStats(leads),
-    pipeline: computeLeadPipelineVisibility(leads, now),
+    pipeline,
+    rollups: {
+      ...value,
+      ...attention,
+    },
   };
 }
 
@@ -130,4 +152,10 @@ export function buildDashboardInspectionFilterHref(
   inspection: "upcoming" | "overdue",
 ): string {
   return `/dashboard?inspection=${encodeURIComponent(inspection)}#lead-list`;
+}
+
+export function buildDashboardAttentionFilterHref(
+  attention: "needs",
+): string {
+  return `/dashboard?attention=${encodeURIComponent(attention)}#lead-list`;
 }

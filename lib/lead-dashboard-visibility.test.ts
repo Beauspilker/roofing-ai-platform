@@ -170,3 +170,22 @@ test("existing dashboard stats exclude won/lost from total active leads", () => 
 
   assert.equal(stats.totalActiveLeads, 1);
 });
+
+test("computeLeadDashboardVisibility includes value and attention rollups", () => {
+  const leads = [
+    makeLead({
+      id: "1",
+      status: "estimate_sent",
+      estimate_amount: 10000,
+      estimate_sent_at: "2026-07-10T10:00:00.000Z",
+    }),
+    makeLead({ id: "2", status: "won", estimate_amount: 5000 }),
+    makeLead({ id: "3", status: "new" }),
+  ];
+
+  const visibility = computeLeadDashboardVisibility(leads, NOW);
+
+  assert.equal(visibility.rollups.openPipelineValue, 10000);
+  assert.equal(visibility.rollups.wonRevenue, 5000);
+  assert.equal(visibility.rollups.needsAttentionCount, 1);
+});

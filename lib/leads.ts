@@ -212,6 +212,8 @@ export type LeadFollowUpFilter = "all" | "due" | "overdue" | "none";
 
 export type LeadInspectionFilter = "all" | "upcoming" | "overdue" | "none";
 
+export type LeadAttentionFilter = "all" | "needs";
+
 export type LeadFilterValues = {
   search: string;
   status: LeadStatus | "all";
@@ -221,6 +223,7 @@ export type LeadFilterValues = {
   archiveView: LeadArchiveView;
   followUp: LeadFollowUpFilter;
   inspection: LeadInspectionFilter;
+  attention: LeadAttentionFilter;
 };
 
 export const DEFAULT_LEAD_FILTERS: LeadFilterValues = {
@@ -232,6 +235,7 @@ export const DEFAULT_LEAD_FILTERS: LeadFilterValues = {
   archiveView: "active",
   followUp: "all",
   inspection: "all",
+  attention: "all",
 };
 
 export function isLeadFollowUpFilter(value: string): value is LeadFollowUpFilter {
@@ -247,6 +251,10 @@ export function isLeadInspectionFilter(
     value === "overdue" ||
     value === "none"
   );
+}
+
+export function isLeadAttentionFilter(value: string): value is LeadAttentionFilter {
+  return value === "all" || value === "needs";
 }
 
 function matchesArchiveView(lead: Lead, archiveView: LeadArchiveView): boolean {
@@ -336,6 +344,18 @@ function matchesInspectionFilter(
   return isInspectionUpcoming(lead.appointment_at, now);
 }
 
+function matchesAttentionFilter(
+  lead: Lead,
+  attention: LeadAttentionFilter,
+  now = new Date(),
+): boolean {
+  if (attention === "all") {
+    return true;
+  }
+
+  return isLeadNeedingAttention(lead, now);
+}
+
 export function filterLeads(
   leads: Lead[],
   filters: LeadFilterValues,
@@ -380,12 +400,42 @@ export function filterLeads(
       return false;
     }
 
+    if (!matchesAttentionFilter(lead, filters.attention, now)) {
+      return false;
+    }
+
     return true;
   });
 }
 
 export function isLeadAwaitingContact(lead: Lead): boolean {
   return lead.status === "new" && lead.last_contacted_at === null;
+}
+
+function isFollowUpAtOverdue(
+  followUpAt: string | null,
+  now: Date = new Date(),
+): boolean {
+  if (!followUpAt) {
+    return false;
+  }
+
+  return new Date(followUpAt).getTime() < now.getTime();
+}
+
+export function isLeadNeedingAttention(
+  lead: Lead,
+  now: Date = new Date(),
+): boolean {
+  if (!isActiveLead(lead) || isArchivedLead(lead)) {
+    return false;
+  }
+
+  return (
+    isLeadAwaitingContact(lead) ||
+    isFollowUpAtOverdue(lead.follow_up_at, now) ||
+    isInspectionOverdue(lead.appointment_at, now)
+  );
 }
 
 export function shouldSetLastContactedAt(

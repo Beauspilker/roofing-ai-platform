@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { LeadListEmptyState } from "@/components/dashboard/LeadListEmptyState";
 import { LeadListPanel } from "@/components/dashboard/LeadListPanel";
 import { PipelineVisibilitySection } from "@/components/dashboard/PipelineVisibilitySection";
+import { ValueAttentionSection } from "@/components/dashboard/ValueAttentionSection";
 import { LeadStatsCards } from "@/components/dashboard/LeadStatsCards";
 import { SignOutButton } from "@/components/auth/SignOutButton";
 import { getCompanyByUserId } from "@/lib/companies";
@@ -26,7 +27,7 @@ export default async function DashboardPage() {
   }
 
   const leads = await getLeadsForCompany(supabase, company.id);
-  const { stats, pipeline } = computeLeadDashboardVisibility(leads);
+  const { stats, pipeline, rollups } = computeLeadDashboardVisibility(leads);
 
   return (
     <main className="min-h-screen bg-black px-4 py-8 text-white sm:px-6 lg:px-8">
@@ -64,6 +65,8 @@ export default async function DashboardPage() {
         <LeadStatsCards stats={stats} />
 
         <PipelineVisibilitySection visibility={pipeline} />
+
+        <ValueAttentionSection rollups={rollups} />
 
         <section id="lead-list" className="space-y-4 scroll-mt-8">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">

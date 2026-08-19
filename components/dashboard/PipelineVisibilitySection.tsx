@@ -2,6 +2,7 @@ import Link from "next/link";
 import {
   ACTIVE_PIPELINE_STAGES,
   buildDashboardFollowUpFilterHref,
+  buildDashboardInspectionFilterHref,
   buildDashboardStatusFilterHref,
   type LeadPipelineVisibility,
 } from "@/lib/lead-dashboard-visibility";
@@ -55,9 +56,17 @@ function VisibilityCard({
 export function PipelineVisibilitySection({
   visibility,
 }: PipelineVisibilitySectionProps) {
-  const { pipelineStageCounts, wonCount, lostCount, followUpsDue, followUpsOverdue } =
-    visibility;
+  const {
+    pipelineStageCounts,
+    wonCount,
+    lostCount,
+    followUpsDue,
+    followUpsOverdue,
+    inspectionsDue,
+    inspectionsOverdue,
+  } = visibility;
   const followUpsUpcoming = Math.max(followUpsDue - followUpsOverdue, 0);
+  const inspectionsUpcoming = Math.max(inspectionsDue - inspectionsOverdue, 0);
 
   return (
     <section className="space-y-4">
@@ -111,6 +120,23 @@ export function PipelineVisibilitySection({
           label="Overdue follow-ups"
           count={followUpsOverdue}
           description="Past-due follow-ups on active leads"
+          countClassName={`${stageCountClassName} text-red-300`}
+        />
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-2">
+        <VisibilityCard
+          href={buildDashboardInspectionFilterHref("upcoming")}
+          label="Upcoming inspections"
+          count={inspectionsUpcoming}
+          description="Scheduled inspections on active leads"
+          countClassName={`${stageCountClassName} text-amber-200`}
+        />
+        <VisibilityCard
+          href={buildDashboardInspectionFilterHref("overdue")}
+          label="Overdue inspections"
+          count={inspectionsOverdue}
+          description="Past-due inspections on active leads"
           countClassName={`${stageCountClassName} text-red-300`}
         />
       </div>

@@ -13,6 +13,7 @@ import {
   isArchivedLead,
   isDashboardActiveLead,
   isLeadFollowUpFilter,
+  isLeadInspectionFilter,
   isLeadStatus,
   LEAD_PRIORITIES,
   LEAD_PROJECT_TYPES,
@@ -22,6 +23,7 @@ import {
   type LeadArchiveView,
   type LeadFilterValues,
   type LeadFollowUpFilter,
+  type LeadInspectionFilter,
   type LeadPriority,
   type LeadProjectType,
   type LeadSource,
@@ -42,6 +44,16 @@ const FOLLOW_UP_FILTER_OPTIONS: { value: LeadFollowUpFilter; label: string }[] =
   { value: "none", label: "No follow-up scheduled" },
 ];
 
+const INSPECTION_FILTER_OPTIONS: {
+  value: LeadInspectionFilter;
+  label: string;
+}[] = [
+  { value: "all", label: "All inspections" },
+  { value: "upcoming", label: "Upcoming inspections" },
+  { value: "overdue", label: "Overdue inspections" },
+  { value: "none", label: "No inspection scheduled" },
+];
+
 function LeadListPanelContent({ leads }: LeadListPanelProps) {
   const searchParams = useSearchParams();
   const [filters, setFilters] = useState<LeadFilterValues>(DEFAULT_LEAD_FILTERS);
@@ -49,6 +61,7 @@ function LeadListPanelContent({ leads }: LeadListPanelProps) {
   useEffect(() => {
     const status = searchParams.get("status");
     const followUp = searchParams.get("followUp");
+    const inspection = searchParams.get("inspection");
 
     setFilters((current) => {
       let next = current;
@@ -65,6 +78,14 @@ function LeadListPanelContent({ leads }: LeadListPanelProps) {
         next = {
           ...next,
           followUp,
+          archiveView: "active",
+        };
+      }
+
+      if (inspection && isLeadInspectionFilter(inspection)) {
+        next = {
+          ...next,
+          inspection,
           archiveView: "active",
         };
       }
@@ -97,6 +118,7 @@ function LeadListPanelContent({ leads }: LeadListPanelProps) {
     filters.projectType !== "all" ||
     filters.source !== "all" ||
     filters.followUp !== "all" ||
+    filters.inspection !== "all" ||
     filters.archiveView !== "active";
 
   function updateFilter<K extends keyof LeadFilterValues>(
@@ -137,7 +159,7 @@ function LeadListPanelContent({ leads }: LeadListPanelProps) {
           />
         </div>
 
-        <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+        <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
           <FilterSelect
             id="filter-status"
             label="Status"
@@ -160,6 +182,16 @@ function LeadListPanelContent({ leads }: LeadListPanelProps) {
               updateFilter("followUp", value as LeadFollowUpFilter)
             }
             options={FOLLOW_UP_FILTER_OPTIONS}
+          />
+
+          <FilterSelect
+            id="filter-inspection"
+            label="Inspection"
+            value={filters.inspection}
+            onChange={(value) =>
+              updateFilter("inspection", value as LeadInspectionFilter)
+            }
+            options={INSPECTION_FILTER_OPTIONS}
           />
 
           <FilterSelect

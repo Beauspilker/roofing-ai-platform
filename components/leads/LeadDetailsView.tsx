@@ -4,6 +4,10 @@ import type { LeadOutcomeDisplay } from "@/lib/lead-outcome";
 import { formatLostReasonLabel } from "@/lib/lead-outcome";
 import { isFollowUpOverdue } from "@/lib/lead-follow-up";
 import {
+  hasContactEmail,
+  hasContactPhone,
+} from "@/lib/lead-list-display";
+import {
   deriveLeadPriority,
   formatInsuranceClaim,
   formatLeadAppointmentAt,
@@ -100,11 +104,33 @@ export function LeadDetailsView({
           <DetailField label="Full name" value={lead.full_name} />
           <DetailField
             label="Phone"
-            value={formatLeadFieldValue(lead.phone)}
+            value={
+              hasContactPhone(lead.phone) ? (
+                <a
+                  href={`tel:${lead.phone?.trim()}`}
+                  className="text-blue-300 transition hover:text-blue-200"
+                >
+                  {lead.phone}
+                </a>
+              ) : (
+                formatLeadFieldValue(lead.phone)
+              )
+            }
           />
           <DetailField
             label="Email"
-            value={formatLeadFieldValue(lead.email)}
+            value={
+              hasContactEmail(lead.email) ? (
+                <a
+                  href={`mailto:${lead.email?.trim()}`}
+                  className="text-blue-300 transition hover:text-blue-200"
+                >
+                  {lead.email}
+                </a>
+              ) : (
+                formatLeadFieldValue(lead.email)
+              )
+            }
           />
         </dl>
       </section>
@@ -157,7 +183,15 @@ export function LeadDetailsView({
         {!hideDescription ? (
           <DetailField
             label="Description"
-            value={formatLeadFieldValue(lead.description)}
+            value={
+              lead.description ? (
+                <span className="whitespace-pre-wrap">
+                  {lead.description}
+                </span>
+              ) : (
+                formatLeadFieldValue(lead.description)
+              )
+            }
           />
         ) : null}
       </section>

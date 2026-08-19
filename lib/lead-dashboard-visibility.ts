@@ -1,4 +1,8 @@
 import { isFollowUpOverdue } from "@/lib/lead-follow-up";
+import {
+  hasScheduledInspection,
+  isInspectionOverdue,
+} from "@/lib/lead-inspection-visibility";
 import { PIPELINE_STAGES } from "@/lib/lead-pipeline";
 import {
   computeLeadDashboardStats,
@@ -25,6 +29,8 @@ export type LeadPipelineVisibility = {
   lostCount: number;
   followUpsDue: number;
   followUpsOverdue: number;
+  inspectionsDue: number;
+  inspectionsOverdue: number;
 };
 
 export type LeadDashboardVisibility = {
@@ -50,6 +56,8 @@ export function computeLeadPipelineVisibility(
   let lostCount = 0;
   let followUpsDue = 0;
   let followUpsOverdue = 0;
+  let inspectionsDue = 0;
+  let inspectionsOverdue = 0;
 
   for (const lead of leads) {
     if (isArchivedLead(lead)) {
@@ -77,6 +85,14 @@ export function computeLeadPipelineVisibility(
         followUpsOverdue += 1;
       }
     }
+
+    if (hasScheduledInspection(lead.appointment_at)) {
+      inspectionsDue += 1;
+
+      if (isInspectionOverdue(lead.appointment_at, now)) {
+        inspectionsOverdue += 1;
+      }
+    }
   }
 
   return {
@@ -85,6 +101,8 @@ export function computeLeadPipelineVisibility(
     lostCount,
     followUpsDue,
     followUpsOverdue,
+    inspectionsDue,
+    inspectionsOverdue,
   };
 }
 
@@ -106,4 +124,10 @@ export function buildDashboardFollowUpFilterHref(
   followUp: "due" | "overdue",
 ): string {
   return `/dashboard?followUp=${encodeURIComponent(followUp)}#lead-list`;
+}
+
+export function buildDashboardInspectionFilterHref(
+  inspection: "upcoming" | "overdue",
+): string {
+  return `/dashboard?inspection=${encodeURIComponent(inspection)}#lead-list`;
 }

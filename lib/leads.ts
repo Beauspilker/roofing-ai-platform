@@ -1,3 +1,8 @@
+import {
+  hasScheduledInspection,
+  isInspectionOverdue,
+  isInspectionUpcoming,
+} from "@/lib/lead-inspection-visibility";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 export type Lead = {
@@ -205,6 +210,8 @@ export type LeadArchiveView = "active" | "archived" | "all";
 
 export type LeadFollowUpFilter = "all" | "due" | "overdue" | "none";
 
+export type LeadInspectionFilter = "all" | "upcoming" | "overdue" | "none";
+
 export type LeadFilterValues = {
   search: string;
   status: LeadStatus | "all";
@@ -213,6 +220,7 @@ export type LeadFilterValues = {
   source: LeadSource | "all";
   archiveView: LeadArchiveView;
   followUp: LeadFollowUpFilter;
+  inspection: LeadInspectionFilter;
 };
 
 export const DEFAULT_LEAD_FILTERS: LeadFilterValues = {
@@ -223,10 +231,22 @@ export const DEFAULT_LEAD_FILTERS: LeadFilterValues = {
   source: "all",
   archiveView: "active",
   followUp: "all",
+  inspection: "all",
 };
 
 export function isLeadFollowUpFilter(value: string): value is LeadFollowUpFilter {
   return value === "all" || value === "due" || value === "overdue" || value === "none";
+}
+
+export function isLeadInspectionFilter(
+  value: string,
+): value is LeadInspectionFilter {
+  return (
+    value === "all" ||
+    value === "upcoming" ||
+    value === "overdue" ||
+    value === "none"
+  );
 }
 
 function matchesArchiveView(lead: Lead, archiveView: LeadArchiveView): boolean {
@@ -290,6 +310,32 @@ function matchesFollowUpFilter(
   return true;
 }
 
+function matchesInspectionFilter(
+  lead: Lead,
+  inspection: LeadInspectionFilter,
+  now = new Date(),
+): boolean {
+  if (inspection === "all") {
+    return true;
+  }
+
+  const hasInspection = hasScheduledInspection(lead.appointment_at);
+
+  if (inspection === "none") {
+    return !hasInspection;
+  }
+
+  if (!hasInspection) {
+    return false;
+  }
+
+  if (inspection === "overdue") {
+    return isInspectionOverdue(lead.appointment_at, now);
+  }
+
+  return isInspectionUpcoming(lead.appointment_at, now);
+}
+
 export function filterLeads(
   leads: Lead[],
   filters: LeadFilterValues,
@@ -327,6 +373,10 @@ export function filterLeads(
     }
 
     if (!matchesFollowUpFilter(lead, filters.followUp, now)) {
+      return false;
+    }
+
+    if (!matchesInspectionFilter(lead, filters.inspection, now)) {
       return false;
     }
 

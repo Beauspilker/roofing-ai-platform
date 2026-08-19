@@ -2,14 +2,24 @@
 
 import { useRouter } from "next/navigation";
 import { ArchivedBadge } from "@/components/leads/ArchivedBadge";
+import {
+  isInspectionOverdue,
+  isInspectionUpcoming,
+} from "@/lib/lead-inspection-visibility";
+import {
+  formatLeadListEstimateHint,
+  formatLeadListPhone,
+  shouldShowEstimateHint,
+} from "@/lib/lead-list-display";
 import type { Lead } from "@/lib/leads";
 import {
   deriveLeadPriority,
   formatLeadAddress,
-  formatLeadCallType,
+  formatLeadAppointmentAt,
   formatLeadCreatedAt,
   formatLeadFollowUpAt,
   formatLeadStatus,
+  getSourceLabel,
   isArchivedLead,
 } from "@/lib/leads";
 import { isFollowUpOverdue } from "@/lib/lead-follow-up";
@@ -50,13 +60,22 @@ function PriorityBadge({ lead }: { lead: Lead }) {
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
+function StatusBadge({ lead }: { lead: Lead }) {
+  const estimateHint = shouldShowEstimateHint(lead)
+    ? formatLeadListEstimateHint(lead)
+    : null;
+
   return (
-    <span
-      className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-medium ${statusStyles[status] ?? "border-gray-700 bg-gray-900 text-gray-300"}`}
-    >
-      {formatLeadStatus(status)}
-    </span>
+    <div className="space-y-1">
+      <span
+        className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-medium ${statusStyles[lead.status] ?? "border-gray-700 bg-gray-900 text-gray-300"}`}
+      >
+        {formatLeadStatus(lead.status)}
+      </span>
+      {estimateHint ? (
+        <p className="text-xs text-gray-400">{estimateHint}</p>
+      ) : null}
+    </div>
   );
 }
 
@@ -77,6 +96,32 @@ function FollowUpBadge({ lead }: { lead: Lead }) {
     >
       {overdue ? "Overdue · " : "Due · "}
       {formatLeadFollowUpAt(lead.follow_up_at)}
+    </span>
+  );
+}
+
+function InspectionBadge({ lead }: { lead: Lead }) {
+  if (!lead.appointment_at) {
+    return <span className="text-gray-500">—</span>;
+  }
+
+  const overdue = isInspectionOverdue(lead.appointment_at);
+  const upcoming = isInspectionUpcoming(lead.appointment_at);
+
+  if (!overdue && !upcoming) {
+    return <span className="text-gray-500">—</span>;
+  }
+
+  return (
+    <span
+      className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-medium ${
+        overdue
+          ? "border-red-900/50 bg-red-950/40 text-red-300"
+          : "border-amber-900/50 bg-amber-950/40 text-amber-200"
+      }`}
+    >
+      {overdue ? "Overdue · " : "Upcoming · "}
+      {formatLeadAppointmentAt(lead.appointment_at)}
     </span>
   );
 }
@@ -111,13 +156,17 @@ function LeadRow({ lead }: { lead: Lead }) {
           {isArchivedLead(lead) ? <ArchivedBadge /> : null}
         </div>
       </td>
+      <td className="px-4 py-4 sm:px-6">{formatLeadListPhone(lead.phone)}</td>
       <td className="px-4 py-4 sm:px-6">{formatLeadAddress(lead)}</td>
-      <td className="px-4 py-4 sm:px-6">{formatLeadCallType(lead)}</td>
+      <td className="px-4 py-4 sm:px-6">{getSourceLabel(lead.source)}</td>
       <td className="px-4 py-4 sm:px-6">
-        <StatusBadge status={lead.status} />
+        <StatusBadge lead={lead} />
       </td>
       <td className="px-4 py-4 sm:px-6">
         <PriorityBadge lead={lead} />
+      </td>
+      <td className="px-4 py-4 sm:px-6">
+        <InspectionBadge lead={lead} />
       </td>
       <td className="px-4 py-4 sm:px-6">
         <FollowUpBadge lead={lead} />
@@ -137,10 +186,12 @@ export function LeadListTable({ leads }: LeadListTableProps) {
           <thead>
             <tr className="text-left text-xs uppercase tracking-[0.15em] text-gray-500">
               <th className="px-4 py-4 font-medium sm:px-6">Customer</th>
+              <th className="px-4 py-4 font-medium sm:px-6">Phone</th>
               <th className="px-4 py-4 font-medium sm:px-6">Property address</th>
-              <th className="px-4 py-4 font-medium sm:px-6">Call type</th>
+              <th className="px-4 py-4 font-medium sm:px-6">Source</th>
               <th className="px-4 py-4 font-medium sm:px-6">Status</th>
               <th className="px-4 py-4 font-medium sm:px-6">Priority</th>
+              <th className="px-4 py-4 font-medium sm:px-6">Inspection</th>
               <th className="px-4 py-4 font-medium sm:px-6">Follow-up</th>
               <th className="px-4 py-4 font-medium sm:px-6">Created</th>
             </tr>

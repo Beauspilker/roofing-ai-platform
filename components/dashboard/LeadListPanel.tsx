@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { LeadListTable } from "@/components/dashboard/LeadListTable";
 import {
   DEFAULT_LEAD_FILTERS,
@@ -11,6 +12,8 @@ import {
   getSourceLabel,
   isArchivedLead,
   isDashboardActiveLead,
+  isLeadFollowUpFilter,
+  isLeadStatus,
   LEAD_PRIORITIES,
   LEAD_PROJECT_TYPES,
   LEAD_SOURCES,
@@ -18,6 +21,7 @@ import {
   type Lead,
   type LeadArchiveView,
   type LeadFilterValues,
+  type LeadFollowUpFilter,
   type LeadPriority,
   type LeadProjectType,
   type LeadSource,
@@ -31,8 +35,43 @@ type LeadListPanelProps = {
 const inputClassName =
   "w-full rounded-xl border border-gray-800 bg-black px-4 py-3 text-white outline-none transition placeholder:text-gray-500 focus:border-blue-600";
 
-export function LeadListPanel({ leads }: LeadListPanelProps) {
+const FOLLOW_UP_FILTER_OPTIONS: { value: LeadFollowUpFilter; label: string }[] = [
+  { value: "all", label: "All follow-ups" },
+  { value: "due", label: "Follow-ups due" },
+  { value: "overdue", label: "Overdue follow-ups" },
+  { value: "none", label: "No follow-up scheduled" },
+];
+
+function LeadListPanelContent({ leads }: LeadListPanelProps) {
+  const searchParams = useSearchParams();
   const [filters, setFilters] = useState<LeadFilterValues>(DEFAULT_LEAD_FILTERS);
+
+  useEffect(() => {
+    const status = searchParams.get("status");
+    const followUp = searchParams.get("followUp");
+
+    setFilters((current) => {
+      let next = current;
+
+      if (status && isLeadStatus(status)) {
+        next = {
+          ...next,
+          status,
+          archiveView: "active",
+        };
+      }
+
+      if (followUp && isLeadFollowUpFilter(followUp)) {
+        next = {
+          ...next,
+          followUp,
+          archiveView: "active",
+        };
+      }
+
+      return next;
+    });
+  }, [searchParams]);
 
   const filteredLeads = useMemo(
     () => filterLeads(leads, filters),
@@ -57,6 +96,7 @@ export function LeadListPanel({ leads }: LeadListPanelProps) {
     filters.priority !== "all" ||
     filters.projectType !== "all" ||
     filters.source !== "all" ||
+    filters.followUp !== "all" ||
     filters.archiveView !== "active";
 
   function updateFilter<K extends keyof LeadFilterValues>(
@@ -97,7 +137,7 @@ export function LeadListPanel({ leads }: LeadListPanelProps) {
           />
         </div>
 
-        <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
           <FilterSelect
             id="filter-status"
             label="Status"
@@ -110,6 +150,16 @@ export function LeadListPanel({ leads }: LeadListPanelProps) {
                 label: formatLeadStatus(value),
               })),
             ]}
+          />
+
+          <FilterSelect
+            id="filter-follow-up"
+            label="Follow-up"
+            value={filters.followUp}
+            onChange={(value) =>
+              updateFilter("followUp", value as LeadFollowUpFilter)
+            }
+            options={FOLLOW_UP_FILTER_OPTIONS}
           />
 
           <FilterSelect
@@ -174,6 +224,20 @@ export function LeadListPanel({ leads }: LeadListPanelProps) {
         <LeadListTable leads={filteredLeads} />
       )}
     </div>
+  );
+}
+
+export function LeadListPanel(props: LeadListPanelProps) {
+  return (
+    <Suspense
+      fallback={
+        <div className="rounded-xl border border-gray-800 bg-gray-950 px-6 py-16 text-center text-sm text-gray-400">
+          Loading lead filters...
+        </div>
+      }
+    >
+      <LeadListPanelContent {...props} />
+    </Suspense>
   );
 }
 

@@ -203,6 +203,8 @@ export function deriveLeadPriority(lead: Lead): LeadPriority {
 
 export type LeadArchiveView = "active" | "archived" | "all";
 
+export type LeadFollowUpFilter = "all" | "due" | "overdue" | "none";
+
 export type LeadFilterValues = {
   search: string;
   status: LeadStatus | "all";
@@ -210,6 +212,7 @@ export type LeadFilterValues = {
   projectType: LeadProjectType | "all";
   source: LeadSource | "all";
   archiveView: LeadArchiveView;
+  followUp: LeadFollowUpFilter;
 };
 
 export const DEFAULT_LEAD_FILTERS: LeadFilterValues = {
@@ -219,7 +222,12 @@ export const DEFAULT_LEAD_FILTERS: LeadFilterValues = {
   projectType: "all",
   source: "all",
   archiveView: "active",
+  followUp: "all",
 };
+
+export function isLeadFollowUpFilter(value: string): value is LeadFollowUpFilter {
+  return value === "all" || value === "due" || value === "overdue" || value === "none";
+}
 
 function matchesArchiveView(lead: Lead, archiveView: LeadArchiveView): boolean {
   if (archiveView === "all") {
@@ -253,9 +261,39 @@ function leadMatchesSearch(lead: Lead, search: string): boolean {
   );
 }
 
+function matchesFollowUpFilter(
+  lead: Lead,
+  followUp: LeadFollowUpFilter,
+  now = new Date(),
+): boolean {
+  if (followUp === "all") {
+    return true;
+  }
+
+  const hasFollowUp = lead.follow_up_at !== null;
+
+  if (followUp === "none") {
+    return !hasFollowUp;
+  }
+
+  if (!hasFollowUp) {
+    return false;
+  }
+
+  const overdue =
+    new Date(lead.follow_up_at as string).getTime() < now.getTime();
+
+  if (followUp === "overdue") {
+    return overdue;
+  }
+
+  return true;
+}
+
 export function filterLeads(
   leads: Lead[],
   filters: LeadFilterValues,
+  now: Date = new Date(),
 ): Lead[] {
   return leads.filter((lead) => {
     if (!matchesArchiveView(lead, filters.archiveView)) {
@@ -285,6 +323,10 @@ export function filterLeads(
     }
 
     if (filters.source !== "all" && lead.source !== filters.source) {
+      return false;
+    }
+
+    if (!matchesFollowUpFilter(lead, filters.followUp, now)) {
       return false;
     }
 

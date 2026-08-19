@@ -2,10 +2,12 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { LeadListEmptyState } from "@/components/dashboard/LeadListEmptyState";
 import { LeadListPanel } from "@/components/dashboard/LeadListPanel";
+import { PipelineVisibilitySection } from "@/components/dashboard/PipelineVisibilitySection";
 import { LeadStatsCards } from "@/components/dashboard/LeadStatsCards";
 import { SignOutButton } from "@/components/auth/SignOutButton";
 import { getCompanyByUserId } from "@/lib/companies";
-import { computeLeadDashboardStats, getLeadsForCompany } from "@/lib/leads";
+import { computeLeadDashboardVisibility } from "@/lib/lead-dashboard-visibility";
+import { getLeadsForCompany } from "@/lib/leads";
 import { createClient } from "@/lib/supabase/server";
 
 export default async function DashboardPage() {
@@ -24,7 +26,7 @@ export default async function DashboardPage() {
   }
 
   const leads = await getLeadsForCompany(supabase, company.id);
-  const stats = computeLeadDashboardStats(leads);
+  const { stats, pipeline } = computeLeadDashboardVisibility(leads);
 
   return (
     <main className="min-h-screen bg-black px-4 py-8 text-white sm:px-6 lg:px-8">
@@ -61,7 +63,9 @@ export default async function DashboardPage() {
 
         <LeadStatsCards stats={stats} />
 
-        <section className="space-y-4">
+        <PipelineVisibilitySection visibility={pipeline} />
+
+        <section id="lead-list" className="space-y-4 scroll-mt-8">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <h2 className="text-xl font-semibold">Lead list</h2>

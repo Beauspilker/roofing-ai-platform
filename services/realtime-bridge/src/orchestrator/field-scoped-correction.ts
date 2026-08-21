@@ -211,16 +211,16 @@ function incrementConfirmationClarificationAttempts(
   };
 }
 
-function buildCorrectedFieldReadback(field: ConfirmableFieldKey, value: string): string {
+export function buildCorrectedFieldReadback(field: ConfirmableFieldKey, value: string): string {
   switch (field) {
     case "callback_phone":
-      return `Got it. I now have your callback number as ${formatCallbackForSpeech(value)}. Is that correct?`;
+      return `And is ${formatCallbackForSpeech(value)} the best number for them to reach you?`;
     case "address":
-      return `Got it. I now have your service address as ${formatAddressForSpeech(sanitizeAddressValue(value))}. Is that correct?`;
+      return `I have the property at ${formatAddressForSpeech(sanitizeAddressValue(value))}. Is that correct?`;
     case "full_name":
-      return `Got it. I now have your name as ${value.trim()}. Is that correct?`;
+      return `I want to make sure I got your name right — ${value.trim()}. Is that correct?`;
     case "appointment_preference":
-      return `Got it. I now have ${value.trim()}. Is that correct?`;
+      return `I have ${value.trim()}. Is that correct?`;
   }
 }
 

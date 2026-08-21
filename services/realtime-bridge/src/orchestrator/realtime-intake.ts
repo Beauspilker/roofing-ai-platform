@@ -10,6 +10,7 @@ import {
   buildPhoneConfirmationReply as buildPhoneConfirmationReplyFromFields,
 } from "./confirmation-builders.js";
 import { buildContextualMultiFieldAcknowledgment } from "./contextual-acknowledgment.js";
+import { buildSituationAwareIntakeReply } from "./situation-acknowledgment.js";
 import {
   buildAddressReadbackConfirmation,
   needsAddressReadback,
@@ -266,6 +267,7 @@ export function buildIntakeReply(
   filledCount: number,
   afterConfirmation = false,
   fieldsBefore?: RealtimeFields,
+  options: { isFirstStoryTurn?: boolean } = {},
 ): string {
   if (needsCallbackReadback(fields)) {
     return buildPhoneConfirmationReplyFromFields(fields);
@@ -282,6 +284,19 @@ export function buildIntakeReply(
   }
 
   const question = getNaturalTransitionQuestion(nextField, fields, callerPhone);
+  const before = fieldsBefore ?? fields;
+  const situationReply = buildSituationAwareIntakeReply(
+    before,
+    fields,
+    answer,
+    question,
+    { isFirstStoryTurn: options.isFirstStoryTurn },
+  );
+
+  if (situationReply !== question) {
+    return guardIntakeReply(situationReply, question);
+  }
+
   const contextualAck =
     fieldsBefore && !afterConfirmation
       ? buildContextualMultiFieldAcknowledgment(fieldsBefore, fields, answer)

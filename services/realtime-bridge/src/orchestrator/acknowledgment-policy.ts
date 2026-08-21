@@ -1,12 +1,20 @@
 const CONTEXT_ACKNOWLEDGMENTS: Record<string, readonly string[]> = {
-  callback_phone: ["Absolutely.", "Thank you."],
-  address: ["Thank you.", "All right."],
-  emergency_or_active_leak: ["Understood.", "Thank you."],
-  insurance_claim_started: ["That helps.", "Okay."],
-  adjuster_contacted: ["That helps.", "Thanks for clarifying."],
-  appointment_preference: ["All right.", "Okay."],
-  default: ["Thank you.", "All right.", "That helps.", "Okay."],
+  callback_phone: ["Absolutely."],
+  address: ["Thank you."],
+  emergency_or_active_leak: ["Understood."],
+  insurance_claim_started: ["That helps."],
+  adjuster_contacted: ["Thanks for clarifying."],
+  appointment_preference: ["All right."],
+  default: [],
 } as const;
+
+export const BANNED_ACKNOWLEDGMENT_PHRASES = [
+  "got it",
+  "okay, got it",
+  "perfect",
+  "got it.",
+  "okay.",
+] as const;
 
 /** Safety phrase only when the caller explicitly mentions people, injuries, or personal safety. */
 export function shouldUseSafetyAcknowledgment(speech: string): boolean {
@@ -89,7 +97,7 @@ export class AcknowledgmentPolicy {
     const shouldAcknowledge =
       options.forceAck === true ||
       options.afterConfirmation === true ||
-      (isSubstantiveAnswer && (options.filledCount ?? 0) > 0 && this.turnsSinceAck >= 2);
+      (isSubstantiveAnswer && (options.filledCount ?? 0) > 0 && this.turnsSinceAck >= 3);
 
     if (!shouldAcknowledge) {
       return null;
@@ -109,6 +117,15 @@ export class AcknowledgmentPolicy {
         (answer.length + (options.nextField?.length ?? 0) + candidates.length) %
           candidates.length
       ] ?? null;
+
+    if (
+      !selected ||
+      BANNED_ACKNOWLEDGMENT_PHRASES.some((phrase) =>
+        selected.toLowerCase().includes(phrase),
+      )
+    ) {
+      return null;
+    }
 
     this.recordUsed(selected);
     return selected;

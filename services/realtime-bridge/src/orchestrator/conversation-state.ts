@@ -20,7 +20,7 @@ export const SUMMARY_CONFIRMATION_QUESTION = "Does all of that sound correct?";
 export const SUMMARY_RECONFIRMATION_QUESTION = "Does that sound correct now?";
 
 export const CLOSING_MESSAGE =
-  "Perfect, I have everything I need. I'll send this information to the roofing company, and someone will reach out using the callback information you provided. Thanks for calling, and have a great day.";
+  "Alright, I'll get all of this over to the roofing team, and someone will follow up with you shortly. Thanks for calling. Have a good one.";
 
 export function isAwaitingCallerInput(state: ConversationState): boolean {
   return (

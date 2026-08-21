@@ -281,22 +281,26 @@ test("confirmed or completed fields are not asked again after story opening", as
   assert.doesNotMatch(outcome.replyText ?? "", /property address/i);
 });
 
-test("professional closing remains unchanged", () => {
+test("professional closing uses natural personalized wording", () => {
   const closing = buildClosingMessage({
-    full_name: "Beau Spilker",
-    callback_phone: "+14025550187",
-    callback_phone_confirmed: true,
-    address: "123 Main Street",
-    address_confirmed: true,
-    problem_description: "hail damage",
-    emergency_or_active_leak: false,
-    insurance_claim_started: false,
-    appointment_preference: "tomorrow afternoon",
-    schedule_confirmed: true,
-    summary_confirmed: true,
+    fields: {
+      full_name: "Beau Spilker",
+      caller_first_name: "Beau",
+      callback_phone: "+14025550187",
+      callback_phone_confirmed: true,
+      address: "123 Main Street",
+      address_confirmed: true,
+      problem_description: "hail damage",
+      emergency_or_active_leak: false,
+      insurance_claim_started: false,
+      appointment_preference: "tomorrow afternoon",
+      schedule_confirmed: true,
+      summary_confirmed: true,
+    },
   });
 
-  assert.match(closing, /Perfect, I have everything I need/i);
+  assert.match(closing, /Alright/i);
+  assert.match(closing, /Beau/i);
   assert.match(closing, /Thanks for calling/i);
   assert.doesNotMatch(closing, /Does all of that sound correct/i);
 });

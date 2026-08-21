@@ -59,6 +59,32 @@ export function buildContextualMultiFieldAcknowledgment(
     return null;
   }
 
+  if (
+    before.emergency_or_active_leak !== true &&
+    after.emergency_or_active_leak === true
+  ) {
+    return "Okay — if water's already getting inside, I'll flag that as urgent.";
+  }
+
+  if (
+    !before.insurance_claim_started &&
+    after.insurance_claim_started === false &&
+    /\b(haven't|have not|not yet|didn't).*(insurance|adjuster|claim)/i.test(trimmed)
+  ) {
+    return "That's fine — I'll make sure the roofing team knows that.";
+  }
+
+  if (
+    !before.problem_description?.trim() &&
+    after.problem_description?.trim() &&
+    /\b(leak|water|hail|storm|shingles?)\b/i.test(trimmed)
+  ) {
+    const damageNote = describeDamage(after);
+    if (damageNote) {
+      return `I'll make sure the team knows about ${damageNote}.`;
+    }
+  }
+
   const notes: string[] = [];
 
   if (!before.problem_description?.trim() && after.problem_description?.trim()) {
@@ -66,13 +92,6 @@ export function buildContextualMultiFieldAcknowledgment(
     if (damageNote) {
       notes.push(damageNote);
     }
-  }
-
-  if (
-    before.emergency_or_active_leak !== true &&
-    after.emergency_or_active_leak === true
-  ) {
-    notes.push("the active leak");
   }
 
   if (
@@ -129,5 +148,5 @@ export function buildContextualMultiFieldAcknowledgment(
     return null;
   }
 
-  return `Thanks. I've noted ${formatAckList(notes.slice(0, 3))}.`;
+  return `Thanks — I've noted ${formatAckList(notes.slice(0, 3))}.`;
 }

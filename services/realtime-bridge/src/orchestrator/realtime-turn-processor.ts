@@ -490,6 +490,7 @@ function buildPostIntakeReply(
     filledCount,
     options.afterConfirmation === true,
     fieldsBefore,
+    { isFirstStoryTurn: options.isFirstCallerTurn === true },
   );
   const combinedReply = ensureSingleIntakeQuestion(intakeReply);
 
@@ -1146,7 +1147,10 @@ export async function processRealtimeCallerTurn(
       summary_confirmed: true,
     });
     const reply = ensureSingleIntakeQuestion(
-      buildClosingMessage({ informationSent: confirmedFields.intake_information_sent === true }),
+      buildClosingMessage({
+        informationSent: confirmedFields.intake_information_sent === true,
+        fields: confirmedFields,
+      }),
     );
 
     session = applyLocalSessionUpdate(session, {
@@ -1211,6 +1215,7 @@ export async function processRealtimeCallerTurn(
       });
       const reply = buildClosingMessage({
         informationSent: confirmedFields.intake_information_sent === true,
+        fields: confirmedFields,
       });
       session = applyLocalSessionUpdate(session, {
         collectedFields: confirmedFields,

@@ -174,13 +174,15 @@ test("natural acknowledgment appears on some turns but not every turn", () => {
             : "yes",
         filledCount: index > 0 ? 1 : 0,
         nextField: "address",
+        afterConfirmation: index === 4,
       }),
     );
   }
 
   const ackCount = results.filter((value) => value !== null).length;
-  assert.ok(ackCount >= 2);
-  assert.ok(ackCount <= 8);
+  assert.ok(ackCount >= 1);
+  assert.ok(ackCount <= 6);
+  assert.ok(ackCount < results.length);
 });
 
 test("intake wording never uses closing language", () => {
@@ -339,7 +341,7 @@ test("corrected callback number is read back and explicitly confirmed", async ()
 
   assert.equal(outcome.session?.collected_fields.callback_phone, "+14025555678");
   assert.match(outcome.replyText, /402-555-5678/);
-  assert.match(outcome.replyText, /Is that correct\?/);
+  assert.match(outcome.replyText, /best number for them to reach you\?/);
   assert.equal(outcome.nextConversationState, "awaiting_callback_confirmation");
 });
 
@@ -446,8 +448,8 @@ test("summary confirmation does not include closing in the same response", async
     acknowledgmentPolicy: policy,
   });
 
-  assert.match(outcome.replyText, /Perfect, I have everything I need/i);
-  assert.doesNotMatch(outcome.replyText, /Great\. I'll send this information/);
+  assert.match(outcome.replyText, /Alright/i);
+  assert.match(outcome.replyText, /roofing team/i);
   assert.equal(outcome.hangupAfterMark, true);
 });
 
@@ -512,16 +514,17 @@ test("confirmation yes returns closing only in a separate turn", async () => {
     acknowledgmentPolicy: policy,
   });
 
-  assert.equal(outcome.replyText, CLOSING_MESSAGE);
+  assert.match(outcome.replyText, /Alright,/);
+  assert.match(outcome.replyText, /Beau/);
   assert.equal(outcome.hangupAfterMark, true);
   assert.equal(blocksAutomatedClosing("awaiting_summary_confirmation"), true);
 });
 
 test("closing message matches required wording", () => {
   assert.equal(buildClosingMessage(), CLOSING_MESSAGE);
-  assert.match(CLOSING_MESSAGE, /^Perfect, I have everything I need\./);
-  assert.match(CLOSING_MESSAGE, /I'll send this information to the roofing company/i);
-  assert.match(CLOSING_MESSAGE, /have a great day/i);
+  assert.match(CLOSING_MESSAGE, /^Alright,/);
+  assert.match(CLOSING_MESSAGE, /roofing team/i);
+  assert.match(CLOSING_MESSAGE, /Have a good one/i);
 });
 
 test("ResponseStateGuard blocks duplicate closing triggers while awaiting mark", () => {

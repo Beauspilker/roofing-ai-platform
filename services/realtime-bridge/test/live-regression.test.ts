@@ -132,17 +132,17 @@ test("TEST D — normal closing skips full readback", async () => {
   });
 
   assert.doesNotMatch(outcome.replyText ?? "", /Does all of that sound correct/i);
-  assert.match(outcome.replyText ?? "", /Perfect, I have everything I need/i);
-  assert.match(outcome.replyText ?? "", /I'll send this information/i);
-  assert.match(outcome.replyText ?? "", /have a great day/i);
+  assert.match(outcome.replyText ?? "", /Alright/i);
+  assert.match(outcome.replyText ?? "", /roofing team/i);
+  assert.match(outcome.replyText ?? "", /Have a good one/i);
   assert.equal(outcome.hangupAfterMark, true);
   assert.equal(outcome.nextConversationState, "delivering_closing");
 });
 
 test("TEST E — save-state wording uses future tense before dispatch", () => {
-  assert.match(buildClosingMessage({ informationSent: false }), /I'll send this information/i);
-  assert.doesNotMatch(buildClosingMessage({ informationSent: false }), /I've sent your information/i);
-  assert.match(buildClosingMessage({ informationSent: true }), /I've sent your information/i);
+  assert.match(buildClosingMessage({ informationSent: false }), /I'll get all of this over/i);
+  assert.doesNotMatch(buildClosingMessage({ informationSent: false }), /I've sent everything/i);
+  assert.match(buildClosingMessage({ informationSent: true }), /I've sent everything/i);
 });
 
 test("confirmation builders keep phone and address separate on every path", () => {

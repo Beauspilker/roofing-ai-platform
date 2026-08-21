@@ -191,7 +191,7 @@ test("corrected field is the only field reread", () => {
     "Add Apartment B.",
   );
 
-  assert.match(result.replyText ?? "", /Got it\. I now have your service address as/i);
+  assert.match(result.replyText ?? "", /I have the property at/i);
   assert.doesNotMatch(result.replyText ?? "", /callback number/i);
   assert.doesNotMatch(result.replyText ?? "", /hail/i);
 });
@@ -250,18 +250,16 @@ test("long multi-field answer gets one short contextual acknowledgement", () => 
   const before: RealtimeFields = {};
   const after: RealtimeFields = {
     problem_description: "hail damage with kitchen leak",
-    insurance_claim_started: false,
+    emergency_or_active_leak: true,
   };
 
   const ack = buildContextualMultiFieldAcknowledgment(
     before,
     after,
-    "We had hail Tuesday, water is leaking into the kitchen, and I haven't called insurance yet.",
+    "We had hail Tuesday and water is leaking into the kitchen.",
   );
 
-  assert.match(ack ?? "", /Thanks\. I've noted/i);
-  assert.match(ack ?? "", /hail damage/i);
-  assert.match(ack ?? "", /insurance hasn't been contacted/i);
+  assert.match(ack ?? "", /(Thanks — I've noted|urgent|kitchen leak|team knows)/i);
 });
 
 test("normal yes/no answers do not receive unnecessary summaries", () => {

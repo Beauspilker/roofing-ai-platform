@@ -8,6 +8,7 @@ import {
 import { CLOSING_MESSAGE } from "./conversation-state.js";
 import type { PhotosAvailability } from "./photos-field.js";
 import { buildValidatedSpokenSummary } from "./summary-builder.js";
+import { extractCallerFirstName } from "./situation-acknowledgment.js";
 
 export const REALTIME_OPENING_GREETING =
   "Thank you for calling Beau's Roofing. I'm Beau's Roofing's AI assistant.";
@@ -23,7 +24,7 @@ export const REALTIME_INTRO_TRANSITION = "";
 export const REALTIME_OPENING_QUESTION = REALTIME_OPENING_STORY_QUESTION;
 
 export const REALTIME_ANYTHING_ELSE_QUESTION =
-  "Is there anything else you'd like the roofing company to know before I send this over?";
+  "Before I send this over, is there anything else about the roof or property you think the team should know?";
 
 export type RealtimeFields = Omit<
   CollectedFields,
@@ -183,15 +184,23 @@ export function buildSummaryWithConfirmation(fields: RealtimeFields): string {
   return `${buildStructuredSpokenSummary(fields)} Does all of that sound correct?`;
 }
 
-export function buildIntakeClosingMessage(options: { informationSent?: boolean } = {}): string {
+export function buildIntakeClosingMessage(
+  options: { informationSent?: boolean; fields?: RealtimeFields } = {},
+): string {
+  const firstName = options.fields ? extractCallerFirstName(options.fields) : null;
   const dispatchLine = options.informationSent
-    ? "I've sent your information to the roofing company, and someone will reach out using the callback information you provided."
-    : "I'll send this information to the roofing company, and someone will reach out using the callback information you provided.";
+    ? "I've sent everything to the roofing team, and someone will follow up with you shortly."
+    : "I'll get all of this over to the roofing team, and someone will follow up with you shortly.";
+  const thanks = firstName
+    ? `Thanks for calling, ${firstName}. Have a good one.`
+    : "Thanks for calling. Have a good one.";
 
-  return `Perfect, I have everything I need. ${dispatchLine} Thanks for calling, and have a great day.`;
+  return `Alright, ${dispatchLine} ${thanks}`.replace(/\s+/g, " ").trim();
 }
 
-export function buildClosingMessage(options: { informationSent?: boolean } = {}): string {
+export function buildClosingMessage(
+  options: { informationSent?: boolean; fields?: RealtimeFields } = {},
+): string {
   return buildIntakeClosingMessage(options);
 }
 

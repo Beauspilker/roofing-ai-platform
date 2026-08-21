@@ -560,6 +560,49 @@ export function applyAdaptiveCorrections(
   return preserveConfirmedFieldState(fields, syncLegacyStringFields(updated));
 }
 
+function buildRoofAgeNote(years: string): string {
+  return `Roof is approximately ${years} years old.`;
+}
+
+function roofAgeNoteAlreadyPresent(existing: string | undefined, years: string): boolean {
+  if (!existing?.trim()) {
+    return false;
+  }
+
+  return existing.includes(buildRoofAgeNote(years));
+}
+
+function appendExtractedAdditionalNote(
+  extracted: Partial<RealtimeFields>,
+  note: string,
+): void {
+  const trimmed = note.trim();
+
+  if (!trimmed) {
+    return;
+  }
+
+  const existing = extracted.additional_notes?.trim();
+
+  if (existing?.includes(trimmed)) {
+    return;
+  }
+
+  const combined = existing ? `${existing} ${trimmed}` : trimmed;
+  extracted.additional_notes = combined.slice(0, 500);
+}
+
+function appendRoofAgeToExtractedNotes(
+  extracted: Partial<RealtimeFields>,
+  years: string,
+): void {
+  if (roofAgeNoteAlreadyPresent(extracted.additional_notes, years)) {
+    return;
+  }
+
+  appendExtractedAdditionalNote(extracted, buildRoofAgeNote(years));
+}
+
 export function extractAllFieldsFromTranscript(
   speech: string,
   callerPhone?: string,
@@ -628,6 +671,13 @@ export function extractAllFieldsFromTranscript(
   const scheduleHint = extractScheduleHint(trimmed);
   if (scheduleHint) {
     extracted.appointment_preference_raw = scheduleHint;
+  }
+
+  const roofAgeMatch = trimmed.match(
+    /\b(?:roof(?:'s)?\s+is\s+)?(?:about\s+|around\s+|roughly\s+)?(\d{1,2})\s+years?\s+old\b/i,
+  );
+  if (roofAgeMatch?.[1]) {
+    appendRoofAgeToExtractedNotes(extracted, roofAgeMatch[1]);
   }
 
   const photos = extractPhotosAvailable(trimmed);

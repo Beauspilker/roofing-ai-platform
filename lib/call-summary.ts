@@ -427,45 +427,53 @@ export function buildSpokenCallSummary(fields: SummaryFields): string {
 
 export function buildCrmCallSummary(fields: SummaryFields): string {
   const content = buildProfessionalSummaryContent(fields);
-  const lines: string[] = [];
+  const sentences: string[] = [];
 
-  if (content.reason) {
-    lines.push(`Reason: ${content.reason}`);
-  }
+  const reasonSentence = content.reason
+    ? `Homeowner reports ${content.reason.charAt(0).toLowerCase()}${content.reason.slice(1)}`
+    : null;
 
-  if (content.contactName) {
-    lines.push(`Contact: ${content.contactName}`);
-  }
-
-  if (hasText(fields.callback_phone)) {
-    lines.push(`Phone: ${fields.callback_phone.trim()}`);
-  }
-
-  if (content.location) {
-    lines.push(`Property: ${content.location}`);
+  if (reasonSentence) {
+    sentences.push(`${reasonSentence.replace(/\.$/, "")}.`);
   }
 
   if (content.leak) {
-    lines.push(`Water intrusion: ${content.leak}`);
+    const leakDetail = content.leak.includes("No active")
+      ? "No active interior water intrusion was reported."
+      : `${content.leak.replace(/\.$/, "")}.`;
+    sentences.push(leakDetail);
   }
 
   if (content.insurance) {
-    lines.push(`Insurance: ${content.insurance}`);
-  }
-
-  if (content.urgency) {
-    lines.push(`Priority: ${content.urgency}`);
+    sentences.push(
+      content.insurance.includes("not been initiated")
+        ? "Insurance has not been contacted."
+        : "An insurance claim has already been started.",
+    );
   }
 
   if (content.appointment) {
-    lines.push(`Scheduling: ${content.appointment}`);
+    const timing = content.appointment
+      .replace(/^Requested inspection:?\s*/i, "")
+      .trim();
+    sentences.push(
+      timing.toLowerCase().includes("as soon as possible")
+        ? "Customer would like an inspection as soon as possible."
+        : `Customer prefers contact ${timing.toLowerCase()}.`,
+    );
+  } else if (content.urgency?.includes("urgent")) {
+    sentences.push("Customer indicated this is time-sensitive.");
   }
 
   if (content.additionalNotes) {
-    lines.push(`Notes: ${content.additionalNotes}`);
+    sentences.push(`${content.additionalNotes.replace(/\.$/, "")}.`);
   }
 
-  return lines.join("\n");
+  if (sentences.length === 0) {
+    return "Homeowner called regarding a roofing issue. Details captured during intake.";
+  }
+
+  return sentences.join(" ");
 }
 
 function fieldEditLabel(field: SummaryFieldKey): string {
